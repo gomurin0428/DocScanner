@@ -33,6 +33,52 @@ enum TestImageFactory {
         }
     }
 
+    /// 上下を区別できるマーカー付きの歪んだ書類画像を生成する。
+    /// - 入力: なし
+    /// - 出力: 暗背景 + 明るい歪んだ四角形（紙）で、紙の左上角付近に黒いマーカーブロックを持つ UIImage
+    /// - 処理: 四角形をバイリニア補間のパラメータ (u,v) で扱い、
+    ///   u,v ∈ 0.08〜0.20 の領域を黒で塗る（マーカーは上辺側のみ。上下反転検出用）
+    static func markedSkewedDocument() -> UIImage {
+        let size = CGSize(width: 1200, height: 1600)
+        // 書類の四角形（UIKit 座標: 左上→右上→右下→左下、約 620x840）
+        let quad: [CGPoint] = [
+            CGPoint(x: 300, y: 400),
+            CGPoint(x: 940, y: 370),
+            CGPoint(x: 900, y: 1250),
+            CGPoint(x: 260, y: 1210)
+        ]
+        /// 四角形内の (u,v) 位置をバイリニア補間で実座標へ変換する。
+        func point(u: CGFloat, v: CGFloat) -> CGPoint {
+            CGPoint(
+                x: quad[0].x * (1 - u) * (1 - v) + quad[1].x * u * (1 - v)
+                 + quad[3].x * (1 - u) * v + quad[2].x * u * v,
+                y: quad[0].y * (1 - u) * (1 - v) + quad[1].y * u * (1 - v)
+                 + quad[3].y * (1 - u) * v + quad[2].y * u * v
+            )
+        }
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        return UIGraphicsImageRenderer(size: size, format: format).image { ctx in
+            UIColor(white: 0.15, alpha: 1).setFill()
+            ctx.fill(CGRect(origin: .zero, size: size))
+            let path = UIBezierPath()
+            path.move(to: quad[0])
+            for point in quad.dropFirst() { path.addLine(to: point) }
+            path.close()
+            UIColor.white.setFill()
+            path.fill()
+            // 紙の左上角付近だけに黒マーカー（上下・左右の反転を検出する印）
+            let marker = UIBezierPath()
+            marker.move(to: point(u: 0.08, v: 0.08))
+            marker.addLine(to: point(u: 0.20, v: 0.08))
+            marker.addLine(to: point(u: 0.20, v: 0.20))
+            marker.addLine(to: point(u: 0.08, v: 0.20))
+            marker.close()
+            UIColor.black.setFill()
+            marker.fill()
+        }
+    }
+
     /// UIImage の指定位置のピクセル色を返す。
     /// - 入力: image … 対象画像、x / y … ピクセル座標
     /// - 出力: その位置の UIColor。取得失敗時は nil

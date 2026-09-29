@@ -8,6 +8,7 @@
 | --- | --- | --- |
 | `TestImageFactory` | `solid(_:size:)` | 単色 UIImage 生成（scale=1） |
 | `TestImageFactory` | `gradient(size:)` | 水平グレーグラデーション生成 |
+| `TestImageFactory` | `markedSkewedDocument()` | 暗背景＋歪んだ白い紙＋左上角の黒マーカー（上下区別用）生成 |
 | `TestImageFactory` | `pixelColor(of:x:y:)` | 指定ピクセルの色取得（アルファ有無両対応） |
 | `TestImageFactory` | `pixelSize(of:)` | ピクセル単位サイズ取得 |
 
@@ -39,6 +40,7 @@
 | テスト | 内容 |
 | --- | --- |
 | `testDetectsSkewedQuadrilateral` | 暗背景+白い歪四角形(約600x800)を検出し補正後縦横比≈0.75(±0.25) |
+| `testCorrectedImageIsNotMirroredAndCropsToDocument` | 黒マーカー付き歪書類 → 左上が暗く他角が紙色（反転なし）かつ四隅3%が紙色（背景混入なし）。y反転の旧実装では失敗する回帰テスト |
 | `testUniformImageThrowsNoDocumentFound` | 一様グレー画像 → DocumentDetectionError.noDocumentFound |
 
 ### FileNameSanitizerTests

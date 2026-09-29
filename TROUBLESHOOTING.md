@@ -33,3 +33,29 @@
 - objectVersion 77 + `PBXFileSystemSynchronizedRootGroup` を採用し、
   `DocScanner/` `DocScannerTests/` 配下はファイルを置くだけでターゲットに含まれる。
   Xcode 27 RC でビルド・テスト成功を確認済み（Xcode 15 未満では開けない点に注意）。
+
+## 症状（書類検出の座標系）
+- 写真インポートした書類が上下ミラーになり、歪んだまま暗い背景込みで切り出される
+
+## 原因候補と切り分け
+- `DocumentDetector` が Vision の正規化座標を `y: (1 - p.y) * height` で UIKit 流に反転させてから
+  `CIPerspectiveCorrection` に渡していた。CIImage 座標系も左下原点のため反転は不要であり、
+  反転した四点を渡すと補正後画像が上下反転し背景も混入する
+
+## 対処
+- `CGPoint(x: p.x * width, y: p.y * height)`（= `VNImagePointForNormalizedPoint` 相当）で変換する。
+  回帰テスト `testCorrectedImageIsNotMirroredAndCropsToDocument`（黒マーカーで上下を区別）で検出する
+
+## 症状（SwiftUI 画面遷移）
+- PageEditView で Filter を Enhanced/Grayscale/Black & White に変えてもプレビューが更新されない
+  （セグメントの選択だけ変わる）
+
+## 原因候補と切り分け
+- EditorView が渡していたカスタム `Binding(get:set:)` は SwiftUI の依存解決対象にならず、
+  set しても PageEditView の body が再評価されない。結果 `.task(id: renderKey)` が再発火せず
+  プレビューが古いままになる
+
+## 対処
+- 編集ビューはページをローカル `@State` で保持し、変更を `onChange` コールバックで親へ通知する
+  （`PageEditView.init(page:onChange:onDelete:)`）。親は id で配列要素を差し替える。
+  削除後の dismiss 中の stale index クラッシュ対策も同時に解消される

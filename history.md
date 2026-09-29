@@ -14,3 +14,8 @@
 - 変更概要：iOS 26 では `.bottomBar` ツールバー項目が `.labelStyle(.titleAndIcon)` を無視しアイコンのみ表示になる問題を修正。DocumentListView の Scan/Import と EditorView の Save PDF を `.safeAreaInset(edge: .bottom)` のフル幅ボタンに変更。PageImporterError.loadFailed を (index, message) 化し、loadTransferable の元エラーメッセージをアラートに含めるよう改修。
 - 関連PR/コミット：レビュー対応コミット（feature/2026-09-29-ios-document-scanner）
 - 備考：再インストール後のスクリーンショットで Scan/Import のタイトル表示を目視確認済み。
+
+## 2026-09-29T20:00:00+09:00
+- 変更概要：シミュレータ E2E で見つかった 2 件の不具合を修正。(1) DocumentDetector が Vision の正規化座標を y 反転させて CIPerspectiveCorrection に渡していたため補正結果が上下ミラー・歪み・背景混入になっていた問題を `y: p.y * height`（CIImage も左下原点）に修正。回帰テスト testCorrectedImageIsNotMirroredAndCropsToDocument を追加（旧実装で失敗確認済み）。実写真フィクスチャでの出力も目視確認。(2) PageEditView のフィルタ変更でプレビューが更新されない問題を修正。EditorView のカスタム Binding(get:set:) は SwiftUI の依存解決対象外で body 再評価されなかったため、編集状態をローカル @State で保持し onChange コールバックで親へ通知する設計に変更（binding(for:) 廃止）。TROUBLESHOOTING に両件の落とし穴を追記。テスト計 34 件。
+- 関連PR/コミット：バグ修正コミット（feature/2026-09-29-ios-document-scanner）
+- 備考：補正出力 /tmp/docscanner-evidence/corrected-output.png で正立・矩形化・書類領域のみ切り出しを確認。

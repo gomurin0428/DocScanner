@@ -58,7 +58,8 @@ struct EditorView: View {
                 ForEach(pages) { page in
                     NavigationLink {
                         PageEditView(
-                            page: binding(for: page),
+                            page: page,
+                            onChange: { update($0) },
                             onDelete: { remove(page.id) }
                         )
                     } label: {
@@ -182,23 +183,14 @@ struct EditorView: View {
         )
     }
 
-    /// 指定ページへの id ベースの Binding を返す。
-    /// - 入力: page … 対象ページ
-    /// - 出力: id でルックアップする Binding
-    /// - 処理: get は id で pages を引き直し、見つからない場合は作成時スナップショットを返す
-    ///   （ページ削除後の dismiss アニメーション中の一瞬だけこのスナップショットが使われる）。
-    ///   set は該当要素が残っている場合のみ書き戻す
-    private func binding(for page: ScannedPage) -> Binding<ScannedPage> {
-        let id = page.id
-        let snapshot = page
-        return Binding(
-            get: { self.pages.first { $0.id == id } ?? snapshot },
-            set: { newValue in
-                if let index = self.pages.firstIndex(where: { $0.id == id }) {
-                    self.pages[index] = newValue
-                }
-            }
-        )
+    /// ページ編集結果を id で pages へ書き戻す。
+    /// - 入力: updated … 編集後のページ
+    /// - 出力: なし
+    /// - 処理: 同じ id の要素が残っていれば差し替える（削除済みなら何もしない）
+    private func update(_ updated: ScannedPage) {
+        if let index = pages.firstIndex(where: { $0.id == updated.id }) {
+            pages[index] = updated
+        }
     }
 
     /// ページを削除する。

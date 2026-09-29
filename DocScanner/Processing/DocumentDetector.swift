@@ -69,11 +69,12 @@ struct DocumentDetector {
             throw DocumentDetectionError.noDocumentFound
         }
 
-        // Vision の正規化座標（左下原点）を画像ピクセル座標へ変換する
+        // Vision の正規化座標（左下原点）を CIImage 座標へ変換する。
+        // CIImage も左下原点のため y の反転は不要（反転すると上下ミラー + 歪み + 背景混入になる）
         let width = CGFloat(cg.width)
         let height = CGFloat(cg.height)
         func toImagePoint(_ p: CGPoint) -> CGPoint {
-            CGPoint(x: p.x * width, y: (1 - p.y) * height)
+            CGPoint(x: p.x * width, y: p.y * height)
         }
 
         guard let corrected = CIFilter(name: "CIPerspectiveCorrection", parameters: [

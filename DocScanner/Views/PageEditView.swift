@@ -3,8 +3,10 @@ import SwiftUI
 /// 1 ページ分のプレビュー・フィルタ・回転・削除を行う編集ビュー。
 struct PageEditView: View {
 
-    /// 編集対象ページ（親の配列要素へのバインディング）。
-    @Binding var page: ScannedPage
+    /// 編集対象ページ（ローカル状態。変更は onChange で親へ通知する）。
+    @State private var page: ScannedPage
+    /// ページの編集内容が変わったときに呼ぶコールバック。
+    let onChange: (ScannedPage) -> Void
     /// ページ削除時に呼ぶコールバック。
     let onDelete: () -> Void
     /// 画面を閉じるための dismiss アクション。
@@ -16,12 +18,17 @@ struct PageEditView: View {
     /// エラーアラート表示フラグ。
     @State private var showError = false
 
-    /// ページを削除し画面を閉じるコールバック付きで初期化する。
-    /// - 入力: page … 対象ページの Binding、onDelete … 削除コールバック
+    /// ページと変更・削除コールバック付きで初期化する。
+    /// - 入力: page … 初期ページ値、onChange … 編集変更コールバック、onDelete … 削除コールバック
     /// - 出力: 初期化済み PageEditView
-    /// - 処理: プロパティへ代入する
-    init(page: Binding<ScannedPage>, onDelete: @escaping () -> Void) {
-        _page = page
+    /// - 処理: ローカル @State に初期値を保持しコールバックを代入する
+    ///   （カスタム Binding の get/set では SwiftUI の依存解決が働かず
+    ///   フィルタ変更時に body 再評価されないためローカル状態で編集する）
+    init(page: ScannedPage,
+         onChange: @escaping (ScannedPage) -> Void,
+         onDelete: @escaping () -> Void) {
+        _page = State(initialValue: page)
+        self.onChange = onChange
         self.onDelete = onDelete
     }
 
@@ -68,6 +75,7 @@ struct PageEditView: View {
         .padding()
         .navigationTitle("Edit Page")
         .task(id: renderKey) { await renderPage() }
+        .onChange(of: renderKey) { _, _ in self.onChange(page) }
         .alert("DocScanner", isPresented: $showError) {
             Button("OK", role: .cancel) {}
         } message: {
