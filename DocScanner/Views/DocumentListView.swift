@@ -1,7 +1,7 @@
+import AVFoundation
 import PDFKit
 import PhotosUI
 import SwiftUI
-import VisionKit
 
 /// 保存済み PDF の一覧を表示するルートビュー。
 struct DocumentListView: View {
@@ -55,8 +55,8 @@ struct DocumentListView: View {
                 // safeAreaInset でフル幅ボタンを直接配置する
                 HStack(spacing: 12) {
                     Button {
-                        guard VNDocumentCameraViewController.isSupported else {
-                            errorMessage = "The document camera is not available on this device."
+                        guard CameraController.isAvailable() else {
+                            errorMessage = "The camera is not available on this device."
                             showError = true
                             return
                         }
@@ -82,18 +82,10 @@ struct DocumentListView: View {
                 EditorView(pages: pages)
             }
             .fullScreenCover(isPresented: $showCamera) {
-                DocumentCameraView(
-                    onScan: { images in
+                CameraCaptureView(
+                    onDone: { images in
                         showCamera = false
-                        do {
-                            // メモリ削減のため取り込み時に長辺を抑える
-                            let processor = DocumentImageProcessor()
-                            draftPages = try images.map {
-                                ScannedPage(baseImage: try processor.downscaled($0))
-                            }
-                        } catch {
-                            present(error)
-                        }
+                        handleImages(images)
                     },
                     onError: { error in
                         showCamera = false
@@ -203,6 +195,25 @@ struct DocumentListView: View {
         Task.detached {
             do {
                 let images = try await PageImporter.loadImages(from: items)
+                await MainActor.run { handleImages(images) }
+            } catch {
+                await MainActor.run {
+                    isProcessing = false
+                    self.present(error)
+                }
+            }
+        }
+    }
+
+    /// UIImage 配列を書類検出パイプラインへ通し結果を反映する（カメラ・写真共通）。
+    /// - 入力: images … 取り込み済み画像配列
+    /// - 出力: なし（draftPages または undetectedImages を更新する）
+    /// - 処理: バックグラウンドで makePages を実行し、検出済みはページ化・
+    ///   未検出は確認アラート用に保持する
+    private func handleImages(_ images: [UIImage]) {
+        isProcessing = true
+        Task.detached {
+            do {
                 let result = try PageImporter().makePages(from: images)
                 await MainActor.run {
                     isProcessing = false

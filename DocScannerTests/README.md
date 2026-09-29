@@ -47,6 +47,13 @@
 | `testQuadsAgreeThreshold` | 同一四角形→true、1角5%移動→true、12%移動→false、個数違い→false |
 | `testUniformImageThrowsNoDocumentFound` | 一様グレー画像 → DocumentDetectionError.noDocumentFound |
 
+### CameraCaptureViewTests
+| テスト | 内容 |
+| --- | --- |
+| `testCenterMapsToViewCenter` | 正規化 (0.5,0.5) → ビュー中心 |
+| `testVisibleCropCornersMapToViewCorners` | 3:4 バッファを 9:19.5 ビューで aspect-fill 表示時、可視クロップ 4 隅がビュー 4 隅へ一致 |
+| `testOffscreenPointMapsOutsideView` | クロップ領域外の点がビュー外 (x<0) へ写る |
+
 ### PageFlattenerTests
 | テスト | 内容 |
 | --- | --- |
@@ -103,12 +110,14 @@ classDiagram
     class DocumentStoreTests
     class DocumentDraftTests
     class PageImporterTests
+    class CameraCaptureViewTests
     class TestImageFactory
     PDFBuilderTests ..> TestImageFactory
     DocumentImageProcessorTests ..> TestImageFactory
     DocumentDetectorTests ..> TestImageFactory
     DocumentStoreTests ..> TestImageFactory
     PageImporterTests ..> TestImageFactory
+    CameraCaptureViewTests ..> CameraCaptureView : overlayPoints 座標変換
 ```
 
 ## シーケンス図

@@ -17,8 +17,8 @@
 ## 原因候補と切り分け
 - Xcode 26.6 側の iOS プラットフォームコンポーネントが未インストール
   （`/Applications/Xcode-27.0-RC.app` の xcodebuild では全シミュレータが見える）
-- シミュレータにはカメラハードが存在しないため `VNDocumentCameraViewController.isSupported` が常に false
-  （VisionKit の制約でありアプリ側の不具合ではない）
+- シミュレータにはカメラハードが存在しないため `AVCaptureDevice.default(for: .video)` が nil
+  （ハード制約でありアプリ側の不具合ではない）
 
 ## 対処
 - ビルド/テスト：`/Applications/Xcode-27.0-RC.app/Contents/Developer/usr/bin/xcodebuild` を直接使い、

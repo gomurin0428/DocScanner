@@ -1,6 +1,6 @@
+import AVFoundation
 import PhotosUI
 import SwiftUI
-import VisionKit
 
 /// 新規スキャンドキュメントのページ編集ビュー（サムネイル一覧・並べ替え・保存）。
 struct EditorView: View {
@@ -138,18 +138,10 @@ struct EditorView: View {
             PDFPreviewView(document: document)
         }
         .fullScreenCover(isPresented: $showCamera) {
-            DocumentCameraView(
-                onScan: { images in
+            CameraCaptureView(
+                onDone: { images in
                     showCamera = false
-                    do {
-                        // メモリ削減のため取り込み時に長辺を抑える
-                        let processor = DocumentImageProcessor()
-                        draft.append(try images.map {
-                            ScannedPage(baseImage: try processor.downscaled($0))
-                        })
-                    } catch {
-                        present(error)
-                    }
+                    handleImages(images)
                 },
                 onError: { error in
                     showCamera = false
@@ -202,8 +194,8 @@ struct EditorView: View {
     /// - 出力: なし
     /// - 処理: 非対応ならエラーアラートを出す
     private func showCameraOrAlert() {
-        guard VNDocumentCameraViewController.isSupported else {
-            errorMessage = "The document camera is not available on this device."
+        guard CameraController.isAvailable() else {
+            errorMessage = "The camera is not available on this device."
             showError = true
             return
         }
@@ -227,6 +219,25 @@ struct EditorView: View {
         Task.detached {
             do {
                 let images = try await PageImporter.loadImages(from: items)
+                await MainActor.run { handleImages(images) }
+            } catch {
+                await MainActor.run {
+                    isImporting = false
+                    self.present(error)
+                }
+            }
+        }
+    }
+
+    /// UIImage 配列を書類検出パイプラインへ通し結果を反映する（カメラ・写真共通）。
+    /// - 入力: images … 取り込み済み画像配列
+    /// - 出力: なし（pages / undetectedImages を更新する）
+    /// - 処理: バックグラウンドで makePages を実行し、検出済みは draft へ追加、
+    ///   未検出は確認アラート用に保持する
+    private func handleImages(_ images: [UIImage]) {
+        isImporting = true
+        Task.detached {
+            do {
                 let result = try PageImporter().makePages(from: images)
                 await MainActor.run {
                     isImporting = false

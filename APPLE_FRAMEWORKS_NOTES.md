@@ -2,13 +2,19 @@
 
 DocScanner で使っている Apple フレームワークの使い方とハマりどころのメモ。
 
+## AVFoundation（カメラ撮影）
+
+- **なぜ VisionKit を置き換えたか**：`VNDocumentCameraViewController` には撮影タイミングをユーザーへ委ねる API が無い（自動キャプチャのみ）。実機ユーザーの「指が写り込んだ状態で自動撮影された」報告を受け、AVCaptureSession + 手動シャッターの自前 UI（`CameraController` + `CameraCaptureView`）へ置き換えた。
+- 構成：`AVCaptureSession`（`.photo` プリセット）+ 背面広角 `AVCaptureDeviceInput` + `AVCapturePhotoOutput` + `AVCaptureVideoDataOutput`。`maxPhotoDimensions` にはアクティブフォーマットの `supportedMaxPhotoDimensions` の最大を設定し、`maxPhotoQualityPrioritization = .quality`。
+- 縦向き：撮影・プレビュー・ビデオ各接続で `isVideoRotationAngleSupported(90)` を確認し `videoRotationAngle = 90`。ビデオ出力接続が回転非対応の場合はバッファがセンサー横向きのままなので Vision へ `orientation: .right` を渡す（対応なら `.up`）。
+- 写真：`AVCapturePhotoSettings()` で `capturePhoto(with:delegate:)` → `fileDataRepresentation()` → `UIImage(data:)`（EXIF 向きは UIImage が保持）。
+- オーバレイ：直列キューの `AVCaptureVideoDataOutput` で 3 フレーム毎に `VNDetectRectanglesRequest`（DocumentDetector と同パラメータ）を実行し正規化四角形だけを公開（自動撮影はしない）。aspect-fill プレビューへの座標変換は `CameraCaptureView.overlayPoints`（y 反転 + 中央クロップオフセット）。
+- 権限：`AVCaptureDevice.authorizationStatus(for: .video)` / `requestAccess`。denied/restricted は `UIApplication.openSettingsURLString` への導線アラート。`NSCameraUsageDescription` 必須（`INFOPLIST_KEY_NSCameraUsageDescription` で生成済み）。
+- セッションの configure/startRunning/stopRunning は専用直列キューで実行しメインスレッドをブロックしない。**シミュレータにはカメラデバイスが無い**ため `AVCaptureDevice.default(for: .video)` が nil → UI 側でアラート。
+
 ## VisionKit（VNDocumentCameraViewController）
 
-- カメラ UI・自動エッジ検出・台形補正・ページめくりが全部入りの標準スキャナ。
-- `VNDocumentCameraViewController.isSupported` で必ず事前チェックする。**シミュレータでは常に false**。
-- delegate は 3 コールバックのみ：`didFinishWith:`（`VNDocumentCameraScan` → `pageCount` / `imageOfPage(at:)`）、`didCancel`、`didFailWithError:`。
-- `NSCameraUsageDescription` が Info.plist 必須（本プロジェクトは `INFOPLIST_KEY_NSCameraUsageDescription` で生成）。
-- SwiftUI では `UIViewControllerRepresentable` + `fullScreenCover` で包む。
+- 旧スキャナ UI（ビルド 4 で削除済み）。カメラ UI・自動エッジ検出・台形補正・ページめくりが全部入りの標準スキャナだが、**シャッター任意化 API が無い**ため手動撮影要件には使えない。
 
 ## Vision（VNDetectRectanglesRequest）
 
@@ -30,7 +36,7 @@ DocScanner で使っている Apple フレームワークの使い方とハマ�
 - **レベル補正**：`CIColorMatrix`（RGB スケール k=1/(white-black)、バイアス -black*k）→ `CIColorClamp` → `CIGammaAdjust(power)`。フィルタごとの定数：enhanced (0.12, 0.92, 1.3) + `CIColorControls` saturation 1.15 + `CISharpenLuminance` 0.5/r1.5、grayscale (0.1, 0.92, 1.2)、blackAndWhite (0.0, 0.95, 1.0) → `CIColorThreshold` 0.88。
 - `CIColorControls`：`inputSaturation 0` でグレースケール、彩度補正にも使用。
 - `CISharpenLuminance`：エッジを強調（enhanced 用）。`inputSharpness 0.5`、`inputRadius 1.5`。
-- `CIColorThreshold`（iOS 14+）：平坦化後のグレーに対し `inputThreshold 0.88` で完全 2 値化（旧: 一律 0.5 は影のある紙を黒化させた）。
+- **blackAndWhite は適応閾値 + AA**（ビルド 4 で変更）：`local = CIGaussianBlur(g, r=0.008×max(W,H))` と `g/local` の比を `ramp(0.78,0.94)`、`g` を `ramp(0.45,0.70)` でランプし `CIMinimumCompositing` で min 合成。旧 `CIColorThreshold` 0.88 のハード閾値は薄い/細いストロークを白へ潰していた。`ramp` = CIColorMatrix + CIColorClamp。
 - **CIContext のワーキングスペースは sRGB 固定が必須**：`CIContext(options: [.workingColorSpace: sRGB])` で作る。上記の除算・レベル・閾値定数はガンマエンコード済み sRGB 空間で調整済みであり、デフォルト（リニア光）だと定数がずれて blackAndWhite に黒ノイズ斑点が出る。DocumentImageProcessor のみこのコンテキストを使う。
 - `CIImage.oriented(.right/.down/.left)`：90° 回転。`right` = 時計回り 90°。負の回転数は mod 4 に正規化。
 - `UIImage.imageOrientation != .up` の入力は CGImage が「生の向き」のままなので、先に UIGraphicsImageRenderer で .up に正規化する（これを怠ると検出・フィルタ・回転の座標が全てずれる）。

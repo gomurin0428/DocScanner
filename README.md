@@ -1,12 +1,12 @@
 # DocScanner
 
-紙の書類をカメラでスキャンし、自動エッジ検出・台形補正・フィルタ適用・ページ管理を行い、PDF として保存・共有できる iOS アプリ（SwiftUI + VisionKit + Vision + Core Image + PDFKit）。CamScanner 系のシンプルなドキュメントスキャナ。
+紙の書類をカメラでスキャンし、自動エッジ検出・台形補正・フィルタ適用・ページ管理を行い、PDF として保存・共有できる iOS アプリ（SwiftUI + AVFoundation + Vision + Core Image + PDFKit）。CamScanner 系のシンプルなドキュメントスキャナ。
 
 ## 機能
 
-- **スキャン**: VNDocumentCameraViewController による複数ページ連続スキャン（自動エッジ検出・台形補正）
+- **スキャン**: 自前の AVCaptureSession カメラによる手動シャッター撮影（複数ページ蓄積、検出四角形オーバレイ表示、撮影タイミングはユーザー判断）。撮影後は写真インポートと同じ書類検出パイプラインへ流す
 - **写真インポート**: PhotosPicker 複数選択 → VNDetectRectanglesRequest で書類検出 + 台形補正。VNDetectDocumentSegmentationRequest のマスクが取得でき検出四角形と一致すれば輪郭追跡で湾曲した紙の辺も直線化（曲線輪郭 → Coons パッチ矩形化）。未検出時は「Use Full Image / Cancel」を確認
-- **編集**: ページごとのフィルタ（Original / Enhanced / Grayscale / Black & White）、左右 90° 回転、削除、並べ替え（ドラッグ）、全ページ一括フィルタ、ページ追加
+- **編集**: ページごとのフィルタ（Original / Enhanced / Grayscale / Black & White［適応閾値+AA］）、左右 90° 回転、削除、並べ替え（ドラッグ）、全ページ一括フィルタ、ページ追加
 - **PDF 出力**: A4 / Letter（18pt マージン aspect-fit 中央配置）/ Fit to Image、JPEG 再エンコードでファイルサイズ抑制
 - **管理**: Documents/Scans に保存、一覧表示（サムネイル・日時・ページ数・サイズ）、リネーム・削除・共有（ShareLink）、PDFKit プレビュー
 
@@ -14,7 +14,7 @@
 
 - Xcode 27 以降（動作確認: Xcode 27 RC / iOS 26.5 シミュレータ）
 - デプロイメントターゲット: iOS 17.0+
-- **実機推奨**: ドキュメントスキャンにはカメラが必要。シミュレータでは `VNDocumentCameraViewController.isSupported == false` のため Scan ボタンでアラートが出る（写真インポート・PDF 編集・保存はシミュレータでも動作）
+- **実機推奨**: ドキュメントスキャンにはカメラが必要。シミュレータでは `AVCaptureDevice.default(for: .video)` が無いため Scan ボタンでアラートが出る（写真インポート・PDF 編集・保存はシミュレータでも動作）
 
 ## 使い方
 
@@ -29,7 +29,7 @@ xcodebuild -project DocScanner.xcodeproj -scheme DocScanner \
   -destination 'platform=iOS Simulator,id=<UDID>' test
 ```
 
-`PDFBuilderTests` / `DocumentImageProcessorTests` / `DocumentDetectorTests` / `PageFlattenerTests` / `FileNameSanitizerTests` / `DocumentStoreTests` / `DocumentDraftTests` / `PageImporterTests` が実行される。
+`PDFBuilderTests` / `DocumentImageProcessorTests` / `DocumentDetectorTests` / `PageFlattenerTests` / `CameraCaptureViewTests` / `FileNameSanitizerTests` / `DocumentStoreTests` / `DocumentDraftTests` / `PageImporterTests` が実行される。
 
 ## 構成
 

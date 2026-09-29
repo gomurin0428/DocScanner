@@ -64,3 +64,8 @@
 - 変更概要：blackAndWhite フィルタをハードなグローバル閾値（CIColorThreshold 0.88）から適応閾値+アンチエイリアス化へ変更。平坦化グレー g に対し local=CIGaussianBlur(r=0.008×max(W,H)) を取り、g/local の比を ramp(0.78,0.94)・g を ramp(0.45,0.70) でそれぞれランプし CIMinimumCompositing で min 合成。細線・薄い文字が消える実機報告への対応（出力は厳密 2 値ではなく AA 付き）。ShadingCorrector.ramp を新設し levels を ramp 上に再構成。旧 testBlackAndWhiteProducesBinaryPixels を testBlackAndWhiteKeepsFaintThinStrokes へ置換。
 - 関連PR/コミット：フィルタ改善コミット（feature/2026-09-29-ios-document-scanner）
 - 備考：testBlackAndWhiteLiftsShadedPaper は無変更でパスを確認。
+
+## 2026-09-29T21:15:00+09:00
+- 変更概要：VNDocumentCameraViewController（自動キャプチャ）を自前の AVCaptureSession カメラへ置き換え、撮影タイミングをユーザー操作の手動シャッターへ変更。実機で「指が写り込んだ状態で自動撮影される」報告への対応（VisionKit にシャッター任意化 API が無い）。CameraController（@Observable、.photo プリセット + maxPhotoDimensions=フォーマット最大 + 品質優先、AVCaptureVideoDataOutput で 3 フレーム毎に VNDetectRectanglesRequest 実行して検出四角形のみ公開）と CameraCaptureView（フルスクリーン aspectFill プレビュー + 緑 quad オーバレイ + 手動シャッター + 枚数/サムネイル + Done/Cancel + 白フラッシュ）を新設。権限拒否時は Open Settings 導線アラート、カメラ非搭載（シミュレータ）は既存アラートを AVCaptureDevice 判定へ変更。撮影画像は PageImporter.makePages と同じ検出パイプライン（seg フラット化含む）へ流すため、handleImages を両ビューの importItems から切り出して共通化。DocumentCameraView.swift と VisionKit import を削除。overlayPoints（y-up 正規化→aspect-fill ビュー座標）を static 化し CameraCaptureViewTests 3 件追加。CURRENT_PROJECT_VERSION=4。
+- 関連PR/コミット：カメラ置換コミット（feature/2026-09-29-ios-document-scanner）
+- 備考：カメラ UI 自体はシミュレータで動作確認不可（デバイス無し）。generic/platform=iOS でのコンパイル確認を実施。
