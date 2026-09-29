@@ -31,6 +31,9 @@
 | `testRotateOneTurnSwapsDimensions` | 1 回転で縦横入替（200x100→100x200） |
 | `testRotateFourAndZeroKeepSize` | 4 回転・0 回転でサイズ不変 |
 | `testRotateMinusOneEqualsRotateThree` | -1 回転と 3 回転が同サイズ |
+| `testDownscaledShrinksLargeLandscapeImage` | 4000x3000 → 3000x2250 へ縮小 |
+| `testDownscaledKeepsSmallImage` | 1000x800 はサイズ不変 |
+| `testDownscaledShrinksLargePortraitImage` | 3000x4000 → 2250x3000 へ縮小 |
 
 ### DocumentDetectorTests
 | テスト | 内容 |
@@ -56,6 +59,13 @@
 | `testRenameMovesFile` | rename → 旧パス消失・新パス存在 |
 | `testReloadPicksUpExternalFiles` | 外部書込みファイルを reload で拾う |
 | `testNewestFirstOrdering` | documents が createdAt 降順 |
+| `testGarbagePDFFileThrowsUnreadable` | 拡張子 pdf のゴミファイルで reload → DocumentStoreError.unreadableDocument |
+
+### PageImporterTests
+| テスト | 内容 |
+| --- | --- |
+| `testMixedImagesAreSplitIntoDetectedAndUndetected` | [書類画像, 一様グレー] → 検出 1 + 未検出 1 |
+| `testLargeInputIsDownscaledBeforeDetection` | 長辺 4000px 入力 → 検出済み画像の長辺 ≤3000 |
 
 ## クラス図
 
@@ -66,11 +76,13 @@ classDiagram
     class DocumentDetectorTests
     class FileNameSanitizerTests
     class DocumentStoreTests
+    class PageImporterTests
     class TestImageFactory
     PDFBuilderTests ..> TestImageFactory
     DocumentImageProcessorTests ..> TestImageFactory
     DocumentDetectorTests ..> TestImageFactory
     DocumentStoreTests ..> TestImageFactory
+    PageImporterTests ..> TestImageFactory
 ```
 
 ## シーケンス図

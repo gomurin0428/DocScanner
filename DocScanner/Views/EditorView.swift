@@ -58,7 +58,7 @@ struct EditorView: View {
                 ForEach(pages) { page in
                     NavigationLink {
                         PageEditView(
-                            page: binding(for: page.id),
+                            page: binding(for: page),
                             onDelete: { remove(page.id) }
                         )
                     } label: {
@@ -107,6 +107,7 @@ struct EditorView: View {
                     Label("Save PDF", systemImage: "square.and.arrow.down")
                         .font(.headline)
                 }
+                .labelStyle(.titleAndIcon)
                 .disabled(pages.isEmpty || isSaving)
             }
         }
@@ -123,7 +124,15 @@ struct EditorView: View {
             DocumentCameraView(
                 onScan: { images in
                     showCamera = false
-                    pages.append(contentsOf: images.map { ScannedPage(baseImage: $0) })
+                    do {
+                        // メモリ削減のため取り込み時に長辺を抑える
+                        let processor = DocumentImageProcessor()
+                        pages.append(contentsOf: try images.map {
+                            ScannedPage(baseImage: try processor.downscaled($0))
+                        })
+                    } catch {
+                        present(error)
+                    }
                 },
                 onError: { error in
                     showCamera = false
@@ -169,16 +178,23 @@ struct EditorView: View {
         )
     }
 
-    /// 指定 id のページへの Binding を返す。
-    /// - 入力: id … ページの識別子
-    /// - 出力: 該当ページへの Binding（見つからない場合は先頭を返す。画面遷移中のみ使用）
-    /// - 処理: pages から id で要素を検索してバインドする
-    private func binding(for id: UUID) -> Binding<ScannedPage> {
-        guard let index = pages.firstIndex(where: { $0.id == id }) else {
-            // 通常は発生しないが fail-fast のため明示的に落とす
-            fatalError("Page not found: \(id)")
-        }
-        return $pages[index]
+    /// 指定ページへの id ベースの Binding を返す。
+    /// - 入力: page … 対象ページ
+    /// - 出力: id でルックアップする Binding
+    /// - 処理: get は id で pages を引き直し、見つからない場合は作成時スナップショットを返す
+    ///   （ページ削除後の dismiss アニメーション中の一瞬だけこのスナップショットが使われる）。
+    ///   set は該当要素が残っている場合のみ書き戻す
+    private func binding(for page: ScannedPage) -> Binding<ScannedPage> {
+        let id = page.id
+        let snapshot = page
+        return Binding(
+            get: { self.pages.first { $0.id == id } ?? snapshot },
+            set: { newValue in
+                if let index = self.pages.firstIndex(where: { $0.id == id }) {
+                    self.pages[index] = newValue
+                }
+            }
+        )
     }
 
     /// ページを削除する。
@@ -219,29 +235,23 @@ struct EditorView: View {
     private func importItems(_ items: [PhotosPickerItem]) {
         isImporting = true
         Task.detached {
-            var detected: [ScannedPage] = []
-            var failed: [UIImage] = []
-            let detector = DocumentDetector()
-            for item in items {
-                guard let data = try? await item.loadTransferable(type: Data.self),
-                      let image = UIImage(data: data) else { continue }
-                do {
-                    let corrected = try detector.detectAndCorrect(image)
-                    detected.append(ScannedPage(baseImage: corrected))
-                } catch let error as DocumentDetectionError where error == .noDocumentFound {
-                    failed.append(image)
-                } catch {
-                    await MainActor.run { self.present(error) }
+            do {
+                let images = try await PageImporter.loadImages(from: items)
+                let result = try PageImporter().makePages(from: images)
+                await MainActor.run {
+                    isImporting = false
+                    pendingDetectedPages = result.detectedPages
+                    if result.undetectedImages.isEmpty {
+                        pages.append(contentsOf: result.detectedPages)
+                        pendingDetectedPages = []
+                    } else {
+                        undetectedImages = result.undetectedImages
+                    }
                 }
-            }
-            await MainActor.run {
-                isImporting = false
-                pendingDetectedPages = detected
-                if failed.isEmpty {
-                    pages.append(contentsOf: detected)
-                    pendingDetectedPages = []
-                } else {
-                    undetectedImages = failed
+            } catch {
+                await MainActor.run {
+                    isImporting = false
+                    self.present(error)
                 }
             }
         }
@@ -320,16 +330,23 @@ private struct PageRow: View {
     let number: Int
     /// サムネイル画像。
     @State private var thumbnail: UIImage?
+    /// サムネイル生成失敗フラグ。
+    @State private var failed = false
 
     /// 行の本体を返す。
     /// - 入力: なし
     /// - 出力: サムネイル + ラベルの HStack
-    /// - 処理: バックグラウンドでレンダリングして縮小表示する
+    /// - 処理: バックグラウンドでレンダリングして縮小表示する。失敗時は警告アイコンを表示
     var body: some View {
         HStack(spacing: 12) {
             Group {
                 if let thumbnail {
                     Image(uiImage: thumbnail).resizable().scaledToFit()
+                } else if failed {
+                    Image(systemName: "exclamationmark.triangle")
+                        .resizable()
+                        .scaledToFit()
+                        .foregroundStyle(.secondary)
                 } else {
                     ProgressView()
                 }
@@ -357,16 +374,22 @@ private struct PageRow: View {
     /// - 処理: フィルタ適用後の画像を 88x112 以内へ縮小する
     private func loadThumbnail() async {
         let snapshot = page
-        thumbnail = await Task.detached { () -> UIImage? in
-            guard let rendered = try? snapshot.renderedImage() else { return nil }
+        do {
+            let rendered = try await Task.detached {
+                try snapshot.renderedImage()
+            }.value
             let maxSize = CGSize(width: 88, height: 112)
             let scale = min(maxSize.width / rendered.size.width,
                             maxSize.height / rendered.size.height, 1)
             let target = CGSize(width: rendered.size.width * scale,
                                 height: rendered.size.height * scale)
-            return UIGraphicsImageRenderer(size: target).image { _ in
+            thumbnail = UIGraphicsImageRenderer(size: target).image { _ in
                 rendered.draw(in: CGRect(origin: .zero, size: target))
             }
-        }.value
+            failed = false
+        } catch {
+            // 描画失敗時はスピナーを回し続けず警告アイコンを表示する
+            failed = true
+        }
     }
 }

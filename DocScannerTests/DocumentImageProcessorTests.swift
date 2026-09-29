@@ -86,6 +86,36 @@ final class DocumentImageProcessorTests: XCTestCase {
                        CGSize(width: 200, height: 100))
     }
 
+    /// 長辺が上限を超える横長画像が上限まで縮小されることを検証する。
+    /// - 入力: なし
+    /// - 出力: なし
+    /// - 処理: 4000x3000 を downscaled(3000) して 3000x2250 になることを検査する
+    func testDownscaledShrinksLargeLandscapeImage() throws {
+        let image = TestImageFactory.solid(.blue, size: CGSize(width: 4000, height: 3000))
+        let result = try processor.downscaled(image)
+        XCTAssertEqual(TestImageFactory.pixelSize(of: result), CGSize(width: 3000, height: 2250))
+    }
+
+    /// 長辺が上限以内の画像はピクセルサイズが変わらないことを検証する。
+    /// - 入力: なし
+    /// - 出力: なし
+    /// - 処理: 1000x800 を downscaled(3000) して 1000x800 のままであることを検査する
+    func testDownscaledKeepsSmallImage() throws {
+        let image = TestImageFactory.solid(.blue, size: CGSize(width: 1000, height: 800))
+        let result = try processor.downscaled(image)
+        XCTAssertEqual(TestImageFactory.pixelSize(of: result), CGSize(width: 1000, height: 800))
+    }
+
+    /// 縦長画像も長辺基準で縮小されることを検証する。
+    /// - 入力: なし
+    /// - 出力: なし
+    /// - 処理: 3000x4000 を downscaled(3000) して 2250x3000 になることを検査する
+    func testDownscaledShrinksLargePortraitImage() throws {
+        let image = TestImageFactory.solid(.blue, size: CGSize(width: 3000, height: 4000))
+        let result = try processor.downscaled(image)
+        XCTAssertEqual(TestImageFactory.pixelSize(of: result), CGSize(width: 2250, height: 3000))
+    }
+
     /// -1 回転と 3 回転が同じサイズになることを検証する。
     /// - 入力: なし
     /// - 出力: なし

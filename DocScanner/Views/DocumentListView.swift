@@ -58,7 +58,15 @@ struct DocumentListView: View {
                 DocumentCameraView(
                     onScan: { images in
                         showCamera = false
-                        draftPages = images.map { ScannedPage(baseImage: $0) }
+                        do {
+                            // メモリ削減のため取り込み時に長辺を抑える
+                            let processor = DocumentImageProcessor()
+                            draftPages = try images.map {
+                                ScannedPage(baseImage: try processor.downscaled($0))
+                            }
+                        } catch {
+                            present(error)
+                        }
                     },
                     onError: { error in
                         showCamera = false
@@ -138,12 +146,14 @@ struct DocumentListView: View {
             } label: {
                 Label("Scan", systemImage: "doc.text.viewfinder")
             }
+            .labelStyle(.titleAndIcon)
             Spacer()
             Button {
                 showPicker = true
             } label: {
                 Label("Import", systemImage: "photo.on.rectangle")
             }
+            .labelStyle(.titleAndIcon)
         }
     }
 
@@ -192,33 +202,22 @@ struct DocumentListView: View {
     private func importItems(_ items: [PhotosPickerItem]) {
         isProcessing = true
         Task.detached {
-            var images: [UIImage] = []
-            for item in items {
-                if let data = try? await item.loadTransferable(type: Data.self),
-                   let image = UIImage(data: data) {
-                    images.append(image)
+            do {
+                let images = try await PageImporter.loadImages(from: items)
+                let result = try PageImporter().makePages(from: images)
+                await MainActor.run {
+                    isProcessing = false
+                    pendingDetectedPages = result.detectedPages
+                    if result.undetectedImages.isEmpty {
+                        if !result.detectedPages.isEmpty { draftPages = result.detectedPages }
+                    } else {
+                        undetectedImages = result.undetectedImages
+                    }
                 }
-            }
-            var detected: [ScannedPage] = []
-            var failed: [UIImage] = []
-            let detector = DocumentDetector()
-            for image in images {
-                do {
-                    let corrected = try detector.detectAndCorrect(image)
-                    detected.append(ScannedPage(baseImage: corrected))
-                } catch let error as DocumentDetectionError where error == .noDocumentFound {
-                    failed.append(image)
-                } catch {
-                    await MainActor.run { self.present(error) }
-                }
-            }
-            await MainActor.run {
-                isProcessing = false
-                pendingDetectedPages = detected
-                if failed.isEmpty {
-                    if !detected.isEmpty { draftPages = detected }
-                } else {
-                    undetectedImages = failed
+            } catch {
+                await MainActor.run {
+                    isProcessing = false
+                    self.present(error)
                 }
             }
         }

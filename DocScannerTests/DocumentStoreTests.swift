@@ -18,7 +18,7 @@ final class DocumentStoreTests: XCTestCase {
         executionTimeAllowance = 60
         tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("DocScannerTests-\(UUID().uuidString)", isDirectory: true)
-        store = DocumentStore(directory: tempDir)
+        store = try DocumentStore(directory: tempDir)
     }
 
     /// 各テストの後処理。
@@ -96,6 +96,18 @@ final class DocumentStoreTests: XCTestCase {
         try store.reload()
         XCTAssertEqual(store.documents.count, 1)
         XCTAssertEqual(store.documents.first?.name, "External")
+    }
+
+    /// PDF として読めない *.pdf ファイルがあると reload が unreadableDocument を投げることを検証する。
+    /// - 入力: なし
+    /// - 出力: なし
+    /// - 処理: 拡張子 pdf のゴミファイルを書き込み reload して DocumentStoreError.unreadableDocument を期待する
+    func testGarbagePDFFileThrowsUnreadable() throws {
+        let url = tempDir.appendingPathComponent("broken.pdf")
+        try Data("not a pdf".utf8).write(to: url)
+        XCTAssertThrowsError(try store.reload()) { error in
+            XCTAssertEqual(error as? DocumentStoreError, .unreadableDocument("broken.pdf"))
+        }
     }
 
     /// 一覧が新しい順に並ぶことを検証する。

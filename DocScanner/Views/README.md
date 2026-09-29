@@ -12,8 +12,8 @@ SwiftUI 画面群を格納する。
 | `DocumentCameraView` | `makeUIViewController` / `updateUIViewController` / `makeCoordinator` | VNDocumentCameraViewController の Representable |
 | `DocumentCameraView.Coordinator` | `didFinishWith` / `didCancel` / `didFailWithError` | スキャン結果→[UIImage]、キャンセル、エラーの delegate 実装 |
 | `EditorView` | `body` / `init(pages:)` | 新規ドキュメント編集（List .onMove 並べ替え・削除、ファイル名、用紙サイズ、追加スキャン/インポート、全ページフィルタ、Save PDF） |
-| `EditorView` | `binding(for:)` / `remove` / `importItems` / `save` / `applyFilterToAll` (private) | ページ操作・保存処理（重い処理は Task.detached） |
-| `PageRow` (private) | `body` / `loadThumbnail` | ページ縮小サムネイル行（レンダリングはバックグラウンド） |
+| `EditorView` | `binding(for:)` / `remove` / `importItems` / `save` / `applyFilterToAll` (private) | ページ操作・保存処理（binding は id ルックアップで削除後 dismiss 中の stale index クラッシュを回避） |
+| `PageRow` (private) | `body` / `loadThumbnail` | ページ縮小サムネイル行（失敗時は警告アイコン） |
 | `PageEditView` | `body` / `init(page:onDelete:)` / `renderPage` | 1 ページ編集（大プレビュー、フィルタ segmented、左右回転、削除） |
 | `PDFKitView` (private) | `makeUIView` / `updateUIView` | PDFKit PDFView の Representable |
 | `PDFPreviewView` | `body` / `deleteDocument` | 保存済み PDF プレビュー + ShareLink + Delete |
