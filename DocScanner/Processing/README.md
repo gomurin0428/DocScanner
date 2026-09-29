@@ -8,7 +8,7 @@ Core Image / Vision を使った画像処理（フィルタ・回転・書類検
 | --- | --- | --- |
 | `ImageProcessingError` | `invalidImage` / `filterFailed` / `renderFailed` | 画像処理失敗の LocalizedError |
 | `DocumentImageProcessor` | `init()` | CIContext 生成 |
-| `DocumentImageProcessor` | `apply(_:to:)` | PageFilter を画像へ適用（陰影除去 + レベル補正、ピクセルサイズ保持、throws） |
+| `DocumentImageProcessor` | `apply(_:to:)` | PageFilter を画像へ適用（陰影除去 + レベル補正、白黒は適応閾値+グローバルランプの min 合成、ピクセルサイズ保持、throws） |
 | `DocumentImageProcessor` | `rotate(_:quarterTurns:)` | 90°単位の時計回り回転（mod 4、負値対応、throws） |
 | `DocumentImageProcessor` | `downscaled(_:maxPixelDimension:)` | 長辺を上限 px（既定 3000）以下へ縮小（アスペクト保持・scale=1、throws） |
 | `DocumentImageProcessor` | `normalizedCGImage(of:)` (private) | UIImage の向きを .up に正規化 |
@@ -16,7 +16,8 @@ Core Image / Vision を使った画像処理（フィルタ・回転・書類検
 | `ShadingCorrector` | `background(of:)` (static) | 背景推定（長辺512px縮小→CIMorphologyMaximum r6→CIGaussianBlur r12→復元、throws） |
 | `ShadingCorrector` | `flattened(_:)` (static) | CIDivideBlendMode で画像÷背景の平坦化（throws） |
 | `ShadingCorrector` | `grayscale(_:)` (static) | 彩度 0 グレースケール化（throws） |
-| `ShadingCorrector` | `levels(_:black:white:gamma:)` (static) | CIColorMatrix→CIColorClamp→CIGammaAdjust のレベル補正（throws） |
+| `ShadingCorrector` | `ramp(_:lo:hi:)` (static) | clamp((x-lo)/(hi-lo)) 線形ランプ（CIColorMatrix→CIColorClamp、throws） |
+| `ShadingCorrector` | `levels(_:black:white:gamma:)` (static) | ramp + CIGammaAdjust のレベル補正（throws） |
 | `DocumentDetectionError` | `noDocumentFound` / `invalidImage` / `visionFailed` / `correctionFailed` / `renderFailed` / `unexpectedMaskFormat` / `bitmapContextFailed` / `singularHomography` | 検出・フラット化失敗の LocalizedError |
 | `DocumentDetector` | `init()` | CIContext 生成 |
 | `DocumentDetector` | `detectAndCorrect(_:)` | VNDetectRectanglesRequest で四角形検出 → seg が一致すれば PageFlattener、なければ CIPerspectiveCorrection（throws） |

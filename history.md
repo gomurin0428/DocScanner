@@ -59,3 +59,8 @@
 - 変更概要：紙の湾曲・反り輪郭を追跡してページを正確な矩形へ引き伸ばすフラット化を追加。VNDetectDocumentSegmentationRequest の四角形+セグメンテーションマスクを使い、各辺の外向き法線をマスク走査→輝度エッジ精緻化→平滑化し、ホモグラフィ空間の Coons パッチで一括リサンプルする PageFlattener/PageGeometry を新設。実環境で seg モデルが退化四角形を返すプラットフォーム差（シミュレータで下端帯の quad を高信頼度で返す）を確認したため、VNDetectRectanglesRequest の四角形と 4 隅距離 ≤8% で一致する場合のみフラット化を採用（quadsAgree ゲート）。新規テスト PageFlattenerTests 3 件 + quadsAgree 1 件。macOS CLI 移植検証では実写が 1948x2688 でプロトタイプと一致（diff mean 0.89）。CURRENT_PROJECT_VERSION=3。
 - 関連PR/コミット：フラット化機能コミット（feature/2026-09-29-ios-document-scanner）
 - 備考：シミュレータでは常に矩形検出フォールバック経路になる（seg quad が不一致のため）。実機でのフラット化は要実写確認。
+
+## 2026-09-29T21:00:00+09:00
+- 変更概要：blackAndWhite フィルタをハードなグローバル閾値（CIColorThreshold 0.88）から適応閾値+アンチエイリアス化へ変更。平坦化グレー g に対し local=CIGaussianBlur(r=0.008×max(W,H)) を取り、g/local の比を ramp(0.78,0.94)・g を ramp(0.45,0.70) でそれぞれランプし CIMinimumCompositing で min 合成。細線・薄い文字が消える実機報告への対応（出力は厳密 2 値ではなく AA 付き）。ShadingCorrector.ramp を新設し levels を ramp 上に再構成。旧 testBlackAndWhiteProducesBinaryPixels を testBlackAndWhiteKeepsFaintThinStrokes へ置換。
+- 関連PR/コミット：フィルタ改善コミット（feature/2026-09-29-ios-document-scanner）
+- 備考：testBlackAndWhiteLiftsShadedPaper は無変更でパスを確認。

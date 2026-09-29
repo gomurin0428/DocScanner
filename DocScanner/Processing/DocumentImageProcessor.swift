@@ -77,17 +77,35 @@ struct DocumentImageProcessor {
             let gray = try ShadingCorrector.grayscale(flat)
             ci = try ShadingCorrector.levels(gray, black: 0.1, white: 0.92, gamma: 1.2)
         case .blackAndWhite:
-            // 陰影除去で平坦化 → グレースケール → レベル補正 → 閾値で 2 値化
+            // 陰影除去で平坦化 → グレースケール → 適応閾値（局所比）と
+            // グローバルランプの min 合成でアンチエイリアス付き 2 値化。
+            // ハードなグローバル閾値だと細線・薄い線が消えるため、
+            // g/local 比で文字を拾い、大きな黒領域のくり抜きはグローバル側で防ぐ
             let flat = try ShadingCorrector.flattened(ci)
             let gray = try ShadingCorrector.grayscale(flat)
-            let leveled = try ShadingCorrector.levels(gray, black: 0.0, white: 0.95, gamma: 1.0)
-            guard let threshold = CIFilter(name: "CIColorThreshold", parameters: [
-                kCIInputImageKey: leveled,
-                "inputThreshold": 0.88
+            let extent = ci.extent
+            let radius = 0.008 * max(extent.width, extent.height)
+            guard let local = CIFilter(name: "CIGaussianBlur", parameters: [
+                kCIInputImageKey: gray.clampedToExtent(),
+                kCIInputRadiusKey: radius
             ])?.outputImage else {
-                throw ImageProcessingError.filterFailed("CIColorThreshold")
+                throw ImageProcessingError.filterFailed("CIGaussianBlur")
             }
-            ci = threshold
+            guard let ratio = CIFilter(name: "CIDivideBlendMode", parameters: [
+                kCIInputImageKey: local.cropped(to: extent),
+                kCIInputBackgroundImageKey: gray
+            ])?.outputImage else {
+                throw ImageProcessingError.filterFailed("CIDivideBlendMode")
+            }
+            let adaptive = try ShadingCorrector.ramp(ratio.cropped(to: extent), lo: 0.78, hi: 0.94)
+            let global = try ShadingCorrector.ramp(gray, lo: 0.45, hi: 0.70)
+            guard let combined = CIFilter(name: "CIMinimumCompositing", parameters: [
+                kCIInputImageKey: adaptive,
+                kCIInputBackgroundImageKey: global
+            ])?.outputImage else {
+                throw ImageProcessingError.filterFailed("CIMinimumCompositing")
+            }
+            ci = combined.cropped(to: extent)
         }
 
         // 出力を入力 extent に合わせてピクセルサイズを保持する

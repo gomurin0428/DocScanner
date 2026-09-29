@@ -33,21 +33,47 @@ final class DocumentImageProcessorTests: XCTestCase {
         }
     }
 
-    /// 白黒 2 値化で全ピクセルが 0 か 255 付近になることを検証する。
+    /// 白黒フィルタが輝度 0.75 の細線を保持しつつ大きな黒領域をくり抜かないことを検証する。
     /// - 入力: なし
     /// - 出力: なし
-    /// - 処理: グラデーション画像へ blackAndWhite を適用しサンプリングする
-    func testBlackAndWhiteProducesBinaryPixels() throws {
-        let image = TestImageFactory.gradient(size: CGSize(width: 128, height: 64))
-        let result = try processor.apply(.blackAndWhite, to: image)
-        for x in stride(from: 0, to: 128, by: 8) {
-            let color = try XCTUnwrap(TestImageFactory.pixelColor(of: result, x: x, y: 32))
-            var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
-            color.getRed(&r, green: &g, blue: &b, alpha: &a)
-            let nearBlack = r < 0.1
-            let nearWhite = r > 0.9
-            XCTAssertTrue(nearBlack || nearWhite, "pixel at x=\(x) was \(r), expected near 0 or 1")
+    /// - 処理: 白紙に 2px の水平/垂直細線（輝度 0.75）と 60x60 の黒塊を描いた
+    ///   800x600 画像へ blackAndWhite を適用し、細線上の最小輝度 < 0.5、
+    ///   黒塊中心 < 0.1、余白 > 0.95 を検査する。
+    ///   旧実装（グローバル閾値 0.88）では 0.75 の細線が白へ潰れて消える回帰テスト
+    func testBlackAndWhiteKeepsFaintThinStrokes() throws {
+        let size = CGSize(width: 800, height: 600)
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let image = UIGraphicsImageRenderer(size: size, format: format).image { ctx in
+            UIColor.white.setFill()
+            ctx.fill(CGRect(origin: .zero, size: size))
+            // 実写の細いハイフン・漢字の横画を模した薄い細線（輝度 0.75、2px）
+            UIColor(white: 0.75, alpha: 1).setFill()
+            ctx.fill(CGRect(x: 100, y: 300, width: 600, height: 2))
+            ctx.fill(CGRect(x: 500, y: 100, width: 2, height: 400))
+            // 大きな黒領域（くり抜き防止の確認用）
+            UIColor.black.setFill()
+            ctx.fill(CGRect(x: 50, y: 50, width: 60, height: 60))
         }
+        let result = try processor.apply(.blackAndWhite, to: image)
+        // 水平細線: 線上のどこかが黒く残る（最小輝度 < 0.5）
+        var minH: CGFloat = 1
+        for x in stride(from: 120, to: 460, by: 20) {
+            minH = min(minH, brightness(of: result, fx: CGFloat(x) / 800, fy: 301.0 / 600))
+        }
+        XCTAssertLessThan(minH, 0.5, "horizontal faint line vanished")
+        // 垂直細線: 交差部を避けてサンプリング
+        var minV: CGFloat = 1
+        for y in stride(from: 120, to: 280, by: 20) {
+            minV = min(minV, brightness(of: result, fx: 501.0 / 800, fy: CGFloat(y) / 600))
+        }
+        XCTAssertLessThan(minV, 0.5, "vertical faint line vanished")
+        // 黒塊中心は黒のまま（適応側のくり抜きが出ないこと）
+        XCTAssertLessThan(brightness(of: result, fx: 80.0 / 800, fy: 80.0 / 600), 0.1,
+                          "solid black block hollowed out")
+        // 余白は白
+        XCTAssertGreaterThan(brightness(of: result, fx: 750.0 / 800, fy: 550.0 / 600), 0.95,
+                             "blank paper not white")
     }
 
     /// 陰影のある合成書類画像を生成する。

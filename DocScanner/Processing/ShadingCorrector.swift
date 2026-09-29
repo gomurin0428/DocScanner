@@ -67,15 +67,14 @@ enum ShadingCorrector {
         return output
     }
 
-    /// レベル補正（黒点・白点・ガンマ）を適用する。
-    /// - 入力: image … 入力 CIImage、black … 黒点、white … 白点、gamma … ガンマ値
-    /// - 出力: レベル補正済みの CIImage
-    /// - 処理: CIColorMatrix（スケール k=1/(white-black)、バイアス -black*k）→
-    ///   CIColorClamp → CIGammaAdjust(power gamma) を順に適用する
+    /// 線形ランプ（clamp((x-lo)/(hi-lo))）を各チャンネルへ適用する。
+    /// - 入力: image … 入力 CIImage、lo … 0 側の入力値、hi … 1 側の入力値
+    /// - 出力: ランプ適用済みの CIImage
+    /// - 処理: CIColorMatrix（スケール k=1/(hi-lo)、バイアス -lo*k）→ CIColorClamp を適用する
     /// - Throws: いずれかのフィルタが出力を返さない場合 ImageProcessingError.filterFailed
-    static func levels(_ image: CIImage, black: Float, white: Float, gamma: Float) throws -> CIImage {
-        let k = CGFloat(1 / (white - black))
-        let bias = CGFloat(-black) * k
+    static func ramp(_ image: CIImage, lo: Float, hi: Float) throws -> CIImage {
+        let k = CGFloat(1 / (hi - lo))
+        let bias = CGFloat(-lo) * k
         guard let matrix = CIFilter(name: "CIColorMatrix", parameters: [
             kCIInputImageKey: image,
             "inputRVector": CIVector(x: k, y: 0, z: 0, w: 0),
@@ -90,8 +89,18 @@ enum ShadingCorrector {
         ])?.outputImage else {
             throw ImageProcessingError.filterFailed("CIColorClamp")
         }
+        return clamped
+    }
+
+    /// レベル補正（黒点・白点・ガンマ）を適用する。
+    /// - 入力: image … 入力 CIImage、black … 黒点、white … 白点、gamma … ガンマ値
+    /// - 出力: レベル補正済みの CIImage
+    /// - 処理: ramp(black, white) → CIGammaAdjust(power gamma) を順に適用する
+    /// - Throws: いずれかのフィルタが出力を返さない場合 ImageProcessingError.filterFailed
+    static func levels(_ image: CIImage, black: Float, white: Float, gamma: Float) throws -> CIImage {
+        let ramped = try ramp(image, lo: black, hi: white)
         guard let gammaed = CIFilter(name: "CIGammaAdjust", parameters: [
-            kCIInputImageKey: clamped,
+            kCIInputImageKey: ramped,
             "inputPower": gamma
         ])?.outputImage else {
             throw ImageProcessingError.filterFailed("CIGammaAdjust")

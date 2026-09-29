@@ -27,7 +27,7 @@
 | テスト | 内容 |
 | --- | --- |
 | `testGrayscaleProducesNeutralPixels` | 単色画像 grayscale → サンプル画素 R≈G≈B |
-| `testBlackAndWhiteProducesBinaryPixels` | グラデーション blackAndWhite → 全サンプル ≈0 or ≈255 |
+| `testBlackAndWhiteKeepsFaintThinStrokes` | 輝度0.75の2px細線+黒塊を含む白紙 → 細線上の最小輝度<0.5・黒塊中心<0.1・余白>0.95（旧グローバル閾値では細線が消える回帰テスト） |
 | `testBlackAndWhiteLiftsShadedPaper` | 陰影付き合成紙 → blackAndWhite で上/下の紙 ≥0.9・バー ≤0.1（旧一律閾値では下部が黒化する回帰テスト） |
 | `testEnhancedLiftsShadedPaper` | 下部紙 ≥0.85・バー ≤0.3（enhanced の陰影除去検証） |
 | `testGrayscaleNeutralAndLiftsShadedPaper` | 下部紙 R==G==B（±2/255）かつ明度 ≥0.85（grayscale 検証） |
