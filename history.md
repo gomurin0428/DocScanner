@@ -49,3 +49,8 @@
 - 変更概要：DocumentImageProcessor の CIContext を workingColorSpace=sRGB 固定に変更。陰影除去・レベル補正・閾値の定数はガンマエンコード済み sRGB で調整済みであり、デフォルトのリニア光ワーキングスペースでは除算/閾値結果がずれて blackAndWhite に黒ノイズ斑点が出ていたため。DocumentDetector のコンテキストは変更なし。ZZDiag を再実行し診断 JPEG を再生成。
 - 関連PR/コミット：フィルタ色空間修正コミット（feature/2026-09-29-ios-document-scanner）
 - 備考：APPLE_FRAMEWORKS_NOTES・TROUBLESHOOTING に sRGB ワーキングスペース依存の注意を追記。
+
+## 2026-09-29T19:20:00+09:00
+- 変更概要：TestFlight へ build 2 を配布するため CURRENT_PROJECT_VERSION を 1→2 に更新（アプリ/テストターゲットの Debug+Release 全構成、MARKETING_VERSION は 1.0 のまま）。アーカイブ・エクスポート・altool でのアップロードを App Store Connect API キーで実施。
+- 関連PR/コミット：バージョン更新コミット（feature/2026-09-29-ios-document-scanner）
+- 備考：アップロード後は /v1/builds API で processingState=VALID / internalBuildState=IN_BETA_TESTING を確認。
