@@ -4,16 +4,16 @@ import UIKit
 
 /// 写真インポート処理中に発生するエラー。
 enum PageImporterError: LocalizedError {
-    /// PhotosPickerItem からのデータ読み込みに失敗した。
-    case loadFailed(Int)
+    /// PhotosPickerItem からのデータ読み込みに失敗した（index と元エラーを保持）。
+    case loadFailed(Int, String)
     /// 読み込んだデータを画像としてデコードできなかった。
     case decodeFailed(Int)
 
     /// エラーの英語説明文を返す。
     var errorDescription: String? {
         switch self {
-        case .loadFailed(let index):
-            return "Photo at index \(index) could not be loaded."
+        case .loadFailed(let index, let message):
+            return "Photo at index \(index) could not be loaded: \(message)"
         case .decodeFailed(let index):
             return "Photo at index \(index) could not be decoded as an image."
         }
@@ -54,8 +54,16 @@ struct PageImporter {
     static func loadImages(from items: [PhotosPickerItem]) async throws -> [UIImage] {
         var images: [UIImage] = []
         for (index, item) in items.enumerated() {
-            guard let data = try? await item.loadTransferable(type: Data.self) else {
-                throw PageImporterError.loadFailed(index)
+            let data: Data
+            do {
+                guard let loaded = try await item.loadTransferable(type: Data.self) else {
+                    throw PageImporterError.loadFailed(index, "no transferable data")
+                }
+                data = loaded
+            } catch let error as PageImporterError {
+                throw error
+            } catch {
+                throw PageImporterError.loadFailed(index, error.localizedDescription)
             }
             guard let image = UIImage(data: data) else {
                 throw PageImporterError.decodeFailed(index)

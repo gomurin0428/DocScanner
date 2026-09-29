@@ -50,7 +50,34 @@ struct DocumentListView: View {
                 }
             }
             .navigationTitle("DocScanner")
-            .toolbar { toolbarContent }
+            .safeAreaInset(edge: .bottom) {
+                // iOS 26 の bottomBar ツールバーでは .titleAndIcon が効かないため
+                // safeAreaInset でフル幅ボタンを直接配置する
+                HStack(spacing: 12) {
+                    Button {
+                        guard VNDocumentCameraViewController.isSupported else {
+                            errorMessage = "The document camera is not available on this device."
+                            showError = true
+                            return
+                        }
+                        showCamera = true
+                    } label: {
+                        Label("Scan", systemImage: "doc.text.viewfinder")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    Button {
+                        showPicker = true
+                    } label: {
+                        Label("Import", systemImage: "photo.on.rectangle")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.large)
+                }
+                .padding(.horizontal)
+            }
             .navigationDestination(item: $draftPages) { pages in
                 EditorView(pages: pages)
             }
@@ -127,34 +154,6 @@ struct DocumentListView: View {
             get: { renameTarget != nil },
             set: { if !$0 { renameTarget = nil } }
         )
-    }
-
-    /// ツールバーの Scan / Import ボタンを返す。
-    /// - 入力: なし
-    /// - 出力: ツールバーアイテム群
-    /// - 処理: Scan ボタンはカメラ非対応時にアラートを出す
-    @ToolbarContentBuilder
-    private var toolbarContent: some ToolbarContent {
-        ToolbarItemGroup(placement: .bottomBar) {
-            Button {
-                guard VNDocumentCameraViewController.isSupported else {
-                    errorMessage = "The document camera is not available on this device."
-                    showError = true
-                    return
-                }
-                showCamera = true
-            } label: {
-                Label("Scan", systemImage: "doc.text.viewfinder")
-            }
-            .labelStyle(.titleAndIcon)
-            Spacer()
-            Button {
-                showPicker = true
-            } label: {
-                Label("Import", systemImage: "photo.on.rectangle")
-            }
-            .labelStyle(.titleAndIcon)
-        }
     }
 
     /// 保存済みドキュメントのリストを返す。

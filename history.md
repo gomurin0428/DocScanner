@@ -9,3 +9,8 @@
 - 変更概要：レビュー指摘対応。DocumentStore.init を throws 化し DocScannerApp で do/catch → 失敗時「Storage Unavailable」画面。reload は属性欠損 missingFileAttributes / 読めない PDF unreadableDocument を throw（暗黙スキップ廃止）。PDFBuilder は pdfData クロージャが throw できないため JPEG 再エンコードを事前化し失敗時 jpegEncodingFailed。写真インポートを PageImporter に集約（loadFailed/decodeFailed、重複コード解消）。取り込み時に長辺 3000px へ縮小（カメラ/写真両経路）。EditorView.binding(for:) を id ルックアップ化して削除後 dismiss 中の stale index クラッシュを解消。Scan/Import/Save PDF を titleAndIcon 表示。テスト 6 件追加（計 33 件）。
 - 関連PR/コミット：レビュー対応コミット（feature/2026-09-29-ios-document-scanner）
 - 備考：PageRow のサムネイル失敗時は警告アイコン表示に変更（fail-fast）。
+
+## 2026-09-29T12:00:00+09:00
+- 変更概要：iOS 26 では `.bottomBar` ツールバー項目が `.labelStyle(.titleAndIcon)` を無視しアイコンのみ表示になる問題を修正。DocumentListView の Scan/Import と EditorView の Save PDF を `.safeAreaInset(edge: .bottom)` のフル幅ボタンに変更。PageImporterError.loadFailed を (index, message) 化し、loadTransferable の元エラーメッセージをアラートに含めるよう改修。
+- 関連PR/コミット：レビュー対応コミット（feature/2026-09-29-ios-document-scanner）
+- 備考：再インストール後のスクリーンショットで Scan/Import のタイトル表示を目視確認済み。

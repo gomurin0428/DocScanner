@@ -100,16 +100,20 @@ struct EditorView: View {
                     Label("Filter All", systemImage: "camera.filters")
                 }
             }
-            ToolbarItem(placement: .bottomBar) {
-                Button {
-                    save()
-                } label: {
-                    Label("Save PDF", systemImage: "square.and.arrow.down")
-                        .font(.headline)
-                }
-                .labelStyle(.titleAndIcon)
-                .disabled(pages.isEmpty || isSaving)
+        }
+        .safeAreaInset(edge: .bottom) {
+            // iOS 26 の bottomBar ツールバーではタイトルが出ないためフル幅ボタンで配置する
+            Button {
+                save()
+            } label: {
+                Label("Save PDF", systemImage: "square.and.arrow.down")
+                    .font(.headline)
+                    .frame(maxWidth: .infinity)
             }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .disabled(pages.isEmpty || isSaving)
+            .padding(.horizontal)
         }
         .confirmationDialog("Apply Filter to All Pages", isPresented: $showFilterSheet) {
             ForEach(PageFilter.allCases) { filter in

@@ -6,12 +6,12 @@ SwiftUI 画面群を格納する。
 
 | 型 | メソッド / プロパティ | 役割 |
 | --- | --- | --- |
-| `DocumentListView` | `body` | 保存 PDF 一覧ルート。Scan（VNDocumentCamera 非対応時アラート）/ Import（PhotosPicker→書類検出）、スワイプ削除、コンテキストメニュー（Rename/Share/Delete） |
+| `DocumentListView` | `body` | 保存 PDF 一覧ルート。Scan（VNDocumentCamera 非対応時アラート）/ Import（PhotosPicker→書類検出）、スワイプ削除、コンテキストメニュー（Rename/Share/Delete）。Scan/Import は `.safeAreaInset(edge: .bottom)` のフル幅ボタン（iOS 26 の `.bottomBar` ツールバーでは `.titleAndIcon` が効かないため） |
 | `DocumentListView` | `importItems` / `acceptUndetectedImages` / `discardUndetectedImages` / `delete` / `performRename` / `present` (private) | 写真取り込み（未検出は「Use Full Image / Cancel」確認）、削除、リネーム、エラー表示 |
 | `DocumentRow` (private) | `body` / `metaText` / `loadThumbnail` | 1 行表示（PDFKit 1 ページ目サムネイル + 日時・ページ数・サイズ） |
 | `DocumentCameraView` | `makeUIViewController` / `updateUIViewController` / `makeCoordinator` | VNDocumentCameraViewController の Representable |
 | `DocumentCameraView.Coordinator` | `didFinishWith` / `didCancel` / `didFailWithError` | スキャン結果→[UIImage]、キャンセル、エラーの delegate 実装 |
-| `EditorView` | `body` / `init(pages:)` | 新規ドキュメント編集（List .onMove 並べ替え・削除、ファイル名、用紙サイズ、追加スキャン/インポート、全ページフィルタ、Save PDF） |
+| `EditorView` | `body` / `init(pages:)` | 新規ドキュメント編集（List .onMove 並べ替え・削除、ファイル名、用紙サイズ、追加スキャン/インポート、全ページフィルタ、Save PDF は下部 safeAreaInset のフル幅ボタン） |
 | `EditorView` | `binding(for:)` / `remove` / `importItems` / `save` / `applyFilterToAll` (private) | ページ操作・保存処理（binding は id ルックアップで削除後 dismiss 中の stale index クラッシュを回避） |
 | `PageRow` (private) | `body` / `loadThumbnail` | ページ縮小サムネイル行（失敗時は警告アイコン） |
 | `PageEditView` | `body` / `init(page:onDelete:)` / `renderPage` | 1 ページ編集（大プレビュー、フィルタ segmented、左右回転、削除） |

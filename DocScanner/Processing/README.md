@@ -18,7 +18,7 @@ Core Image / Vision を使った画像処理（フィルタ・回転・書類検
 | `DocumentDetector` | `init()` | CIContext 生成 |
 | `DocumentDetector` | `detectAndCorrect(_:)` | VNDetectRectanglesRequest + CIPerspectiveCorrection で台形補正（throws） |
 | `DocumentDetector` | `normalizedCGImage(of:)` (private) | UIImage の向きを .up に正規化 |
-| `PageImporterError` | `loadFailed` / `decodeFailed` | 写真読み込み失敗の LocalizedError（index 付き） |
+| `PageImporterError` | `loadFailed(index, message)` / `decodeFailed(index)` | 写真読み込み失敗の LocalizedError（index と元エラーメッセージ付き） |
 | `ImportResult` | `detectedPages` / `undetectedImages` | 検出済みページと未検出元画像の振り分け結果 |
 | `PageImporter` | `init()` | DocumentDetector と DocumentImageProcessor を生成 |
 | `PageImporter` | `loadImages(from:)` (static) | PhotosPickerItem → UIImage（失敗は throw、非同期） |
