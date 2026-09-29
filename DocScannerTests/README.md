@@ -1,0 +1,89 @@
+# DocScannerTests フォルダ
+
+ユニットテスト（XCTest、`@testable import DocScanner`、TEST_HOST はアプリ本体）。
+
+## ヘルパー
+
+| 型 | メソッド | 役割 |
+| --- | --- | --- |
+| `TestImageFactory` | `solid(_:size:)` | 単色 UIImage 生成（scale=1） |
+| `TestImageFactory` | `gradient(size:)` | 水平グレーグラデーション生成 |
+| `TestImageFactory` | `pixelColor(of:x:y:)` | 指定ピクセルの色取得（アルファ有無両対応） |
+| `TestImageFactory` | `pixelSize(of:)` | ピクセル単位サイズ取得 |
+
+## テストケース一覧
+
+### PDFBuilderTests
+| テスト | 内容 |
+| --- | --- |
+| `testMakePDFProducesThreePages` | 3 画像 → PDFDocument の pageCount が 3 |
+| `testA4PageBounds` | .a4 のページ境界が ≈595x842pt |
+| `testLetterPageBounds` | .letter のページ境界が ≈612x792pt |
+| `testFitImagePageBounds` | .fitImage のページ境界が画像 pt サイズと一致 |
+| `testEmptyImagesThrowsNoPages` | 空配列 → PDFBuilderError.noPages |
+
+### DocumentImageProcessorTests
+| テスト | 内容 |
+| --- | --- |
+| `testGrayscaleProducesNeutralPixels` | 単色画像 grayscale → サンプル画素 R≈G≈B |
+| `testBlackAndWhiteProducesBinaryPixels` | グラデーション blackAndWhite → 全サンプル ≈0 or ≈255 |
+| `testFiltersPreservePixelSize` | 全フィルタでピクセルサイズ保持 |
+| `testRotateOneTurnSwapsDimensions` | 1 回転で縦横入替（200x100→100x200） |
+| `testRotateFourAndZeroKeepSize` | 4 回転・0 回転でサイズ不変 |
+| `testRotateMinusOneEqualsRotateThree` | -1 回転と 3 回転が同サイズ |
+
+### DocumentDetectorTests
+| テスト | 内容 |
+| --- | --- |
+| `testDetectsSkewedQuadrilateral` | 暗背景+白い歪四角形(約600x800)を検出し補正後縦横比≈0.75(±0.25) |
+| `testUniformImageThrowsNoDocumentFound` | 一様グレー画像 → DocumentDetectionError.noDocumentFound |
+
+### FileNameSanitizerTests
+| テスト | 内容 |
+| --- | --- |
+| `testIllegalCharactersReplaced` | `/ \ : * ? " < > \|` が `-` に置換 |
+| `testPDFExtensionStripped` | 末尾 ".pdf"/".PDF" 除去 |
+| `testWhitespaceOnlyThrows` | 空白のみ入力 → FileNameError.empty |
+| `testExtensionOnlyThrows` | ".pdf" のみ入力 → FileNameError.empty |
+| `testDefaultNameFormat` | "Scan yyyy-MM-dd HH.mm.ss" 形式 |
+
+### DocumentStoreTests（一時ディレクトリ注入、tearDown で削除）
+| テスト | 内容 |
+| --- | --- |
+| `testSaveCreatesFileAndEntry` | save → ファイル生成・一覧登録・pageCount 正しい |
+| `testDuplicateNamesGetSuffix` | 同名 2 回保存 → "Report (2)" |
+| `testDeleteRemovesFileAndEntry` | delete → ファイルと一覧エントリ消失 |
+| `testRenameMovesFile` | rename → 旧パス消失・新パス存在 |
+| `testReloadPicksUpExternalFiles` | 外部書込みファイルを reload で拾う |
+| `testNewestFirstOrdering` | documents が createdAt 降順 |
+
+## クラス図
+
+```mermaid
+classDiagram
+    class PDFBuilderTests
+    class DocumentImageProcessorTests
+    class DocumentDetectorTests
+    class FileNameSanitizerTests
+    class DocumentStoreTests
+    class TestImageFactory
+    PDFBuilderTests ..> TestImageFactory
+    DocumentImageProcessorTests ..> TestImageFactory
+    DocumentDetectorTests ..> TestImageFactory
+    DocumentStoreTests ..> TestImageFactory
+```
+
+## シーケンス図
+
+```mermaid
+sequenceDiagram
+    participant R as XCTestRunner
+    participant T as XCTestCase
+    participant SUT as テスト対象
+    R->>T: setUp（executionTimeAllowance=60）
+    R->>T: test メソッド実行
+    T->>SUT: 対象 API 呼出し
+    SUT-->>T: 結果/例外
+    T->>T: XCTAssert* で検証
+    R->>T: tearDown（一時ディレクトリ削除）
+```
