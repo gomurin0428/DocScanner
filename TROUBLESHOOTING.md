@@ -71,3 +71,20 @@
 - 関連して PageRow もページ値ではなく draft+pageID で受け取る（Filter All で
   親配列が丸ごと差し替わっても行ラベル・サムネイルが Observation で更新され、
   `.task(id: thumbnailKey)` が再発火する）
+
+## 症状（実機・TestFlight）
+- Save PDF で「The file couldn't be saved.」とエラーになる（PDF 自体は書き込まれている）。
+  リネームでも同種のエラーになる。シミュレータでは再現しない
+
+## 原因候補と切り分け
+- `DocumentStore.save`/`rename` が保存後の一覧照合を URL 等価（`$0.url == url`）で
+  行っていた。実機では `contentsOfDirectory` が symlink 解決後のパス
+  （/var → /private/var 等）を返すため URL が一致せず、裸の
+  `CocoaError(.fileWriteUnknown/.fileReadUnknown)` が投げられていた。
+  `uniqueURL(for:excluding:)` の `candidate != excluding` も同種
+
+## 対処
+- 照合・除外判定は URL 等価ではなく `lastPathComponent`（ファイル名）で行う。
+  裸の CocoaError は廃止し `DocumentStoreError.savedDocumentNotFound` /
+  `.renamedDocumentNotFound`（ファイル名入り英語メッセージ）を投げる。
+  回帰テスト `testSymlinkedDirectorySaveAndRename`（symlink 親ディレクトリ経由）で再現検証

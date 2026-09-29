@@ -72,6 +72,7 @@
 | `testRenameMovesFile` | rename → 旧パス消失・新パス存在 |
 | `testReloadPicksUpExternalFiles` | 外部書込みファイルを reload で拾う |
 | `testNewestFirstOrdering` | documents が createdAt 降順 |
+| `testSymlinkedDirectorySaveAndRename` | symlink 親を持つ directory で save 成功・同名リネームで " (2)" 非付与・別名リネーム成功（URL 等価比較の回帰テスト） |
 | `testGarbagePDFFileThrowsUnreadable` | 拡張子 pdf のゴミファイルで reload → DocumentStoreError.unreadableDocument |
 
 ### PageImporterTests

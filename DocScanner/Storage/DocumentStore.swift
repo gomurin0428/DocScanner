@@ -7,6 +7,10 @@ enum DocumentStoreError: LocalizedError, Equatable {
     case unreadableDocument(String)
     /// ファイル属性（作成日時・サイズ）を取得できなかった。
     case missingFileAttributes(String)
+    /// 保存後に一覧から保存ファイルを特定できなかった。
+    case savedDocumentNotFound(String)
+    /// リネーム後に一覧からリネーム先ファイルを特定できなかった。
+    case renamedDocumentNotFound(String)
 
     /// エラーの英語説明文を返す。
     var errorDescription: String? {
@@ -15,6 +19,10 @@ enum DocumentStoreError: LocalizedError, Equatable {
             return "The file '\(fileName)' could not be read as a PDF document."
         case .missingFileAttributes(let fileName):
             return "File attributes for '\(fileName)' could not be read."
+        case .savedDocumentNotFound(let fileName):
+            return "The saved file '\(fileName)' could not be found in the store."
+        case .renamedDocumentNotFound(let fileName):
+            return "The renamed file '\(fileName)' could not be found in the store."
         }
     }
 }
@@ -106,8 +114,12 @@ final class DocumentStore {
         let url = uniqueURL(for: base)
         try pdfData.write(to: url, options: .atomic)
         try reload()
-        guard let saved = documents.first(where: { $0.url == url }) else {
-            throw CocoaError(.fileWriteUnknown)
+        // 列挙結果の URL は symlink 解決後のパスになり得る（実機の /private/var 等）
+        // ため URL 等価ではなくファイル名で照合する
+        guard let saved = documents.first(where: {
+            $0.url.lastPathComponent == url.lastPathComponent
+        }) else {
+            throw DocumentStoreError.savedDocumentNotFound(url.lastPathComponent)
         }
         return saved
     }
@@ -133,8 +145,11 @@ final class DocumentStore {
         let url = uniqueURL(for: base, excluding: document.url)
         try FileManager.default.moveItem(at: document.url, to: url)
         try reload()
-        guard let renamed = documents.first(where: { $0.url == url }) else {
-            throw CocoaError(.fileReadUnknown)
+        // save と同様、URL 等価ではなくファイル名で照合する
+        guard let renamed = documents.first(where: {
+            $0.url.lastPathComponent == url.lastPathComponent
+        }) else {
+            throw DocumentStoreError.renamedDocumentNotFound(url.lastPathComponent)
         }
         return renamed
     }
@@ -147,7 +162,9 @@ final class DocumentStore {
         var candidate = directory.appendingPathComponent(base).appendingPathExtension("pdf")
         var index = 2
         let fm = FileManager.default
-        while fm.fileExists(atPath: candidate.path), candidate != excluding {
+        // リネーム元と列挙結果で symlink 解決有無が異なり得るためファイル名で比較する
+        while fm.fileExists(atPath: candidate.path),
+              candidate.lastPathComponent != excluding?.lastPathComponent {
             candidate = directory.appendingPathComponent("\(base) (\(index))").appendingPathExtension("pdf")
             index += 1
         }

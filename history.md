@@ -34,3 +34,8 @@
 - 変更概要：TestFlight 配布準備。アプリターゲットの Debug/Release 両構成に `INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO` を追加（輸出コンプライアンス＝暗号化非該当）。README に配布セクション（アーカイブコマンド・エクスポート・輸出コンプライアンス）を追加。
 - 関連PR/コミット：TestFlight 準備コミット（feature/2026-09-29-ios-document-scanner）
 - 備考：アーカイブ・エクスポートは App Store Connect API キー + -allowProvisioningUpdates で自動署名。
+
+## 2026-09-30T04:00:00+09:00
+- 変更概要：実機で Save PDF が「The file couldn't be saved.」になる不具合を修正。contentsOfDirectory が symlink 解決後パスを返すため URL 等価照合が失敗していた。save/rename の一覧照合と uniqueURL の excluding 判定を lastPathComponent 比較に変更。裸の CocoaError を DocumentStoreError.savedDocumentNotFound/renamedDocumentNotFound に置換。回帰テスト testSymlinkedDirectorySaveAndRename 追加（symlink 親経由で修正前に Code=512 失敗を確認）。
+- 関連PR/コミット：バグ修正コミット（feature/2026-09-29-ios-document-scanner）
+- 備考：シミュレータでは一時ディレクトリへの symlink で再現（親を symlink にし init は子ディレクトリを作成）。

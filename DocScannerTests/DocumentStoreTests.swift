@@ -110,6 +110,39 @@ final class DocumentStoreTests: XCTestCase {
         }
     }
 
+    /// シンボリックリンク経由のディレクトリでも保存・リネームが機能することを検証する。
+    /// - 入力: なし
+    /// - 出力: なし
+    /// - 処理: 実ディレクトリへの symlink パスでストアを初期化し、
+    ///   save 成功・同名リネームで " (2)" が付かない・別名リネーム成功を検査する。
+    ///   実機では contentsOfDirectory が解決済みパス（/private/var 等）を返し
+    ///   URL 等価比較が失敗するため、ファイル名比較の回帰テストとする
+    func testSymlinkedDirectorySaveAndRename() throws {
+        let fm = FileManager.default
+        let realDir = fm.temporaryDirectory
+            .appendingPathComponent("DocScannerTests-real-\(UUID().uuidString)", isDirectory: true)
+        let linkDir = fm.temporaryDirectory
+            .appendingPathComponent("DocScannerTests-link-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: realDir, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: realDir) }
+        try fm.createSymbolicLink(at: linkDir, withDestinationURL: realDir)
+        defer { try? fm.removeItem(at: linkDir) }
+
+        // symlink を親に持つパスで初期化（実機の /private/var vs /var 相当を再現）
+        let linkedStore = try DocumentStore(directory: linkDir.appendingPathComponent("Scans"))
+        let saved = try linkedStore.save(pdfData: makePDFData(), name: "Report")
+        XCTAssertEqual(saved.name, "Report")
+
+        // 同名へのリネームは同一ファイルなので " (2)" にならない
+        let same = try linkedStore.rename(saved, to: "Report")
+        XCTAssertEqual(same.name, "Report")
+        XCTAssertEqual(linkedStore.documents.count, 1)
+
+        // 別名へのリネームは成功する
+        let renamed = try linkedStore.rename(same, to: "Invoice")
+        XCTAssertEqual(renamed.name, "Invoice")
+    }
+
     /// 一覧が新しい順に並ぶことを検証する。
     /// - 入力: なし
     /// - 出力: なし
