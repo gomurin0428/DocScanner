@@ -60,10 +60,14 @@
 
 ## 対処
 - ページ集合を `@Observable final class DocumentDraft`（参照型）で共有し、
-  遷移は `NavigationLink(value: page.id)` + `.navigationDestination(for: UUID.self)`
-  で遷移先の入力を (draft, pageID) に固定する。PageEditView は body で draft から
-  現在ページを読み、編集は draft メソッドへ委譲。非同期レンダリング完了時に
-  renderKey が変わっていれば古い結果を捨てる。削除済みアクセスは空表示+dismiss
+  PageEditView は body で draft から現在ページを読み、編集は draft メソッドへ委譲。
+  非同期レンダリング完了時に renderKey が変わっていれば古い結果を捨てる。
+  削除済みアクセスは空表示にする（削除ボタン側の dismiss に任せ、二重 dismiss しない）
+- 遷移は item ベースで統一する（ルート側が `.navigationDestination(item:)` のとき
+  子側で `NavigationLink(value:)` + `.navigationDestination(for:)` を混在させると、
+  値の解決が壊れて EditorView 自身が再 push される）。EditorView は
+  `editingPageID: UUID?` を行タップでセットし `.navigationDestination(item:)` で遷移。
+  行は Button+chevron ラベルにして `.onMove`/`.onDelete` を維持する
 - 関連して PageRow もページ値ではなく draft+pageID で受け取る（Filter All で
   親配列が丸ごと差し替わっても行ラベル・サムネイルが Observation で更新され、
   `.task(id: thumbnailKey)` が再発火する）

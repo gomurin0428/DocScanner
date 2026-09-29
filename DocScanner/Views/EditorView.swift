@@ -40,6 +40,10 @@ struct EditorView: View {
     @State private var undetectedImages: [UIImage] = []
     /// 追加取り込み時に検出できたページ。
     @State private var pendingDetectedPages: [ScannedPage] = []
+    /// ページ詳細遷移先のページ id（item ベース遷移用）。
+    /// （item ベースの navigationDestination と値ベース NavigationLink を
+    ///   同一スタックで混在させると遷移が壊れるため全て item ベースで統一する）
+    @State private var editingPageID: UUID?
 
     /// エディタを初期化する。
     /// - 入力: pages … 初期ページ配列
@@ -58,10 +62,17 @@ struct EditorView: View {
         List {
             Section {
                 ForEach(draft.pages) { page in
-                    // 値ベース遷移: 遷移先の入力を id に固定し親の再描画で再生成されないようにする
-                    NavigationLink(value: page.id) {
-                        PageRow(draft: draft, pageID: page.id,
-                                number: (draft.pages.firstIndex { $0.id == page.id } ?? 0) + 1)
+                    // item ベース遷移: editingPageID をセットして navigationDestination(item:) で遷移する
+                    Button { editingPageID = page.id } label: {
+                        HStack {
+                            PageRow(draft: draft, pageID: page.id,
+                                    number: (draft.pages.firstIndex { $0.id == page.id } ?? 0) + 1)
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .foregroundStyle(.tertiary)
+                        }
+                        .foregroundStyle(.primary)
+                        .contentShape(Rectangle())
                     }
                 }
                 .onMove { source, destination in
@@ -83,7 +94,7 @@ struct EditorView: View {
             }
         }
         .navigationTitle("New Document")
-        .navigationDestination(for: UUID.self) { id in
+        .navigationDestination(item: $editingPageID) { id in
             PageEditView(draft: draft, pageID: id)
         }
         .toolbar {

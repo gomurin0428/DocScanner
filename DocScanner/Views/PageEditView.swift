@@ -34,9 +34,9 @@ struct PageEditView: View {
     var body: some View {
         Group {
             if draft.page(id: pageID) == nil {
-                // 削除済みページへのアクセス（dismiss 中の一瞬）は空表示にする
+                // 削除済みページへのアクセス（dismiss 中の一瞬）は空表示にする。
+                // ここで dismiss すると削除ボタン側の dismiss と二重になり親まで pop されるため呼ばない
                 ContentUnavailableView("Page Deleted", systemImage: "trash")
-                    .onAppear { dismiss() }
             } else {
                 editContent
             }
@@ -82,8 +82,9 @@ struct PageEditView: View {
                     Label("Rotate Right", systemImage: "rotate.right")
                 }
                 Button(role: .destructive) {
-                    draft.remove(id: pageID)
+                    // 先に dismiss してから削除する（削除済み状態のまま再描画されるのを防ぐ）
                     dismiss()
+                    draft.remove(id: pageID)
                 } label: {
                     Label("Delete", systemImage: "trash")
                 }

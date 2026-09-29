@@ -24,3 +24,8 @@
 - 変更概要：PageEditView で 2 回目以降のフィルタ変更・回転がプレビューに反映されない問題を修正。原因はクロージャ遷移 `NavigationLink { PageEditView(page:) }` が親の pages 変更で新入力で再生成され、表示中ビューが状態/タスクから切り離されること。`@Observable final class DocumentDraft`（pages, page(id:), setFilter, rotate, remove, move, append, applyFilterToAll）を Model に新設し、EditorView は draft を共有、`NavigationLink(value:)` + `.navigationDestination(for: UUID.self)` で遷移先入力を固定。PageEditView は draft からページを読み編集を委譲、非同期レンダリング完了時に renderKey が変わっていれば古い結果を破棄。同様に Filter All で行ラベル・サムネイルが更新されない問題も PageRow を draft+pageID 参照化して解消。DocumentDraftTests 7 件追加（計 41 件）。
 - 関連PR/コミット：バグ修正コミット（feature/2026-09-29-ios-document-scanner）
 - 備考：ビルド/テストは iPhone 17 Pro (8EFCC0B0) + 専用 DerivedData-DocScanner-fix で実施（E2E 中の iPhone 17 D0B64A8A を汚さないため）。
+
+## 2026-09-30T00:30:00+09:00
+- 変更概要：EditorView のページ行タップで Edit Page の上に新しい EditorView が再 push される遷移バグを修正。原因はルートの `.navigationDestination(item:)` と子側の `NavigationLink(value:)` + `.navigationDestination(for:)` の混在。遷移を item ベースに統一（行タップで `editingPageID` をセットし `.navigationDestination(item:)` で遷移、行は Button+chevron で `.onMove`/`.onDelete` を維持）。PageEditView の削除は dismiss→remove の順にし、削除済み表示での自動 dismiss を除去して二重 dismiss（親まで pop し draft 喪失）を防止。
+- 関連PR/コミット：バグ修正コミット（feature/2026-09-29-ios-document-scanner）
+- 備考：テストは `-parallel-testing-enabled NO` で実行（クローンシミュレータ生成防止）。
