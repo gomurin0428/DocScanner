@@ -113,6 +113,32 @@ struct DocumentImageProcessor {
         return try render(oriented, scale: image.scale)
     }
 
+    /// 画像の長辺を指定ピクセル以下へ縮小する。
+    /// - 入力: image … 入力画像、maxPixelDimension … 長辺の上限（既定 3000）
+    /// - 出力: 縮小後の UIImage（アスペクト比保持、scale=1。既に上限内なら同一ピクセルサイズ）
+    /// - 処理: 向き正規化後、長辺が上限を超える場合のみ再描画で縮小する
+    /// - Throws: CGImage 取得失敗時 invalidImage
+    func downscaled(_ image: UIImage, maxPixelDimension: CGFloat = 3000) throws -> UIImage {
+        let cg = try normalizedCGImage(of: image)
+        let width = CGFloat(cg.width)
+        let height = CGFloat(cg.height)
+        let longEdge = max(width, height)
+        guard longEdge > maxPixelDimension else {
+            return UIImage(cgImage: cg, scale: 1, orientation: .up)
+        }
+        let ratio = maxPixelDimension / longEdge
+        let target = CGSize(width: (width * ratio).rounded(), height: (height * ratio).rounded())
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let rendered = UIGraphicsImageRenderer(size: target, format: format).image { ctx in
+            UIImage(cgImage: cg).draw(in: CGRect(origin: .zero, size: target))
+        }
+        guard rendered.cgImage != nil else {
+            throw ImageProcessingError.renderFailed
+        }
+        return rendered
+    }
+
     /// UIImage の向きを正規化した CGImage を返す。
     /// - 入力: image … 任意の imageOrientation を持つ UIImage
     /// - 出力: .up 向き相当の CGImage

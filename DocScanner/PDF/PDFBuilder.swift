@@ -45,19 +45,24 @@ struct PDFBuilder {
 
         // iOS 26 では一部サイズで beginPage(withBounds:) のページ境界が mediaBox に
         // 反映されずレンダラ初期値が残るため、先頭ページの実サイズで初期化する
-        let renderer = UIGraphicsPDFRenderer(bounds: pageBounds(for: images[0], pageSize: pageSize))
+        // pdfData クロージャは throw できないため、JPEG 再エンコードを先に済ませる。
+        // エンコード・デコードに失敗した場合は元画像を描くのではなくエラーにする
+        var encoded: [UIImage] = []
+        for image in images {
+            guard let jpeg = image.jpegData(compressionQuality: jpegQuality),
+                  let jpegImage = UIImage(data: jpeg) else {
+                throw PDFBuilderError.jpegEncodingFailed
+            }
+            encoded.append(jpegImage)
+        }
+
+        let renderer = UIGraphicsPDFRenderer(bounds: pageBounds(for: encoded[0], pageSize: pageSize))
         let data = renderer.pdfData { context in
-            for image in images {
+            for image in encoded {
                 let bounds = pageBounds(for: image, pageSize: pageSize)
                 context.beginPage(withBounds: bounds, pageInfo: [:])
-                let drawRect = contentRect(for: image, in: bounds)
                 // JPEG 再エンコードにより PDF 内の画像サイズを抑える
-                if let jpeg = image.jpegData(compressionQuality: jpegQuality),
-                   let jpegImage = UIImage(data: jpeg) {
-                    jpegImage.draw(in: drawRect)
-                } else {
-                    image.draw(in: drawRect)
-                }
+                image.draw(in: contentRect(for: image, in: bounds))
             }
         }
         return data

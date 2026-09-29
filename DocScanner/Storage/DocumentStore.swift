@@ -1,6 +1,24 @@
 import Foundation
 import PDFKit
 
+/// ドキュメントストアの処理中に発生するエラー。
+enum DocumentStoreError: LocalizedError, Equatable {
+    /// PDF として読み込めないファイルが存在した。
+    case unreadableDocument(String)
+    /// ファイル属性（作成日時・サイズ）を取得できなかった。
+    case missingFileAttributes(String)
+
+    /// エラーの英語説明文を返す。
+    var errorDescription: String? {
+        switch self {
+        case .unreadableDocument(let fileName):
+            return "The file '\(fileName)' could not be read as a PDF document."
+        case .missingFileAttributes(let fileName):
+            return "File attributes for '\(fileName)' could not be read."
+        }
+    }
+}
+
 /// 保存済み PDF 1 件の情報。
 struct SavedDocument: Identifiable, Hashable {
     /// ファイル URL。Identifiable の id としても使用する。
@@ -31,38 +49,47 @@ final class DocumentStore {
     /// ストアを初期化する。
     /// - 入力: directory … 保存先ディレクトリ。nil なら Documents/Scans を使用
     /// - 出力: 初期化済み DocumentStore
-    /// - 処理: ディレクトリを作成し、既存ファイルを読み込む（失敗時は一覧を空のままにする）
-    init(directory: URL? = nil) {
+    /// - 処理: ディレクトリを作成し、既存ファイルを読み込む
+    /// - Throws: ディレクトリ作成・列挙・属性取得・PDF 読込の失敗時に各エラー
+    init(directory: URL? = nil) throws {
         if let directory {
             self.directory = directory
         } else {
             let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             self.directory = docs.appendingPathComponent("Scans", isDirectory: true)
         }
-        try? FileManager.default.createDirectory(at: self.directory, withIntermediateDirectories: true)
-        try? reload()
+        try FileManager.default.createDirectory(at: self.directory, withIntermediateDirectories: true)
+        try reload()
     }
 
     /// ディレクトリを走査して documents を再構築する。
     /// - 入力: なし
     /// - 出力: なし（documents を更新する）
-    /// - 処理: *.pdf を列挙し、作成日・サイズ・ページ数を取得して新しい順に並べる
-    /// - Throws: ディレクトリ列挙失敗時に CocoaError
+    /// - 処理: *.pdf を列挙し、作成日・サイズ・ページ数を取得して新しい順に並べる。
+    ///   属性欠損や読み込めない PDF は暗黙スキップせずエラーにする
+    /// - Throws: 列挙失敗時 CocoaError、属性欠損時 missingFileAttributes、
+    ///   PDF 読込失敗時 unreadableDocument
     func reload() throws {
         let files = try FileManager.default.contentsOfDirectory(
             at: directory,
             includingPropertiesForKeys: [.creationDateKey, .fileSizeKey],
             options: [.skipsHiddenFiles]
         )
-        documents = files
+        documents = try files
             .filter { $0.pathExtension.lowercased() == "pdf" }
             .map { url in
-                let values = try? url.resourceValues(forKeys: [.creationDateKey, .fileSizeKey])
+                let values = try url.resourceValues(forKeys: [.creationDateKey, .fileSizeKey])
+                guard let createdAt = values.creationDate, let fileSize = values.fileSize else {
+                    throw DocumentStoreError.missingFileAttributes(url.lastPathComponent)
+                }
+                guard let pageCount = PDFDocument(url: url)?.pageCount else {
+                    throw DocumentStoreError.unreadableDocument(url.lastPathComponent)
+                }
                 return SavedDocument(
                     url: url,
-                    createdAt: values?.creationDate ?? .distantPast,
-                    fileSize: Int64(values?.fileSize ?? 0),
-                    pageCount: PDFDocument(url: url)?.pageCount ?? 0
+                    createdAt: createdAt,
+                    fileSize: Int64(fileSize),
+                    pageCount: pageCount
                 )
             }
             .sorted { $0.createdAt > $1.createdAt }

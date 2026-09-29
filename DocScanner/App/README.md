@@ -6,8 +6,9 @@
 
 | 型 | メソッド / プロパティ | 役割 |
 | --- | --- | --- |
-| `DocScannerApp` | `body` | @main の App。`DocumentStore` を生成し `DocumentListView` へ environment 注入する |
-| `DocScannerApp` | `store` | アプリ全体共有のドキュメントストア（@State で保持） |
+| `DocScannerApp` | `init()` | `DocumentStore` を生成（throws）。失敗時はエラーを保持してエラー画面へ分岐する |
+| `DocScannerApp` | `body` | 正常時は `DocumentListView` へ environment 注入、失敗時は「Storage Unavailable」画面 |
+| `DocScannerApp` | `store` / `storeError` | アプリ全体共有のストア（初期化失敗時 nil）と保持したエラー |
 
 ## クラス図
 
