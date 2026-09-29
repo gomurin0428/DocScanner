@@ -25,22 +25,27 @@
 - 関連PR/コミット：バグ修正コミット（feature/2026-09-29-ios-document-scanner）
 - 備考：ビルド/テストは iPhone 17 Pro (8EFCC0B0) + 専用 DerivedData-DocScanner-fix で実施（E2E 中の iPhone 17 D0B64A8A を汚さないため）。
 
-## 2026-09-30T00:30:00+09:00
+## 2026-09-29T17:34:34+09:00
 - 変更概要：EditorView のページ行タップで Edit Page の上に新しい EditorView が再 push される遷移バグを修正。原因はルートの `.navigationDestination(item:)` と子側の `NavigationLink(value:)` + `.navigationDestination(for:)` の混在。遷移を item ベースに統一（行タップで `editingPageID` をセットし `.navigationDestination(item:)` で遷移、行は Button+chevron で `.onMove`/`.onDelete` を維持）。PageEditView の削除は dismiss→remove の順にし、削除済み表示での自動 dismiss を除去して二重 dismiss（親まで pop し draft 喪失）を防止。
 - 関連PR/コミット：バグ修正コミット（feature/2026-09-29-ios-document-scanner）
 - 備考：テストは `-parallel-testing-enabled NO` で実行（クローンシミュレータ生成防止）。
 
-## 2026-09-30T02:00:00+09:00
+## 2026-09-29T18:55:22+09:00
 - 変更概要：TestFlight 配布準備。アプリターゲットの Debug/Release 両構成に `INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO` を追加（輸出コンプライアンス＝暗号化非該当）。README に配布セクション（アーカイブコマンド・エクスポート・輸出コンプライアンス）を追加。
 - 関連PR/コミット：TestFlight 準備コミット（feature/2026-09-29-ios-document-scanner）
 - 備考：アーカイブ・エクスポートは App Store Connect API キー + -allowProvisioningUpdates で自動署名。
 
-## 2026-09-30T04:00:00+09:00
+## 2026-09-29T19:07:00+09:00
 - 変更概要：実機で Save PDF が「The file couldn't be saved.」になる不具合を修正。contentsOfDirectory が symlink 解決後パスを返すため URL 等価照合が失敗していた。save/rename の一覧照合と uniqueURL の excluding 判定を lastPathComponent 比較に変更。裸の CocoaError を DocumentStoreError.savedDocumentNotFound/renamedDocumentNotFound に置換。回帰テスト testSymlinkedDirectorySaveAndRename 追加（symlink 親経由で修正前に Code=512 失敗を確認）。
 - 関連PR/コミット：バグ修正コミット（feature/2026-09-29-ios-document-scanner）
 - 備考：シミュレータでは一時ディレクトリへの symlink で再現（親を symlink にし init は子ディレクトリを作成）。
 
-## 2026-09-30T05:00:00+09:00
-- 変更概要：実写真で enhanced/白黒フィルタが破綻する問題を改善。背景推定による陰影除去（ShadingCorrector: 長長辺512px縮小→CIMorphologyMaximum r6→CIGaussianBlur r12→復元→CIDivideBlendMode で image/background 平坦化）を共通前段として導入し、レベル補正（CIColorMatrix→CIColorClamp→CIGammaAdjust）を各フィルタ定数で適用（enhanced 0.12/0.92/1.3+彩度1.15+シャープ0.5r1.5、grayscale 0.1/0.92/1.2、blackAndWhite 0.0/0.95/1.0→閾値0.88）。旧一律閾値0.5を廃止。回帰テスト3件追加（陰影付き合成紙、旧実装で下部紙黒化=0.0を確認）。Processing README・APPLE_FRAMEWORKS_NOTES・tests README 更新。
+## 2026-09-29T19:10:44+09:00
+- 変更概要：実写真で enhanced/白黒フィルタが破綻する問題を改善。背景推定による陰影除去（ShadingCorrector: 長辺512px縮小→CIMorphologyMaximum r6→CIGaussianBlur r12→復元→CIDivideBlendMode で image/background 平坦化）を共通前段として導入し、レベル補正（CIColorMatrix→CIColorClamp→CIGammaAdjust）を各フィルタ定数で適用（enhanced 0.12/0.92/1.3+彩度1.15+シャープ0.5r1.5、grayscale 0.1/0.92/1.2、blackAndWhite 0.0/0.95/1.0→閾値0.88）。旧一律閾値0.5を廃止。回帰テスト3件追加（陰影付き合成紙、旧実装で下部紙黒化=0.0を確認）。Processing README・APPLE_FRAMEWORKS_NOTES・tests README 更新。
 - 関連PR/コミット：フィルタ改善コミット（feature/2026-09-29-ios-document-scanner）
 - 備考：実写診断 JPEG は /Users/devin/diag/{original,enhanced,grayscale,blackAndWhite}.jpg に出力済み。
+
+## 2026-09-29T19:15:00+09:00
+- 変更概要：DocumentImageProcessor の CIContext を workingColorSpace=sRGB 固定に変更。陰影除去・レベル補正・閾値の定数はガンマエンコード済み sRGB で調整済みであり、デフォルトのリニア光ワーキングスペースでは除算/閾値結果がずれて blackAndWhite に黒ノイズ斑点が出ていたため。DocumentDetector のコンテキストは変更なし。ZZDiag を再実行し診断 JPEG を再生成。
+- 関連PR/コミット：フィルタ色空間修正コミット（feature/2026-09-29-ios-document-scanner）
+- 備考：APPLE_FRAMEWORKS_NOTES・TROUBLESHOOTING に sRGB ワーキングスペース依存の注意を追記。

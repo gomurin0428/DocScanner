@@ -27,7 +27,13 @@ enum ImageProcessingError: LocalizedError {
 struct DocumentImageProcessor {
 
     /// CI レンダリング用の共有コンテキスト。
-    private let context = CIContext()
+    /// 陰影除去・レベル補正・閾値の定数はガンマエンコード済み sRGB で調整済みのため
+    /// workingColorSpace を sRGB に固定する（デフォルトのリニア光だと除算・
+    /// 閾値処理の定数がずれ、2値化にノイズ斑点が出る）。
+    /// CGColorSpace.sRGB 生成は失敗しない定義名のため force unwrap する。
+    private let context = CIContext(options: [
+        .workingColorSpace: CGColorSpace(name: CGColorSpace.sRGB)!
+    ])
 
     /// プロセッサを初期化する。
     /// - 入力: なし

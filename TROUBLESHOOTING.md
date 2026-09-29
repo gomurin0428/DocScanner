@@ -88,3 +88,21 @@
   裸の CocoaError は廃止し `DocumentStoreError.savedDocumentNotFound` /
   `.renamedDocumentNotFound`（ファイル名入り英語メッセージ）を投げる。
   回帰テスト `testSymlinkedDirectorySaveAndRename`（symlink 親ディレクトリ経由）で再現検証
+
+# トラブルシューティング: blackAndWhite に黒いノイズ斑点が出る（レシピは正しいのに）
+
+## 症状
+- 陰影除去レシピ導入後も、実写真の blackAndWhite で影領域に黒い斑点ノイズが乗る。
+  プロトタイプ（CLI）の出力とは明らかに違う
+
+## 原因候補と切り分け
+- フィルタ構成・定数はプロトタイプと一致。違いは CIContext の
+  workingColorSpace のみ。デフォルト `CIContext()` はリニア光で演算するため、
+  ガンマエンコード済み sRGB で調整した除算・レベル・閾値の定数がずれる
+
+## 対処
+- 定数がチューニングされた色空間と同じワーキングスペースを使う:
+  `CIContext(options: [.workingColorSpace: CGColorSpace(name: CGColorSpace.sRGB)!])`。
+  DocumentImageProcessor のコンテキストのみこれに固定する（DocumentDetector は別物）。
+- 一般化すれば「CI フィルタ定数はワーキングカラースペース依存」—
+  閾値・レベル・除算レシピを移植するときはプロトタイプの context 設定も一緒に移植する

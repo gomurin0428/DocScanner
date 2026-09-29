@@ -31,6 +31,7 @@ DocScanner で使っている Apple フレームワークの使い方とハマ�
 - `CIColorControls`：`inputSaturation 0` でグレースケール、彩度補正にも使用。
 - `CISharpenLuminance`：エッジを強調（enhanced 用）。`inputSharpness 0.5`、`inputRadius 1.5`。
 - `CIColorThreshold`（iOS 14+）：平坦化後のグレーに対し `inputThreshold 0.88` で完全 2 値化（旧: 一律 0.5 は影のある紙を黒化させた）。
+- **CIContext のワーキングスペースは sRGB 固定が必須**：`CIContext(options: [.workingColorSpace: sRGB])` で作る。上記の除算・レベル・閾値定数はガンマエンコード済み sRGB 空間で調整済みであり、デフォルト（リニア光）だと定数がずれて blackAndWhite に黒ノイズ斑点が出る。DocumentImageProcessor のみこのコンテキストを使う。
 - `CIImage.oriented(.right/.down/.left)`：90° 回転。`right` = 時計回り 90°。負の回転数は mod 4 に正規化。
 - `UIImage.imageOrientation != .up` の入力は CGImage が「生の向き」のままなので、先に UIGraphicsImageRenderer で .up に正規化する（これを怠ると検出・フィルタ・回転の座標が全てずれる）。
 - `CIFilter(name:)` / `outputImage` は Optional → **force unwrap 禁止**。nil なら typed error を throw する。
