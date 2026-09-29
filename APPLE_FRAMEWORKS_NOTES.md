@@ -14,7 +14,7 @@ DocScanner で使っている Apple フレームワークの使い方とハマ�
 
 - 写真インポート時の書類検出に使用。`VNImageRequestHandler(ciImage:)` で `perform`。
 - パラメータ：`minimumConfidence 0.6`、`minimumAspectRatio 0.3`、`maximumObservations 1`、`quadratureTolerance 30`。
-- **座標系の罠**：`VNRectangleObservation` の topLeft/topRight/bottomLeft/bottomRight は「左下原点の正規化座標(0〜1)」。Core Image のピクセル座標へは `CGPoint(x: p.x * w, y: (1 - p.y) * h)` で変換する。
+- **座標系の罠**：`VNRectangleObservation` の topLeft/topRight/bottomLeft/bottomRight は「左下原点の正規化座標(0〜1)」。CIImage も左下原点なので変換は `CGPoint(x: p.x * w, y: p.y * h)`（`VNImagePointForNormalizedPoint` 相当）。`(1 - p.y)` で反転すると補正画像が上下ミラーになる。
 - `results` が空なら「検出できず」として明示的にエラーにし、UI 側で「Use Full Image / Cancel」のユーザー選択を取る（サイレントフォールバック禁止）。
 - シミュレータでも動作するが、コントラストの低い合成画像では検出に失敗することがある。テストは「暗い背景 + 白い四角形」で十分なコントラストを確保する。
 
@@ -26,13 +26,15 @@ DocScanner で使っている Apple フレームワークの使い方とハマ�
 
 ## Core Image（フィルタ・回転）
 
-- `CIColorControls`：`inputSaturation 0` でグレースケール、`inputContrast 1.15 + inputSaturation 1.1` で強調。
-- `CISharpenLuminance`：エッジを強調（enhanced 用）。`inputSharpness 0.4`。
-- `CIColorThreshold`（iOS 14+）：`inputThreshold 0.5` で完全 2 値化。前段にグレースケール + コントラスト強化を入れると綺麗。
+- **陰影除去（ShadingCorrector）**：実写真では紙の一部が暗い影になるため、グローバル閾値や一律コントラストでは破綻する。背景（紙の明るさ）を「長辺 512px 縮小 → `CIMorphologyMaximum` r6（文字を消す）→ `CIGaussianBlur` r12 → 元サイズへ拡大」で推定し、`CIDivideBlendMode`（inputImage=背景, backgroundImage=元画像）で `image / background` として平坦化する。これが enhanced / grayscale / blackAndWhite の共通前段。
+- **レベル補正**：`CIColorMatrix`（RGB スケール k=1/(white-black)、バイアス -black*k）→ `CIColorClamp` → `CIGammaAdjust(power)`。フィルタごとの定数：enhanced (0.12, 0.92, 1.3) + `CIColorControls` saturation 1.15 + `CISharpenLuminance` 0.5/r1.5、grayscale (0.1, 0.92, 1.2)、blackAndWhite (0.0, 0.95, 1.0) → `CIColorThreshold` 0.88。
+- `CIColorControls`：`inputSaturation 0` でグレースケール、彩度補正にも使用。
+- `CISharpenLuminance`：エッジを強調（enhanced 用）。`inputSharpness 0.5`、`inputRadius 1.5`。
+- `CIColorThreshold`（iOS 14+）：平坦化後のグレーに対し `inputThreshold 0.88` で完全 2 値化（旧: 一律 0.5 は影のある紙を黒化させた）。
 - `CIImage.oriented(.right/.down/.left)`：90° 回転。`right` = 時計回り 90°。負の回転数は mod 4 に正規化。
 - `UIImage.imageOrientation != .up` の入力は CGImage が「生の向き」のままなので、先に UIGraphicsImageRenderer で .up に正規化する（これを怠ると検出・フィルタ・回転の座標が全てずれる）。
 - `CIFilter(name:)` / `outputImage` は Optional → **force unwrap 禁止**。nil なら typed error を throw する。
-- 出力ピクセルサイズを保つため `UIImage(cgImage:scale:orientation:)` で元の scale を維持する。
+- モルフォロジ・ブラーは extent が膨張するため、各段で `cropped(to: extent)` して最終出力も入力 extent にクロップしピクセルサイズを維持する（`UIImage(cgImage:scale:orientation:)` で元の scale 維持）。
 
 ## UIGraphicsPDFRenderer
 

@@ -28,6 +28,9 @@
 | --- | --- |
 | `testGrayscaleProducesNeutralPixels` | 単色画像 grayscale → サンプル画素 R≈G≈B |
 | `testBlackAndWhiteProducesBinaryPixels` | グラデーション blackAndWhite → 全サンプル ≈0 or ≈255 |
+| `testBlackAndWhiteLiftsShadedPaper` | 陰影付き合成紙 → blackAndWhite で上/下の紙 ≥0.9・バー ≤0.1（旧一律閾値では下部が黒化する回帰テスト） |
+| `testEnhancedLiftsShadedPaper` | 下部紙 ≥0.85・バー ≤0.3（enhanced の陰影除去検証） |
+| `testGrayscaleNeutralAndLiftsShadedPaper` | 下部紙 R==G==B（±2/255）かつ明度 ≥0.85（grayscale 検証） |
 | `testFiltersPreservePixelSize` | 全フィルタでピクセルサイズ保持 |
 | `testRotateOneTurnSwapsDimensions` | 1 回転で縦横入替（200x100→100x200） |
 | `testRotateFourAndZeroKeepSize` | 4 回転・0 回転でサイズ不変 |

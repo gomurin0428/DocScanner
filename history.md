@@ -39,3 +39,8 @@
 - 変更概要：実機で Save PDF が「The file couldn't be saved.」になる不具合を修正。contentsOfDirectory が symlink 解決後パスを返すため URL 等価照合が失敗していた。save/rename の一覧照合と uniqueURL の excluding 判定を lastPathComponent 比較に変更。裸の CocoaError を DocumentStoreError.savedDocumentNotFound/renamedDocumentNotFound に置換。回帰テスト testSymlinkedDirectorySaveAndRename 追加（symlink 親経由で修正前に Code=512 失敗を確認）。
 - 関連PR/コミット：バグ修正コミット（feature/2026-09-29-ios-document-scanner）
 - 備考：シミュレータでは一時ディレクトリへの symlink で再現（親を symlink にし init は子ディレクトリを作成）。
+
+## 2026-09-30T05:00:00+09:00
+- 変更概要：実写真で enhanced/白黒フィルタが破綻する問題を改善。背景推定による陰影除去（ShadingCorrector: 長長辺512px縮小→CIMorphologyMaximum r6→CIGaussianBlur r12→復元→CIDivideBlendMode で image/background 平坦化）を共通前段として導入し、レベル補正（CIColorMatrix→CIColorClamp→CIGammaAdjust）を各フィルタ定数で適用（enhanced 0.12/0.92/1.3+彩度1.15+シャープ0.5r1.5、grayscale 0.1/0.92/1.2、blackAndWhite 0.0/0.95/1.0→閾値0.88）。旧一律閾値0.5を廃止。回帰テスト3件追加（陰影付き合成紙、旧実装で下部紙黒化=0.0を確認）。Processing README・APPLE_FRAMEWORKS_NOTES・tests README 更新。
+- 関連PR/コミット：フィルタ改善コミット（feature/2026-09-29-ios-document-scanner）
+- 備考：実写診断 JPEG は /Users/devin/diag/{original,enhanced,grayscale,blackAndWhite}.jpg に出力済み。

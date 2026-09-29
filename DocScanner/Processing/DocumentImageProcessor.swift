@@ -47,47 +47,45 @@ struct DocumentImageProcessor {
         case .original:
             break
         case .enhanced:
-            // コントラスト +15%、彩度 +10% をかけ、シャープ化で文字をくっきりさせる
-            guard let controls = CIFilter(name: "CIColorControls", parameters: [
-                kCIInputImageKey: ci,
-                kCIInputContrastKey: 1.15,
-                kCIInputSaturationKey: 1.1
+            // 陰影除去で平坦化 → レベル補正 → 彩度 +15% → 輝度シャープ化
+            let flat = try ShadingCorrector.flattened(ci)
+            var output = try ShadingCorrector.levels(flat, black: 0.12, white: 0.92, gamma: 1.3)
+            guard let saturated = CIFilter(name: "CIColorControls", parameters: [
+                kCIInputImageKey: output,
+                kCIInputSaturationKey: 1.15
             ])?.outputImage else {
                 throw ImageProcessingError.filterFailed("CIColorControls")
             }
+            output = saturated
             guard let sharpened = CIFilter(name: "CISharpenLuminance", parameters: [
-                kCIInputImageKey: controls,
-                kCIInputSharpnessKey: 0.4
+                kCIInputImageKey: output,
+                kCIInputSharpnessKey: 0.5,
+                kCIInputRadiusKey: 1.5
             ])?.outputImage else {
                 throw ImageProcessingError.filterFailed("CISharpenLuminance")
             }
             ci = sharpened
         case .grayscale:
-            guard let output = grayscaleFilter(for: ci) else {
-                throw ImageProcessingError.filterFailed("CIColorControls")
-            }
-            ci = output
+            // 陰影除去で平坦化 → グレースケール → レベル補正
+            let flat = try ShadingCorrector.flattened(ci)
+            let gray = try ShadingCorrector.grayscale(flat)
+            ci = try ShadingCorrector.levels(gray, black: 0.1, white: 0.92, gamma: 1.2)
         case .blackAndWhite:
-            // グレースケール化 → コントラスト強化 → 閾値で 2 値化
-            guard let gray = grayscaleFilter(for: ci) else {
-                throw ImageProcessingError.filterFailed("CIColorControls")
-            }
-            guard let contrast = CIFilter(name: "CIColorControls", parameters: [
-                kCIInputImageKey: gray,
-                kCIInputContrastKey: 1.4
-            ])?.outputImage else {
-                throw ImageProcessingError.filterFailed("CIColorControls")
-            }
+            // 陰影除去で平坦化 → グレースケール → レベル補正 → 閾値で 2 値化
+            let flat = try ShadingCorrector.flattened(ci)
+            let gray = try ShadingCorrector.grayscale(flat)
+            let leveled = try ShadingCorrector.levels(gray, black: 0.0, white: 0.95, gamma: 1.0)
             guard let threshold = CIFilter(name: "CIColorThreshold", parameters: [
-                kCIInputImageKey: contrast,
-                "inputThreshold": 0.5
+                kCIInputImageKey: leveled,
+                "inputThreshold": 0.88
             ])?.outputImage else {
                 throw ImageProcessingError.filterFailed("CIColorThreshold")
             }
             ci = threshold
         }
 
-        return try render(ci, scale: image.scale)
+        // 出力を入力 extent に合わせてピクセルサイズを保持する
+        return try render(ci.cropped(to: CIImage(cgImage: normalized).extent), scale: image.scale)
     }
 
     /// 画像を 90 度単位で時計回りに回転する。
@@ -156,17 +154,6 @@ struct DocumentImageProcessor {
             throw ImageProcessingError.invalidImage
         }
         return cg
-    }
-
-    /// グレースケール（彩度 0）フィルタの出力を返す。
-    /// - 入力: input … 入力 CIImage
-    /// - 出力: 彩度 0 の CIImage。フィルタ生成失敗時は nil
-    /// - 処理: CIColorControls を saturation 0 で生成する
-    private func grayscaleFilter(for input: CIImage) -> CIImage? {
-        CIFilter(name: "CIColorControls", parameters: [
-            kCIInputImageKey: input,
-            kCIInputSaturationKey: 0.0
-        ])?.outputImage
     }
 
     /// CIImage を CGImage へレンダリングし UIImage へ包む。
