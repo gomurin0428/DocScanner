@@ -19,3 +19,8 @@
 - 変更概要：シミュレータ E2E で見つかった 2 件の不具合を修正。(1) DocumentDetector が Vision の正規化座標を y 反転させて CIPerspectiveCorrection に渡していたため補正結果が上下ミラー・歪み・背景混入になっていた問題を `y: p.y * height`（CIImage も左下原点）に修正。回帰テスト testCorrectedImageIsNotMirroredAndCropsToDocument を追加（旧実装で失敗確認済み）。実写真フィクスチャでの出力も目視確認。(2) PageEditView のフィルタ変更でプレビューが更新されない問題を修正。EditorView のカスタム Binding(get:set:) は SwiftUI の依存解決対象外で body 再評価されなかったため、編集状態をローカル @State で保持し onChange コールバックで親へ通知する設計に変更（binding(for:) 廃止）。TROUBLESHOOTING に両件の落とし穴を追記。テスト計 34 件。
 - 関連PR/コミット：バグ修正コミット（feature/2026-09-29-ios-document-scanner）
 - 備考：補正出力 /tmp/docscanner-evidence/corrected-output.png で正立・矩形化・書類領域のみ切り出しを確認。
+
+## 2026-09-29T22:00:00+09:00
+- 変更概要：PageEditView で 2 回目以降のフィルタ変更・回転がプレビューに反映されない問題を修正。原因はクロージャ遷移 `NavigationLink { PageEditView(page:) }` が親の pages 変更で新入力で再生成され、表示中ビューが状態/タスクから切り離されること。`@Observable final class DocumentDraft`（pages, page(id:), setFilter, rotate, remove, move, append, applyFilterToAll）を Model に新設し、EditorView は draft を共有、`NavigationLink(value:)` + `.navigationDestination(for: UUID.self)` で遷移先入力を固定。PageEditView は draft からページを読み編集を委譲、非同期レンダリング完了時に renderKey が変わっていれば古い結果を破棄。同様に Filter All で行ラベル・サムネイルが更新されない問題も PageRow を draft+pageID 参照化して解消。DocumentDraftTests 7 件追加（計 41 件）。
+- 関連PR/コミット：バグ修正コミット（feature/2026-09-29-ios-document-scanner）
+- 備考：ビルド/テストは iPhone 17 Pro (8EFCC0B0) + 専用 DerivedData-DocScanner-fix で実施（E2E 中の iPhone 17 D0B64A8A を汚さないため）。

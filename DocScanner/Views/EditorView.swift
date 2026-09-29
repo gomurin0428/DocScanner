@@ -10,8 +10,10 @@ struct EditorView: View {
     /// 画面を閉じるための dismiss アクション。
     @Environment(\.dismiss) private var dismiss
 
-    /// 編集中のページ一覧。
-    @State var pages: [ScannedPage]
+    /// 編集中のページ一覧を保持する下書きモデル。
+    /// （値型の配列を直接 @State にすると、子ビューが PageEditView の再生成で
+    ///   状態を失うため @Observable の参照型で共有する）
+    @State private var draft: DocumentDraft
     /// ファイル名（拡張子なし）。
     @State private var fileName: String
     /// PDF のページサイズ。
@@ -44,7 +46,7 @@ struct EditorView: View {
     /// - 出力: 初期化済み EditorView
     /// - 処理: ページを保持し、ファイル名に日時ベースの既定名を設定する
     init(pages: [ScannedPage]) {
-        _pages = State(initialValue: pages)
+        _draft = State(initialValue: DocumentDraft(pages: pages))
         _fileName = State(initialValue: FileNameSanitizer.defaultName(for: Date()))
     }
 
@@ -55,25 +57,21 @@ struct EditorView: View {
     var body: some View {
         List {
             Section {
-                ForEach(pages) { page in
-                    NavigationLink {
-                        PageEditView(
-                            page: page,
-                            onChange: { update($0) },
-                            onDelete: { remove(page.id) }
-                        )
-                    } label: {
-                        PageRow(page: page, number: (pages.firstIndex { $0.id == page.id } ?? 0) + 1)
+                ForEach(draft.pages) { page in
+                    // 値ベース遷移: 遷移先の入力を id に固定し親の再描画で再生成されないようにする
+                    NavigationLink(value: page.id) {
+                        PageRow(draft: draft, pageID: page.id,
+                                number: (draft.pages.firstIndex { $0.id == page.id } ?? 0) + 1)
                     }
                 }
                 .onMove { source, destination in
-                    pages.move(fromOffsets: source, toOffset: destination)
+                    draft.move(fromOffsets: source, toOffset: destination)
                 }
                 .onDelete { offsets in
-                    pages.remove(atOffsets: offsets)
+                    offsets.map { draft.pages[$0].id }.forEach { draft.remove(id: $0) }
                 }
             } header: {
-                Text("Pages (\(pages.count))")
+                Text("Pages (\(draft.pages.count))")
             }
             Section {
                 TextField("File name", text: $fileName)
@@ -85,6 +83,9 @@ struct EditorView: View {
             }
         }
         .navigationTitle("New Document")
+        .navigationDestination(for: UUID.self) { id in
+            PageEditView(draft: draft, pageID: id)
+        }
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 Menu {
@@ -113,7 +114,7 @@ struct EditorView: View {
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
-            .disabled(pages.isEmpty || isSaving)
+            .disabled(draft.pages.isEmpty || isSaving)
             .padding(.horizontal)
         }
         .confirmationDialog("Apply Filter to All Pages", isPresented: $showFilterSheet) {
@@ -132,7 +133,7 @@ struct EditorView: View {
                     do {
                         // メモリ削減のため取り込み時に長辺を抑える
                         let processor = DocumentImageProcessor()
-                        pages.append(contentsOf: try images.map {
+                        draft.append(try images.map {
                             ScannedPage(baseImage: try processor.downscaled($0))
                         })
                     } catch {
@@ -183,23 +184,7 @@ struct EditorView: View {
         )
     }
 
-    /// ページ編集結果を id で pages へ書き戻す。
-    /// - 入力: updated … 編集後のページ
-    /// - 出力: なし
-    /// - 処理: 同じ id の要素が残っていれば差し替える（削除済みなら何もしない）
-    private func update(_ updated: ScannedPage) {
-        if let index = pages.firstIndex(where: { $0.id == updated.id }) {
-            pages[index] = updated
-        }
-    }
 
-    /// ページを削除する。
-    /// - 入力: id … 削除対象のページ識別子
-    /// - 出力: なし
-    /// - 処理: pages から該当要素を除去する
-    private func remove(_ id: UUID) {
-        pages.removeAll { $0.id == id }
-    }
 
     /// カメラ対応可否を確認してシートを開く。
     /// - 入力: なし
@@ -219,9 +204,7 @@ struct EditorView: View {
     /// - 出力: なし
     /// - 処理: pages の各要素の filter を書き換える
     private func applyFilterToAll(_ filter: PageFilter) {
-        for index in pages.indices {
-            pages[index].filter = filter
-        }
+        draft.applyFilterToAll(filter)
     }
 
     /// PhotosPicker の選択アイテムを読み込み検出処理を行う。
@@ -238,7 +221,7 @@ struct EditorView: View {
                     isImporting = false
                     pendingDetectedPages = result.detectedPages
                     if result.undetectedImages.isEmpty {
-                        pages.append(contentsOf: result.detectedPages)
+                        draft.append(result.detectedPages)
                         pendingDetectedPages = []
                     } else {
                         undetectedImages = result.undetectedImages
@@ -258,8 +241,8 @@ struct EditorView: View {
     /// - 出力: なし
     /// - 処理: 検出済み + 未検出を pages へ追加する
     private func acceptUndetected() {
-        pages.append(contentsOf: pendingDetectedPages)
-        pages.append(contentsOf: undetectedImages.map { ScannedPage(baseImage: $0) })
+        draft.append(pendingDetectedPages)
+        draft.append(undetectedImages.map { ScannedPage(baseImage: $0) })
         undetectedImages = []
         pendingDetectedPages = []
     }
@@ -269,7 +252,7 @@ struct EditorView: View {
     /// - 出力: なし
     /// - 処理: pendingDetectedPages のみ pages へ追加する
     private func discardUndetected() {
-        pages.append(contentsOf: pendingDetectedPages)
+        draft.append(pendingDetectedPages)
         undetectedImages = []
         pendingDetectedPages = []
     }
@@ -280,7 +263,7 @@ struct EditorView: View {
     /// - 処理: バックグラウンドで全ページをレンダリング → PDF 生成 → ストア保存
     private func save() {
         isSaving = true
-        let snapshot = pages
+        let snapshot = draft.pages
         let name = fileName
         let size = pageSize
         Task.detached {
@@ -320,8 +303,10 @@ struct EditorView: View {
 /// ページ一覧の 1 行（縮小サムネイル + ページ番号 + フィルタ名）。
 private struct PageRow: View {
 
-    /// 対象ページ。
-    let page: ScannedPage
+    /// 共有の下書きモデル（Filter All 等の変更が Observation 経由で反映されるように参照型で受け取る）。
+    let draft: DocumentDraft
+    /// 対象ページの識別子。
+    let pageID: UUID
     /// 表示用ページ番号。
     let number: Int
     /// サムネイル画像。
@@ -350,7 +335,8 @@ private struct PageRow: View {
             .frame(width: 44, height: 56)
             VStack(alignment: .leading) {
                 Text("Page \(number)").font(.headline)
-                Text(page.filter.displayName).font(.caption).foregroundStyle(.secondary)
+                Text(draft.page(id: pageID)?.filter.displayName ?? "-")
+                    .font(.caption).foregroundStyle(.secondary)
             }
         }
         .task(id: thumbnailKey) { await loadThumbnail() }
@@ -361,7 +347,8 @@ private struct PageRow: View {
     /// - 出力: ページ id・フィルタ・回転数を結合した文字列
     /// - 処理: 編集状態が変わったら task を再実行させるためのキーを作る
     private var thumbnailKey: String {
-        "\(page.id)-\(page.filter.rawValue)-\(page.quarterTurns)"
+        guard let page = draft.page(id: pageID) else { return "deleted-\(pageID)" }
+        return "\(page.id)-\(page.filter.rawValue)-\(page.quarterTurns)"
     }
 
     /// ページ画像を縮小レンダリングする。
@@ -369,11 +356,14 @@ private struct PageRow: View {
     /// - 出力: なし（thumbnail を更新する）
     /// - 処理: フィルタ適用後の画像を 88x112 以内へ縮小する
     private func loadThumbnail() async {
-        let snapshot = page
+        let key = thumbnailKey
+        guard let snapshot = draft.page(id: pageID) else { return }
         do {
             let rendered = try await Task.detached {
                 try snapshot.renderedImage()
             }.value
+            // レンダリング中に編集が進んでいたら古い結果を捨てる
+            guard thumbnailKey == key else { return }
             let maxSize = CGSize(width: 88, height: 112)
             let scale = min(maxSize.width / rendered.size.width,
                             maxSize.height / rendered.size.height, 1)

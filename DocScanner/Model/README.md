@@ -14,6 +14,11 @@
 | `PageFilter` | `id` / `displayName` | ForEach 用 id と英語表示名 |
 | `PDFPageSize` | `a4` / `letter` / `fitImage` | PDF ページサイズ種別 |
 | `PDFPageSize` | `id` / `displayName` / `fixedSize` | ForEach 用 id、表示名、固定 pt サイズ（fitImage は nil） |
+| `DocumentDraft` | `pages` | 編集中ページ一覧（@Observable で全ビューが変更を購読） |
+| `DocumentDraft` | `init(pages:)` | 下書き初期化 |
+| `DocumentDraft` | `page(id:)` | id でページ検索（見つからなければ nil） |
+| `DocumentDraft` | `setFilter(_:for:)` / `rotate(by:for:)` | 指定ページのフィルタ/回転更新（未知 id は no-op） |
+| `DocumentDraft` | `remove(id:)` / `move(fromOffsets:toOffset:)` / `append(_:)` / `applyFilterToAll(_:)` | 削除・並替・追加・全ページフィルタ |
 
 ## クラス図
 
@@ -42,7 +47,19 @@ classDiagram
         +displayName: String
         +fixedSize: CGSize?
     }
+    class DocumentDraft {
+        <<observable>>
+        +pages: [ScannedPage]
+        +page(id:) ScannedPage?
+        +setFilter(_:for:)
+        +rotate(by:for:)
+        +remove(id:)
+        +move(fromOffsets:toOffset:)
+        +append(_:)
+        +applyFilterToAll(_:)
+    }
     ScannedPage --> PageFilter
+    DocumentDraft o-- ScannedPage
     ScannedPage --> DocumentImageProcessor : renderedImage 実行
 ```
 
@@ -51,8 +68,11 @@ classDiagram
 ```mermaid
 sequenceDiagram
     participant View as PageEditView
+    participant Draft as DocumentDraft
     participant Page as ScannedPage
     participant Proc as DocumentImageProcessor
+    View->>Draft: page(id:) / setFilter(_:for:) / rotate(by:for:)
+    Draft-->>View: 変更通知（Observation）
     View->>Page: renderedImage(using: proc)
     Page->>Proc: rotate(baseImage, quarterTurns)
     Proc-->>Page: 回転済み UIImage

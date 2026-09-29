@@ -47,15 +47,23 @@
   回帰テスト `testCorrectedImageIsNotMirroredAndCropsToDocument`（黒マーカーで上下を区別）で検出する
 
 ## 症状（SwiftUI 画面遷移）
-- PageEditView で Filter を Enhanced/Grayscale/Black & White に変えてもプレビューが更新されない
-  （セグメントの選択だけ変わる）
+- PageEditView で Filter を変えてもプレビューが更新されない
+  （セグメントの選択だけ変わる）。親へ状態を通知する方式に変えても
+  初回の変更だけ反映され、2 回目以降（フィルタ・回転）が古いままになる
 
 ## 原因候補と切り分け
-- EditorView が渡していたカスタム `Binding(get:set:)` は SwiftUI の依存解決対象にならず、
-  set しても PageEditView の body が再評価されない。結果 `.task(id: renderKey)` が再発火せず
-  プレビューが古いままになる
+- 第 1 段階: EditorView が渡していたカスタム `Binding(get:set:)` は SwiftUI の
+  依存解決対象にならず、set しても PageEditView の body が再評価されない
+- 第 2 段階: `NavigationLink { PageEditView(page: ...) }` のクロージャ遷移だと
+  親の pages 変更で遷移先が新しい入力で再生成され、表示中ビューが
+  レンダリングを行う状態/タスクから切り離される
 
 ## 対処
-- 編集ビューはページをローカル `@State` で保持し、変更を `onChange` コールバックで親へ通知する
-  （`PageEditView.init(page:onChange:onDelete:)`）。親は id で配列要素を差し替える。
-  削除後の dismiss 中の stale index クラッシュ対策も同時に解消される
+- ページ集合を `@Observable final class DocumentDraft`（参照型）で共有し、
+  遷移は `NavigationLink(value: page.id)` + `.navigationDestination(for: UUID.self)`
+  で遷移先の入力を (draft, pageID) に固定する。PageEditView は body で draft から
+  現在ページを読み、編集は draft メソッドへ委譲。非同期レンダリング完了時に
+  renderKey が変わっていれば古い結果を捨てる。削除済みアクセスは空表示+dismiss
+- 関連して PageRow もページ値ではなく draft+pageID で受け取る（Filter All で
+  親配列が丸ごと差し替わっても行ラベル・サムネイルが Observation で更新され、
+  `.task(id: thumbnailKey)` が再発火する）

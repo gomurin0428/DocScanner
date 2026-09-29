@@ -43,6 +43,17 @@
 | `testCorrectedImageIsNotMirroredAndCropsToDocument` | 黒マーカー付き歪書類 → 左上が暗く他角が紙色（反転なし）かつ四隅3%が紙色（背景混入なし）。y反転の旧実装では失敗する回帰テスト |
 | `testUniformImageThrowsNoDocumentFound` | 一様グレー画像 → DocumentDetectionError.noDocumentFound |
 
+### DocumentDraftTests
+| テスト | 内容 |
+| --- | --- |
+| `testSetFilterUpdatesOnlyTargetPage` | setFilter で対象ページのみ変更、他は不変 |
+| `testRotateAccumulatesQuarterTurns` | +1/+1/-1 で quarterTurns=1 |
+| `testRemoveDeletesPage` | remove で要素削除、page(id:) が nil |
+| `testMoveReordersPages` | [A,B,C] → move(0→3) で [B,C,A] |
+| `testAppendAddsPagesAtEnd` | append で末尾へ順序通り追加 |
+| `testApplyFilterToAllChangesEveryPage` | 全ページへ同一フィルタ適用 |
+| `testUnknownIdOperationsAreNoOps` | 未知 id の setFilter/rotate/remove が no-op |
+
 ### FileNameSanitizerTests
 | テスト | 内容 |
 | --- | --- |
@@ -78,6 +89,7 @@ classDiagram
     class DocumentDetectorTests
     class FileNameSanitizerTests
     class DocumentStoreTests
+    class DocumentDraftTests
     class PageImporterTests
     class TestImageFactory
     PDFBuilderTests ..> TestImageFactory
