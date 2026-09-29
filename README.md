@@ -47,3 +47,21 @@ xcodebuild -project DocScanner.xcodeproj -scheme DocScanner \
 | `APPLE_FRAMEWORKS_NOTES.md` | VisionKit / Vision / Core Image / PDFKit の使い方とハマりどころ |
 | `TROUBLESHOOTING.md` | ビルド・実行時のトラブルと対処 |
 | `history.md` | 変更履歴（JST・秒精度） |
+
+## 配布（TestFlight / App Store）
+
+- アーカイブ（Xcode 27 RC、署名は App Store Connect API キーで自動管理）:
+
+```sh
+/Applications/Xcode-27.0-RC.app/Contents/Developer/usr/bin/xcodebuild \
+  -project DocScanner.xcodeproj -scheme DocScanner -configuration Release \
+  -destination 'generic/platform=iOS' -archivePath ~/builds/DocScanner.xcarchive \
+  archive -allowProvisioningUpdates \
+  -authenticationKeyPath ~/.appstoreconnect/private_keys/AuthKey_${APP_STORE_CONNECT_API_KEY_ID}.p8 \
+  -authenticationKeyID "$APP_STORE_CONNECT_API_KEY_ID" \
+  -authenticationKeyIssuerID "$APP_STORE_CONNECT_API_ISSUER_ID"
+```
+
+- エクスポート: `xcodebuild -exportArchive -exportOptionsPlist`（method=app-store-connect）。
+- 輸出コンプライアンス: 暗号化は非該当（`ITSAppUsesNonExemptEncryption = NO`、
+  Debug/Release 両構成に設定済み）。

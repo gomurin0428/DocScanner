@@ -29,3 +29,8 @@
 - 変更概要：EditorView のページ行タップで Edit Page の上に新しい EditorView が再 push される遷移バグを修正。原因はルートの `.navigationDestination(item:)` と子側の `NavigationLink(value:)` + `.navigationDestination(for:)` の混在。遷移を item ベースに統一（行タップで `editingPageID` をセットし `.navigationDestination(item:)` で遷移、行は Button+chevron で `.onMove`/`.onDelete` を維持）。PageEditView の削除は dismiss→remove の順にし、削除済み表示での自動 dismiss を除去して二重 dismiss（親まで pop し draft 喪失）を防止。
 - 関連PR/コミット：バグ修正コミット（feature/2026-09-29-ios-document-scanner）
 - 備考：テストは `-parallel-testing-enabled NO` で実行（クローンシミュレータ生成防止）。
+
+## 2026-09-30T02:00:00+09:00
+- 変更概要：TestFlight 配布準備。アプリターゲットの Debug/Release 両構成に `INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO` を追加（輸出コンプライアンス＝暗号化非該当）。README に配布セクション（アーカイブコマンド・エクスポート・輸出コンプライアンス）を追加。
+- 関連PR/コミット：TestFlight 準備コミット（feature/2026-09-29-ios-document-scanner）
+- 備考：アーカイブ・エクスポートは App Store Connect API キー + -allowProvisioningUpdates で自動署名。
