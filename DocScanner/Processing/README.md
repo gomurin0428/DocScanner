@@ -17,10 +17,20 @@ Core Image / Vision を使った画像処理（フィルタ・回転・書類検
 | `ShadingCorrector` | `flattened(_:)` (static) | CIDivideBlendMode で画像÷背景の平坦化（throws） |
 | `ShadingCorrector` | `grayscale(_:)` (static) | 彩度 0 グレースケール化（throws） |
 | `ShadingCorrector` | `levels(_:black:white:gamma:)` (static) | CIColorMatrix→CIColorClamp→CIGammaAdjust のレベル補正（throws） |
-| `DocumentDetectionError` | `noDocumentFound` / `invalidImage` / `visionFailed` / `correctionFailed` / `renderFailed` | 検出失敗の LocalizedError |
+| `DocumentDetectionError` | `noDocumentFound` / `invalidImage` / `visionFailed` / `correctionFailed` / `renderFailed` / `unexpectedMaskFormat` / `bitmapContextFailed` / `singularHomography` | 検出・フラット化失敗の LocalizedError |
 | `DocumentDetector` | `init()` | CIContext 生成 |
-| `DocumentDetector` | `detectAndCorrect(_:)` | VNDetectRectanglesRequest + CIPerspectiveCorrection で台形補正（throws） |
+| `DocumentDetector` | `detectAndCorrect(_:)` | VNDetectRectanglesRequest で四角形検出 → seg が一致すれば PageFlattener、なければ CIPerspectiveCorrection（throws） |
+| `DocumentDetector` | `quadsAgree(_:_:width:height:)` (static) | seg 四角形と検出四角形の 4 隅距離が max(W,H)×8% 以内か判定 |
+| `DocumentDetector` | `perspectiveCorrect(_:rectangle:scale:)` (private) | CIPerspectiveCorrection 適用 + レンダリング |
 | `DocumentDetector` | `normalizedCGImage(of:)` (private) | UIImage の向きを .up に正規化 |
+| `SegmentationMask` | `init(pixelBuffer:imageWidth:imageHeight:)` | Vision Float32 マスクを読み込む（形式不一致は throw） |
+| `SegmentationMask` | `init(width:height:values:imageWidth:imageHeight:)` | 合成マスク構築（テスト用） |
+| `SegmentationMask` | `value(at:)` | 画像ピクセル座標のマスク値を双線形補間 |
+| `PageBitmap` | `init(_:)` | CGImage → sRGB RGBA8 ビットマップ（throws） |
+| `PageBitmap` | `luminance(atX:y:)` / `sampleRGB(atX:y:into:)` | 最近傍輝度 / 双線形 RGB サンプル |
+| `PageFlattener` | `flatten(_:corners:mask:)` | マスク輪郭追跡 + Coons パッチで湾曲辺を矩形化（throws） |
+| `PagePoint` | `+` / `-` / `*` / `length` | Double 精度 2D 点（左上原点） |
+| `PageGeometry` | `solveLinear(_:_:)` / `homography(from:to:)` / `apply(_:to:)` / `arcLength(_:)` / `sample(_:at:)` (static) | 線形ソルバ・ホモグラフィ・曲線サンプリング（throws） |
 | `PageImporterError` | `loadFailed(index, message)` / `decodeFailed(index)` | 写真読み込み失敗の LocalizedError（index と元エラーメッセージ付き） |
 | `ImportResult` | `detectedPages` / `undetectedImages` | 検出済みページと未検出元画像の振り分け結果 |
 | `PageImporter` | `init()` | DocumentDetector と DocumentImageProcessor を生成 |
@@ -58,7 +68,21 @@ classDiagram
     }
     DocumentImageProcessor ..> ImageProcessingError : throws
     DocumentDetector ..> DocumentDetectionError : throws
+    class PageFlattener {
+        +flatten(image, corners, mask) CGImage
+    }
+    class SegmentationMask {
+        +value(at) Double
+    }
+    class PageGeometry {
+        <<utility>>
+        +homography(from:to:)$ [Double]
+    }
     DocumentDetector ..> VNDetectRectanglesRequest : 検出
+    DocumentDetector ..> VNDetectDocumentSegmentationRequest : seg+マスク
+    DocumentDetector --> PageFlattener : quadsAgree 合格時
+    PageFlattener --> SegmentationMask
+    PageFlattener --> PageGeometry
     DocumentDetector ..> CIPerspectiveCorrection : 補正
     PageImporter --> DocumentDetector
     PageImporter --> DocumentImageProcessor : 縮小

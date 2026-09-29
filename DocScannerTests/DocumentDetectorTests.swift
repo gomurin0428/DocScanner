@@ -85,6 +85,30 @@ final class DocumentDetectorTests: XCTestCase {
         }
     }
 
+    /// quadsAgree の閾値判定を検証する。
+    /// - 入力: なし
+    /// - 出力: なし
+    /// - 処理: 同一四角形は true、1 角 5% 移動は true、1 角 12% 移動は false、
+    ///   個数違いは false であることを検査する
+    func testQuadsAgreeThreshold() {
+        let a: [CGPoint] = [
+            CGPoint(x: 0.2, y: 0.8), CGPoint(x: 0.8, y: 0.8),
+            CGPoint(x: 0.8, y: 0.2), CGPoint(x: 0.2, y: 0.2)
+        ]
+        XCTAssertTrue(DocumentDetector.quadsAgree(a, a, width: 1000, height: 1000))
+        // 1 角を 5% (max(W,H) の 5%) だけずらす → 閾値内で一致
+        var near = a
+        near[0] = CGPoint(x: 0.2 + 0.05, y: 0.8)
+        XCTAssertTrue(DocumentDetector.quadsAgree(a, near, width: 1000, height: 1000))
+        // 1 角を 12% ずらす → 閾値超過で不一致
+        var far = a
+        far[0] = CGPoint(x: 0.2 + 0.12, y: 0.8)
+        XCTAssertFalse(DocumentDetector.quadsAgree(a, far, width: 1000, height: 1000))
+        // 個数違いは不一致
+        XCTAssertFalse(DocumentDetector.quadsAgree(Array(a.dropLast()), a,
+                                                   width: 1000, height: 1000))
+    }
+
     /// 一様なグレー画像では noDocumentFound が送出されることを検証する。
     /// - 入力: なし
     /// - 出力: なし

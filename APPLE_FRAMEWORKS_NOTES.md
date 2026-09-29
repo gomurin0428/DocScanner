@@ -37,6 +37,14 @@ DocScanner で使っている Apple フレームワークの使い方とハマ�
 - `CIFilter(name:)` / `outputImage` は Optional → **force unwrap 禁止**。nil なら typed error を throw する。
 - モルフォロジ・ブラーは extent が膨張するため、各段で `cropped(to: extent)` して最終出力も入力 extent にクロップしピクセルサイズを維持する（`UIImage(cgImage:scale:orientation:)` で元の scale 維持）。
 
+## VNDetectDocumentSegmentationRequest（書類領域セグメンテーション）
+
+- iOS 15+。`VNRectangleObservation` を返し、`globalSegmentationMask`（低解像度 Float32 確率マスク、`kCVPixelFormatType_OneComponent32Float`）が取れる。マスクバッファは行が上から順。
+- **プラットフォーム差が大きい**：本環境では macOS CLI は実写に conf 0.99 + 正しい四角形を返すが、iOS シミュレータ（26.5）はコンテンツ無関係に「画面下端 1/4 帯」程度の退化四角形を conf 0.83–0.99 で返す（無地画像でも 0.8 超）。同一画像・同一プロセスでも観測が変わることがある。実機では要検証だが、seg 結果は信用せず必ず別ソースで検証する設計にする。
+- 対策: 先に `VNDetectRectanglesRequest` で四角形を確定させ、seg は `confidence >= 0.8` + マスクあり + 4 隅が検出四角形と max(W,H)×8% 以内（`DocumentDetector.quadsAgree`）のときだけ輪郭追跡フラット化に使う。Vision/VisionKit/Core Image に公開のデワープ API は無いため、マスク輪郭追跡 + ホモグラフィ空間 Coons パッチで自前実装（`PageFlattener`）。
+- 輪郭追跡: 四角形各辺の外向き法線を −80..+80px 走査して mask≥0.5 の最外点を取り、±20px 内で内外 3px 平均輝度差（±2px ギャップ）が最大の位置で精緻化（>12 で採用）。メディアン5→移動平均7 で平滑化し 4px 内側へ寄せる。px 定数は max(W,H)/3000 でスケール。
+- Coons パッチ: 4 辺を矩形空間へ写像（ホモグラフィ）し `(u,v) → 辺補間 + 辺補間 − 双線形補間` で内部を充填、逆ホモグラフィで元画像を双線形サンプル（1 回リサンプル）。出力サイズ = 写像後の上下辺平均弧長 × 左右辺平均弧長。
+
 ## UIGraphicsPDFRenderer
 
 - 可変ページサイズ：レンダラ生成時の bounds はダミーでよく、`context.beginPage(withBounds:)` でページごとのサイズを指定する。

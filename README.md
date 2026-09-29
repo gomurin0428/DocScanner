@@ -5,7 +5,7 @@
 ## 機能
 
 - **スキャン**: VNDocumentCameraViewController による複数ページ連続スキャン（自動エッジ検出・台形補正）
-- **写真インポート**: PhotosPicker 複数選択 → VNDetectRectanglesRequest で書類検出 + CIPerspectiveCorrection で台形補正（未検出時は「Use Full Image / Cancel」を確認）
+- **写真インポート**: PhotosPicker 複数選択 → VNDetectRectanglesRequest で書類検出 + 台形補正。VNDetectDocumentSegmentationRequest のマスクが取得でき検出四角形と一致すれば輪郭追跡で湾曲した紙の辺も直線化（曲線輪郭 → Coons パッチ矩形化）。未検出時は「Use Full Image / Cancel」を確認
 - **編集**: ページごとのフィルタ（Original / Enhanced / Grayscale / Black & White）、左右 90° 回転、削除、並べ替え（ドラッグ）、全ページ一括フィルタ、ページ追加
 - **PDF 出力**: A4 / Letter（18pt マージン aspect-fit 中央配置）/ Fit to Image、JPEG 再エンコードでファイルサイズ抑制
 - **管理**: Documents/Scans に保存、一覧表示（サムネイル・日時・ページ数・サイズ）、リネーム・削除・共有（ShareLink）、PDFKit プレビュー
@@ -29,7 +29,7 @@ xcodebuild -project DocScanner.xcodeproj -scheme DocScanner \
   -destination 'platform=iOS Simulator,id=<UDID>' test
 ```
 
-`PDFBuilderTests` / `DocumentImageProcessorTests` / `DocumentDetectorTests` / `FileNameSanitizerTests` / `DocumentStoreTests`（計 27 件）が実行される。
+`PDFBuilderTests` / `DocumentImageProcessorTests` / `DocumentDetectorTests` / `PageFlattenerTests` / `FileNameSanitizerTests` / `DocumentStoreTests` / `DocumentDraftTests` / `PageImporterTests` が実行される。
 
 ## 構成
 

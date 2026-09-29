@@ -54,3 +54,8 @@
 - 変更概要：TestFlight へ build 2 を配布するため CURRENT_PROJECT_VERSION を 1→2 に更新（アプリ/テストターゲットの Debug+Release 全構成、MARKETING_VERSION は 1.0 のまま）。アーカイブ・エクスポート・altool でのアップロードを App Store Connect API キーで実施。
 - 関連PR/コミット：バージョン更新コミット（feature/2026-09-29-ios-document-scanner）
 - 備考：アップロード後は /v1/builds API で processingState=VALID / internalBuildState=IN_BETA_TESTING を確認。
+
+## 2026-09-29T20:35:00+09:00
+- 変更概要：紙の湾曲・反り輪郭を追跡してページを正確な矩形へ引き伸ばすフラット化を追加。VNDetectDocumentSegmentationRequest の四角形+セグメンテーションマスクを使い、各辺の外向き法線をマスク走査→輝度エッジ精緻化→平滑化し、ホモグラフィ空間の Coons パッチで一括リサンプルする PageFlattener/PageGeometry を新設。実環境で seg モデルが退化四角形を返すプラットフォーム差（シミュレータで下端帯の quad を高信頼度で返す）を確認したため、VNDetectRectanglesRequest の四角形と 4 隅距離 ≤8% で一致する場合のみフラット化を採用（quadsAgree ゲート）。新規テスト PageFlattenerTests 3 件 + quadsAgree 1 件。macOS CLI 移植検証では実写が 1948x2688 でプロトタイプと一致（diff mean 0.89）。CURRENT_PROJECT_VERSION=3。
+- 関連PR/コミット：フラット化機能コミット（feature/2026-09-29-ios-document-scanner）
+- 備考：シミュレータでは常に矩形検出フォールバック経路になる（seg quad が不一致のため）。実機でのフラット化は要実写確認。
