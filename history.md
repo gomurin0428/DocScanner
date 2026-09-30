@@ -71,6 +71,6 @@
 - 備考：カメラ UI 自体はシミュレータで動作確認不可（デバイス無し）。generic/platform=iOS でのコンパイル確認を実施。
 
 ## 2026-09-30T10:02:35+09:00
-- 変更概要：機能レビュー指摘 7 件を修正。sanitize 後の同名 rename を no-op 化し、symlink 名比較を維持。複数削除は reload 前に対象をスナップショット。固定 A4/Letter PDF の余白判定を PDFPageSize のみに基づかせ、.fitImage は全面描画を維持。ImportResult を入力順 Entry に変更し、Use Full Image / Cancel の両経路で順序を保持。カメラの configure/start/stop を sessionQueue で直列化して世代ガードを導入し、capture pending と完了/エラーを MainActor 上で一括更新。PageFlattener の top-origin 非対称マーカー回帰テストを追加し、PageBitmap.draw の向きは変更せず確認。関連 README と TROUBLESHOOTING を更新。
+- 変更概要：機能レビュー指摘 7 件を検証し、6 件を修正。sanitize 後の同名 rename を no-op 化し、symlink 名比較を維持。複数削除は reload 前に対象をスナップショット。固定 A4/Letter PDF の余白判定を PDFPageSize のみに基づかせ、.fitImage は全面描画を維持。ImportResult を入力順 Entry に変更し、Use Full Image / Cancel の両経路で順序を保持。カメラの configure/start/stop を sessionQueue で直列化して世代ガードを導入し、capture pending と完了/エラーを MainActor 上で一括更新。上下反転の指摘は再現せず、PageFlattener の top-origin 非対称マーカー回帰テストを追加し、PageBitmap.draw の向きは変更せず確認。関連 README と TROUBLESHOOTING を更新。
 - 検証：Xcode 27 RC / iOS Simulator D0B64A8A でフォーカス 29/29、全体 60/60 pass。generic/platform=iOS Release build 成功。
 - 備考：シミュレータにカメラがないため物理カメラ UI は未検証。SwiftLint 実行ファイル/構成なし。
