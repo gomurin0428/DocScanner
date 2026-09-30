@@ -21,10 +21,10 @@ struct DocumentListView: View {
     @State private var isProcessing = false
     /// エラーアラートに表示するメッセージ。
     @State private var errorMessage: String?
-    /// 「ドキュメントが検出できなかった」確認アラート用の未検出画像。
-    @State private var undetectedImages: [UIImage] = []
-    /// 検出済みだがアラート回答待ちのページ。
-    @State private var pendingDetectedPages: [ScannedPage] = []
+    /// アラート回答待ちの順序付きインポート結果。
+    @State private var pendingImportResult: ImportResult?
+    /// 未検出画像の確認アラート表示状態。
+    @State private var showUndetectedAlert = false
     /// リネーム対象のドキュメント。
     @State private var renameTarget: SavedDocument?
     /// リネーム入力文字列。
@@ -87,16 +87,13 @@ struct DocumentListView: View {
                         showCamera = false
                         handleImages(images)
                     },
-                    onError: { error in
-                        showCamera = false
-                        present(error)
-                    },
                     onCancel: { showCamera = false }
                 )
                 .ignoresSafeArea()
             }
             .photosPicker(isPresented: $showPicker, selection: $pickedItems,
-                          maxSelectionCount: 20, matching: .images)
+                          maxSelectionCount: 20, selectionBehavior: .ordered,
+                          matching: .images)
             .onChange(of: pickedItems) { _, items in
                 guard !items.isEmpty else { return }
                 pickedItems = []
@@ -107,7 +104,7 @@ struct DocumentListView: View {
             } message: {
                 Text(errorMessage ?? "")
             }
-            .alert("No document edges were detected.", isPresented: undetectedAlertPresented) {
+            .alert("No document edges were detected.", isPresented: $showUndetectedAlert) {
                 Button("Use Full Image") { acceptUndetectedImages() }
                 Button("Cancel", role: .cancel) { discardUndetectedImages() }
             }
@@ -124,17 +121,6 @@ struct DocumentListView: View {
                 }
             }
         }
-    }
-
-    /// 未検出アラートの表示バインディングを返す。
-    /// - 入力: なし
-    /// - 出力: undetectedImages が空でないことを表す Binding
-    /// - 処理: 配列の空/非空を Bool バインディングに変換する
-    private var undetectedAlertPresented: Binding<Bool> {
-        Binding(
-            get: { !undetectedImages.isEmpty },
-            set: { if !$0 { undetectedImages = [] } }
-        )
     }
 
     /// リネームアラートの表示バインディングを返す。
@@ -178,8 +164,10 @@ struct DocumentListView: View {
                 }
             }
             .onDelete { offsets in
-                for index in offsets {
-                    delete(store.documents[index])
+                do {
+                    try store.delete(at: offsets)
+                } catch {
+                    present(error)
                 }
             }
         }
@@ -187,7 +175,7 @@ struct DocumentListView: View {
 
     /// PhotosPicker の選択アイテムを読み込み、書類検出を実行する。
     /// - 入力: items … 選択された PhotosPickerItem 配列
-    /// - 出力: なし（draftPages または undetectedImages を更新する）
+    /// - 出力: なし（draftPages または pendingImportResult を更新する）
     /// - 処理: バックグラウンドで画像ロード → 各画像に対して検出を試行し、
     ///   検出できたものはページ化、失敗したものは確認アラート用に保持する
     private func importItems(_ items: [PhotosPickerItem]) {
@@ -207,9 +195,8 @@ struct DocumentListView: View {
 
     /// UIImage 配列を書類検出パイプラインへ通し結果を反映する（カメラ・写真共通）。
     /// - 入力: images … 取り込み済み画像配列
-    /// - 出力: なし（draftPages または undetectedImages を更新する）
-    /// - 処理: バックグラウンドで makePages を実行し、検出済みはページ化・
-    ///   未検出は確認アラート用に保持する
+    /// - 出力: なし（draftPages または pendingImportResult を更新する）
+    /// - 処理: バックグラウンドで makePages を実行し、順序付き結果を保持して選択を確認する
     private func handleImages(_ images: [UIImage]) {
         isProcessing = true
         Task.detached {
@@ -217,11 +204,12 @@ struct DocumentListView: View {
                 let result = try PageImporter().makePages(from: images)
                 await MainActor.run {
                     isProcessing = false
-                    pendingDetectedPages = result.detectedPages
                     if result.undetectedImages.isEmpty {
-                        if !result.detectedPages.isEmpty { draftPages = result.detectedPages }
+                        let pages = result.pages(includingUndetected: false)
+                        if !pages.isEmpty { draftPages = pages }
                     } else {
-                        undetectedImages = result.undetectedImages
+                        pendingImportResult = result
+                        showUndetectedAlert = true
                     }
                 }
             } catch {
@@ -236,23 +224,21 @@ struct DocumentListView: View {
     /// 未検出画像をそのままページとして採用しエディタを開く。
     /// - 入力: なし
     /// - 出力: なし
-    /// - 処理: pendingDetectedPages と未検出画像を結合して draftPages に設定する
+    /// - 処理: 全 Entry を入力順にページ化して draftPages に設定する
     private func acceptUndetectedImages() {
-        let extra = undetectedImages.map { ScannedPage(baseImage: $0) }
-        undetectedImages = []
-        let all = pendingDetectedPages + extra
-        pendingDetectedPages = []
+        let all = pendingImportResult?.pages(includingUndetected: true) ?? []
+        pendingImportResult = nil
         if !all.isEmpty { draftPages = all }
     }
 
     /// 未検出画像を破棄し、検出済み分のみでエディタを開く。
     /// - 入力: なし
     /// - 出力: なし
-    /// - 処理: undetectedImages をクリアし pendingDetectedPages を draftPages に設定する
+    /// - 処理: 検出済み Entry のみを入力順に draftPages へ設定する
     private func discardUndetectedImages() {
-        undetectedImages = []
-        if !pendingDetectedPages.isEmpty { draftPages = pendingDetectedPages }
-        pendingDetectedPages = []
+        let detected = pendingImportResult?.pages(includingUndetected: false) ?? []
+        pendingImportResult = nil
+        if !detected.isEmpty { draftPages = detected }
     }
 
     /// ドキュメントを削除する。

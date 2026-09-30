@@ -20,12 +20,49 @@ enum PageImporterError: LocalizedError {
     }
 }
 
-/// インポート結果。書類検出できたページと、検出できなかった元画像に分けて保持する。
+/// 入力順を保った写真インポート結果。
 struct ImportResult {
-    /// 検出・台形補正済みのページ。
-    var detectedPages: [ScannedPage]
-    /// 書類が検出できなかった元画像（UI が「Use Full Image / Cancel」を確認する）。
-    var undetectedImages: [UIImage]
+    /// 入力順の検出結果。
+    enum Entry {
+        /// 検出・補正済みページ。
+        case detected(ScannedPage)
+        /// 書類が検出できなかった元画像。
+        case undetected(UIImage)
+    }
+
+    /// 入力と同じ順序の検出結果。
+    let entries: [Entry]
+
+    /// 検出・補正済みページを入力順で返す。
+    var detectedPages: [ScannedPage] {
+        entries.compactMap {
+            guard case .detected(let page) = $0 else { return nil }
+            return page
+        }
+    }
+
+    /// 書類を検出できなかった元画像を入力順で返す。
+    var undetectedImages: [UIImage] {
+        entries.compactMap {
+            guard case .undetected(let image) = $0 else { return nil }
+            return image
+        }
+    }
+
+    /// ユーザーの選択に従いページを入力順で再構成する。
+    /// - 入力: includingUndetected … 未検出画像もページとして採用するか
+    /// - 出力: 入力順に再構成された ScannedPage 配列
+    /// - 処理: 検出済みは常に含め、未検出はフル画像採用時のみページ化する
+    func pages(includingUndetected: Bool) -> [ScannedPage] {
+        entries.compactMap { entry in
+            switch entry {
+            case .detected(let page):
+                return page
+            case .undetected(let image):
+                return includingUndetected ? ScannedPage(baseImage: image) : nil
+            }
+        }
+    }
 }
 
 /// 写真ライブラリからの画像読み込みと書類検出をまとめるインポータ。
@@ -75,22 +112,23 @@ struct PageImporter {
 
     /// 画像配列を縮小して書類検出を行い、結果を振り分ける。
     /// - 入力: images … 入力画像配列
-    /// - 出力: ImportResult（detectedPages / undetectedImages）
+    /// - 出力: ImportResult（元の入力順を保持する entries）
     /// - 処理: 各画像を最大辺 3000px へ縮小 → detectAndCorrect を試行。
-    ///   noDocumentFound は undetectedImages へ、それ以外のエラーは throw
+    ///   noDocumentFound は undetected、成功は detected として順序通り記録し、
+    ///   それ以外のエラーは throw
     /// - Throws: 縮小・検出・補正の失敗時に各エラー
     func makePages(from images: [UIImage]) throws -> ImportResult {
-        var result = ImportResult(detectedPages: [], undetectedImages: [])
+        var entries: [ImportResult.Entry] = []
         for image in images {
             // メモリ削減のため検出前に長辺を抑える
             let downscaled = try processor.downscaled(image)
             do {
                 let corrected = try detector.detectAndCorrect(downscaled)
-                result.detectedPages.append(ScannedPage(baseImage: corrected))
+                entries.append(.detected(ScannedPage(baseImage: corrected)))
             } catch let error as DocumentDetectionError where error == .noDocumentFound {
-                result.undetectedImages.append(downscaled)
+                entries.append(.undetected(downscaled))
             }
         }
-        return result
+        return ImportResult(entries: entries)
     }
 }

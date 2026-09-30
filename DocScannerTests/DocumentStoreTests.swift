@@ -86,6 +86,35 @@ final class DocumentStoreTests: XCTestCase {
         XCTAssertEqual(store.documents.first?.name, "Invoice")
     }
 
+    /// 同じ名前（空白を含み sanitize 後に一致）へのリネームでは移動しないことを検証する。
+    /// - 入力: なし
+    /// - 出力: なし
+    /// - 処理: 保存後に空白付き同名を指定し、同一 SavedDocument とファイルを保つ
+    func testRenameToSanitizedSameNameIsNoOp() throws {
+        let saved = try store.save(pdfData: makePDFData(), name: "Report")
+        let renamed = try store.rename(saved, to: "  Report  ")
+        XCTAssertEqual(renamed, saved)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: saved.url.path))
+        XCTAssertEqual(store.documents.map(\.url.lastPathComponent), ["Report.pdf"])
+    }
+
+    /// 複数オフセット削除が reload による index 変化の影響を受けないことを検証する。
+    /// - 入力: なし
+    /// - 出力: なし
+    /// - 処理: 3 PDF の初期一覧で index 1,2 を削除し、初期 index 0 のみ残す
+    func testDeleteAtOffsetsKeepsOnlyInitialIndexZero() throws {
+        _ = try store.save(pdfData: makePDFData(), name: "First")
+        _ = try store.save(pdfData: makePDFData(), name: "Second")
+        _ = try store.save(pdfData: makePDFData(), name: "Third")
+        let initialFirst = try XCTUnwrap(store.documents.first)
+
+        try store.delete(at: IndexSet([1, 2]))
+
+        XCTAssertEqual(store.documents.map(\.url.lastPathComponent),
+                       [initialFirst.url.lastPathComponent])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: initialFirst.url.path))
+    }
+
     /// reload で外部から追加したファイルが拾われることを検証する。
     /// - 入力: なし
     /// - 出力: なし
@@ -136,6 +165,8 @@ final class DocumentStoreTests: XCTestCase {
         // 同名へのリネームは同一ファイルなので " (2)" にならない
         let same = try linkedStore.rename(saved, to: "Report")
         XCTAssertEqual(same.name, "Report")
+        XCTAssertEqual(same, saved)
+        XCTAssertTrue(fm.fileExists(atPath: saved.url.path))
         XCTAssertEqual(linkedStore.documents.count, 1)
 
         // 別名へのリネームは成功する

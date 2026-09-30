@@ -15,8 +15,9 @@ PDF ファイル名のサニタイズと保存ディレクトリ管理を格納�
 | `DocumentStore` | `init(directory:)` | ディレクトリ作成 + 初回 reload（throws、テスト用に注入可能） |
 | `DocumentStore` | `reload()` | *.pdf 列挙しメタ情報付きで一覧再構築（throws。属性欠損→missingFileAttributes、読めない PDF→unreadableDocument） |
 | `DocumentStore` | `save(pdfData:name:)` | ユニーク名（"Name (2)" 等）で保存し SavedDocument を返す（throws。列挙 URL は symlink 解決済みパスになり得るためファイル名で照合） |
-| `DocumentStore` | `delete(_:)` | ファイル削除 + reload（throws） |
-| `DocumentStore` | `rename(_:to:)` | ユニーク名へ移動 + reload（throws） |
+| `DocumentStore` | `delete(_:)` | 単一ファイル削除 + reload（throws） |
+| `DocumentStore` | `delete(at:)` | reload 前に IndexSet の対象を snapshot して順に単一削除へ委譲（throws） |
+| `DocumentStore` | `rename(_:to:)` | ユニーク名へ移動 + reload（throws）。サニタイズ後のファイル名が同じなら元の SavedDocument を返す |
 | `DocumentStore` | `uniqueURL(for:excluding:)` (private) | 重複しない "Base (n).pdf" URL を決定 |
 
 ## クラス図
@@ -29,6 +30,7 @@ classDiagram
         +reload()
         +save(pdfData, name) SavedDocument
         +delete(document)
+        +delete(at offsets)
         +rename(document, to) SavedDocument
     }
     class SavedDocument {

@@ -21,6 +21,8 @@
 | `testA4PageBounds` | .a4 のページ境界が ≈595x842pt |
 | `testLetterPageBounds` | .letter のページ境界が ≈612x792pt |
 | `testFitImagePageBounds` | .fitImage のページ境界が画像 pt サイズと一致 |
+| `testFixedPageSizesKeepMarginsForMatchingImageDimensions` | A4/Letter と同じピクセル寸法の黒画像でも 18pt の余白が白く残る |
+| `testFitImageDrawsEdgeToEdge` | .fitImage は画像と同じ寸法のページ端まで黒く描画 |
 | `testEmptyImagesThrowsNoPages` | 空配列 → PDFBuilderError.noPages |
 
 ### DocumentImageProcessorTests
@@ -54,12 +56,20 @@
 | `testVisibleCropCornersMapToViewCorners` | 3:4 バッファを 9:19.5 ビューで aspect-fill 表示時、可視クロップ 4 隅がビュー 4 隅へ一致 |
 | `testOffscreenPointMapsOutsideView` | クロップ領域外の点がビュー外 (x<0) へ写る |
 
+### CameraControllerTests
+| テスト | 内容 |
+| --- | --- |
+| `testStopDuringDelayedConfigurationPreventsSessionStart` | 構成待ち中に stop すると遅延した開始判定が拒否される |
+| `testDismissedPendingAuthorizationCannotStart` | 画面終了で世代を無効化し、遅延権限応答から開始できない |
+| `testCaptureFailureClearsPendingAndRestoresDoneForPriorImage` | 前の画像があっても撮影中は Done 無効、失敗で pending 解除し画像を保持 |
+
 ### PageFlattenerTests
 | テスト | 内容 |
 | --- | --- |
 | `testHomographyMapsCornersAndRoundTrips` | 台形4点→矩形4点のホモグラフィ写像 ±1e-6、逆変換で往復一致 |
 | `testCurvedPageFlattensToFilledRectangle` | 上下辺±40px・左辺30pxに湾曲した白ページ(1500x2000,暗灰背景)+同形状150x200合成マスクでflatten → 外周6pxバンド全サンプル輝度>200(背景残りなし)、出力サイズが矩形弧長±5%以内 |
 | `testStraightRectangleOutputsPageCrop` | 直線辺の矩形ページ+マスクでflatten → 出力がページ切り出しと同サイズ(±2%) |
+| `testTopOriginAsymmetricImageAndMaskKeepMarkerPositions` | 上原点 raw 画像・独立マスク・縦オフセットページで PageBitmap と flatten 後の上下色マーカー位置を確認 |
 
 ### DocumentDraftTests
 | テスト | 内容 |
@@ -90,7 +100,9 @@
 | `testRenameMovesFile` | rename → 旧パス消失・新パス存在 |
 | `testReloadPicksUpExternalFiles` | 外部書込みファイルを reload で拾う |
 | `testNewestFirstOrdering` | documents が createdAt 降順 |
-| `testSymlinkedDirectorySaveAndRename` | symlink 親を持つ directory で save 成功・同名リネームで " (2)" 非付与・別名リネーム成功（URL 等価比較の回帰テスト） |
+| `testSymlinkedDirectorySaveAndRename` | symlink 親を持つ directory で save 成功・同名リネーム no-op・別名リネーム成功 |
+| `testRenameToSanitizedSameNameIsNoOp` | 前後空白を含む同名を sanitize しても移動せず元ファイルを維持 |
+| `testDeleteAtOffsetsKeepsOnlyInitialIndexZero` | 3 PDF の {1,2} を一括削除し当初 index 0 のみ残る |
 | `testGarbagePDFFileThrowsUnreadable` | 拡張子 pdf のゴミファイルで reload → DocumentStoreError.unreadableDocument |
 
 ### PageImporterTests
@@ -98,6 +110,9 @@
 | --- | --- |
 | `testMixedImagesAreSplitIntoDetectedAndUndetected` | [書類画像, 一様グレー] → 検出 1 + 未検出 1 |
 | `testLargeInputIsDownscaledBeforeDetection` | 長辺 4000px 入力 → 検出済み画像の長辺 ≤3000 |
+| `testMakePagesPreservesSourceOrder` | [未検出, 検出, 未検出, 検出] の実 importer Entry が入力順を保つ |
+| `testImportResultAcceptsUndetectedPagesInInputOrder` | Use Full Image の再構成で 4 項目の画像順を保つ |
+| `testImportResultCancelKeepsDetectedPagesAfterExistingPages` | Cancel は未検出を除き、既存ページの後ろに検出済みを順序通り追加 |
 
 ## クラス図
 
@@ -110,14 +125,19 @@ classDiagram
     class DocumentStoreTests
     class DocumentDraftTests
     class PageImporterTests
+    class PageFlattenerTests
     class CameraCaptureViewTests
+    class CameraControllerTests
     class TestImageFactory
     PDFBuilderTests ..> TestImageFactory
     DocumentImageProcessorTests ..> TestImageFactory
     DocumentDetectorTests ..> TestImageFactory
     DocumentStoreTests ..> TestImageFactory
     PageImporterTests ..> TestImageFactory
+    PageFlattenerTests ..> TestImageFactory
     CameraCaptureViewTests ..> CameraCaptureView : overlayPoints 座標変換
+    CameraControllerTests ..> CameraLifecycleState : 世代キャンセル
+    CameraControllerTests ..> CameraPhotoState : 撮影 pending 状態
 ```
 
 ## シーケンス図

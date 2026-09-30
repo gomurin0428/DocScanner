@@ -10,8 +10,6 @@ struct CameraCaptureView: View {
 
     /// Done 押下時に撮影済み画像配列を返すコールバック。
     let onDone: ([UIImage]) -> Void
-    /// エラー発生時のコールバック。
-    let onError: (Error) -> Void
     /// キャンセル時のコールバック。
     let onCancel: () -> Void
 
@@ -21,6 +19,8 @@ struct CameraCaptureView: View {
     @State private var flash = false
     /// カメラ権限拒否/制限時のアラート表示フラグ。
     @State private var showPermissionAlert = false
+    /// セッション/撮影エラーのアラート表示フラグ。
+    @State private var showCameraErrorAlert = false
     /// カメラ画面の本体を返す。
     /// - 入力: なし
     /// - 出力: プレビュー + 四角形オーバレイ + シャッター/Done/Cancel のビュー
@@ -57,11 +57,10 @@ struct CameraCaptureView: View {
                 bottomBar
             }
         }
-        .onAppear { startIfAuthorized() }
+        .task { await startIfAuthorized() }
         .onDisappear { controller.stop() }
         .onChange(of: controller.error) { _, error in
-            // 構成・撮影の失敗は呼び出し側のアラートへ委譲して画面を閉じる
-            if let error { onError(error) }
+            if error != nil { showCameraErrorAlert = true }
         }
         .alert("Camera access is required to scan documents.", isPresented: $showPermissionAlert) {
             Button("Open Settings") {
@@ -72,12 +71,17 @@ struct CameraCaptureView: View {
             }
             Button("Cancel", role: .cancel) { onCancel() }
         }
+        .alert("Camera Error", isPresented: $showCameraErrorAlert) {
+            Button("OK", role: .cancel) { controller.clearError() }
+        } message: {
+            Text(controller.error?.localizedDescription ?? "")
+        }
     }
 
     /// 下部バー（Cancel・シャッター・カウント/サムネイル・Done）を返す。
     /// - 入力: なし
     /// - 出力: 下部操作バーのビュー
-    /// - 処理: 撮影枚数と直前サムネイルを表示し、Done は 1 枚以上で有効化する
+    /// - 処理: 撮影枚数と直前サムネイルを表示し、撮影 pending 中は Done を無効化する
     private var bottomBar: some View {
         HStack {
             Button("Cancel") { onCancel() }
@@ -105,8 +109,11 @@ struct CameraCaptureView: View {
                     .font(.caption)
                     .foregroundStyle(.white)
             }
-            Button("Done") { onDone(controller.captures) }
-                .disabled(controller.captures.isEmpty)
+            Button("Done") {
+                guard controller.canFinish else { return }
+                onDone(controller.captures)
+            }
+                .disabled(!controller.canFinish)
                 .foregroundStyle(.white)
         }
         .padding(.horizontal, 24)
@@ -119,6 +126,7 @@ struct CameraCaptureView: View {
     /// - 処理: 押下で白フラッシュを短時間表示して撮影する
     private var shutterButton: some View {
         Button {
+            guard controller.isConfigured, !controller.isCapturing else { return }
             flash = true
             controller.capture()
             Task {
@@ -131,6 +139,7 @@ struct CameraCaptureView: View {
                 .frame(width: 72, height: 72)
                 .overlay(Circle().stroke(.white.opacity(0.6), lineWidth: 4).padding(-6))
         }
+        .disabled(!controller.isConfigured || controller.isCapturing)
     }
 
     /// 権限状態に応じてセッションを開始する。
@@ -138,37 +147,29 @@ struct CameraCaptureView: View {
     /// - 出力: なし
     /// - 処理: authorized → 構成+開始。notDetermined → 要求して許可なら開始。
     ///   denied/restricted → 設定画面を開けるアラートを表示する
-    private func startIfAuthorized() {
+    private func startIfAuthorized() async {
+        let generation = controller.beginActivation()
         switch AVCaptureDevice.authorizationStatus(for: .video) {
         case .authorized:
-            configureAndStart()
+            guard controller.isCurrent(generation, taskIsCancelled: Task.isCancelled) else { return }
+            controller.start(generation: generation)
         case .notDetermined:
-            Task {
-                let granted = await AVCaptureDevice.requestAccess(for: .video)
-                await MainActor.run {
-                    if granted { configureAndStart() } else { showPermissionAlert = true }
-                }
+            let granted = await AVCaptureDevice.requestAccess(for: .video)
+            guard controller.isCurrent(generation, taskIsCancelled: Task.isCancelled) else { return }
+            if granted {
+                controller.start(generation: generation)
+            } else {
+                controller.stop()
+                showPermissionAlert = true
             }
         case .denied, .restricted:
+            guard controller.isCurrent(generation, taskIsCancelled: Task.isCancelled) else { return }
+            controller.stop()
             showPermissionAlert = true
         @unknown default:
+            guard controller.isCurrent(generation, taskIsCancelled: Task.isCancelled) else { return }
+            controller.stop()
             showPermissionAlert = true
-        }
-    }
-
-    /// セッションを構成して開始する。
-    /// - 入力: なし
-    /// - 出力: なし（失敗時は onError へ委譲する）
-    /// - 処理: バックグラウンドで configure() を呼び、成功時のみ start() する
-    private func configureAndStart() {
-        Task.detached {
-            do {
-                try controller.configure()
-                controller.start()
-            } catch {
-                // CameraError のほか AVCaptureDeviceInput 生成の AVError もそのまま通知する
-                await MainActor.run { onError(error) }
-            }
         }
     }
 

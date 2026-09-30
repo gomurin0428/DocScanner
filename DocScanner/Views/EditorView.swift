@@ -36,10 +36,10 @@ struct EditorView: View {
     @State private var pickedItems: [PhotosPickerItem] = []
     /// 全ページへ適用するフィルタ選択シート表示フラグ。
     @State private var showFilterSheet = false
-    /// 追加取り込み時に検出できなかった画像。
-    @State private var undetectedImages: [UIImage] = []
-    /// 追加取り込み時に検出できたページ。
-    @State private var pendingDetectedPages: [ScannedPage] = []
+    /// 追加取り込みのアラート回答待ち結果（入力順）。
+    @State private var pendingImportResult: ImportResult?
+    /// 未検出画像の確認アラート表示状態。
+    @State private var showUndetectedAlert = false
     /// ページ詳細遷移先のページ id（item ベース遷移用）。
     /// （item ベースの navigationDestination と値ベース NavigationLink を
     ///   同一スタックで混在させると遷移が壊れるため全て item ベースで統一する）
@@ -143,22 +143,19 @@ struct EditorView: View {
                     showCamera = false
                     handleImages(images)
                 },
-                onError: { error in
-                    showCamera = false
-                    present(error)
-                },
                 onCancel: { showCamera = false }
             )
             .ignoresSafeArea()
         }
         .photosPicker(isPresented: $showPicker, selection: $pickedItems,
-                      maxSelectionCount: 20, matching: .images)
+                      maxSelectionCount: 20, selectionBehavior: .ordered,
+                      matching: .images)
         .onChange(of: pickedItems) { _, items in
             guard !items.isEmpty else { return }
             pickedItems = []
             importItems(items)
         }
-        .alert("No document edges were detected.", isPresented: undetectedAlertPresented) {
+        .alert("No document edges were detected.", isPresented: $showUndetectedAlert) {
             Button("Use Full Image") { acceptUndetected() }
             Button("Cancel", role: .cancel) { discardUndetected() }
         }
@@ -175,19 +172,6 @@ struct EditorView: View {
             }
         }
     }
-
-    /// 未検出アラートの表示バインディングを返す。
-    /// - 入力: なし
-    /// - 出力: undetectedImages の空/非空を表す Binding
-    /// - 処理: 配列の空/非空を Bool バインディングに変換する
-    private var undetectedAlertPresented: Binding<Bool> {
-        Binding(
-            get: { !undetectedImages.isEmpty },
-            set: { if !$0 { undetectedImages = [] } }
-        )
-    }
-
-
 
     /// カメラ対応可否を確認してシートを開く。
     /// - 入力: なし
@@ -212,7 +196,7 @@ struct EditorView: View {
 
     /// PhotosPicker の選択アイテムを読み込み検出処理を行う。
     /// - 入力: items … 選択された PhotosPickerItem 配列
-    /// - 出力: なし（pages / undetectedImages を更新する）
+    /// - 出力: なし（draft または pendingImportResult を更新する）
     /// - 処理: バックグラウンドで画像ロード → 各画像に検出を試行する
     private func importItems(_ items: [PhotosPickerItem]) {
         isImporting = true
@@ -231,7 +215,7 @@ struct EditorView: View {
 
     /// UIImage 配列を書類検出パイプラインへ通し結果を反映する（カメラ・写真共通）。
     /// - 入力: images … 取り込み済み画像配列
-    /// - 出力: なし（pages / undetectedImages を更新する）
+    /// - 出力: なし（draft または pendingImportResult を更新する）
     /// - 処理: バックグラウンドで makePages を実行し、検出済みは draft へ追加、
     ///   未検出は確認アラート用に保持する
     private func handleImages(_ images: [UIImage]) {
@@ -241,12 +225,11 @@ struct EditorView: View {
                 let result = try PageImporter().makePages(from: images)
                 await MainActor.run {
                     isImporting = false
-                    pendingDetectedPages = result.detectedPages
                     if result.undetectedImages.isEmpty {
-                        draft.append(result.detectedPages)
-                        pendingDetectedPages = []
+                        draft.append(result.pages(includingUndetected: false))
                     } else {
-                        undetectedImages = result.undetectedImages
+                        pendingImportResult = result
+                        showUndetectedAlert = true
                     }
                 }
             } catch {
@@ -263,20 +246,17 @@ struct EditorView: View {
     /// - 出力: なし
     /// - 処理: 検出済み + 未検出を pages へ追加する
     private func acceptUndetected() {
-        draft.append(pendingDetectedPages)
-        draft.append(undetectedImages.map { ScannedPage(baseImage: $0) })
-        undetectedImages = []
-        pendingDetectedPages = []
+        draft.append(pendingImportResult?.pages(includingUndetected: true) ?? [])
+        pendingImportResult = nil
     }
 
     /// 未検出画像を破棄し検出済みのみ追加する。
     /// - 入力: なし
     /// - 出力: なし
-    /// - 処理: pendingDetectedPages のみ pages へ追加する
+    /// - 処理: pendingImportResult から検出済みページのみを再構成して追加する
     private func discardUndetected() {
-        draft.append(pendingDetectedPages)
-        undetectedImages = []
-        pendingDetectedPages = []
+        draft.append(pendingImportResult?.pages(includingUndetected: false) ?? [])
+        pendingImportResult = nil
     }
 
     /// PDF を生成してストアへ保存し、プレビューへ遷移する。

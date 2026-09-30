@@ -144,3 +144,20 @@
   輪郭追跡フラット化に使う。それ以外は CIPerspectiveCorrection に留める
 - Vision 系リクエストの結果を別プラットフォームにそのまま期待しない（シミュレータの
   モデル出力は実機・macOS と異なり得る）
+
+## 症状（混在写真のインポート順）
+- 未検出画像に「Use Full Image / Cancel」を選ぶと、検出済みページと未検出ページの順序が選択順と違う
+
+## 原因と対処
+- 検出済み/未検出を別々の配列に保持すると interleave 情報を復元できない。`PhotosPicker`
+  は `.ordered` を指定し、`ImportResult.Entry` を入力順に保持する。alert 表示状態は pending
+  結果とは別の Bool にし、button handler が完了する前に dismiss setter で結果を消さない。
+
+## 症状（画面を閉じた後にカメラが開始する／撮影中に Done できる）
+- 権限要求またはセッション構成が非同期中にカメラ画面を閉じると、遅延完了した開始処理や UI 更新が残る
+- 既存ページがある状態で次の写真を撮影中に Done が先に返る
+
+## 原因と対処
+- configure/start/stop を別キュー投入にすると開始と停止の順序が競合する。SwiftUI task の cancellation
+  と同期的な generation token を権限 await 後・構成後に確認し、全セッション操作を同じ serial queue に置く。
+  撮影は MainActor で pending を同期設定し、最終 `didFinishCaptureFor` に画像/error を一括反映する。

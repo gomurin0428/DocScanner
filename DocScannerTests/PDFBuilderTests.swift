@@ -66,6 +66,35 @@ final class PDFBuilderTests: XCTestCase {
         XCTAssertEqual(bounds.height, 240, accuracy: 1)
     }
 
+    /// A4/Letter 寸法と画像が一致しても固定用紙のマージンが適用されることを検証する。
+    /// - 入力: なし
+    /// - 出力: なし
+    /// - 処理: 用紙と同寸の黒画像を PDF 化し、18pt 外周は白・内側は黒を確認する
+    func testFixedPageSizesKeepMarginsForMatchingImageDimensions() throws {
+        for pageSize in [PDFPageSize.a4, .letter] {
+            let size = try XCTUnwrap(pageSize.fixedSize)
+            let image = TestImageFactory.solid(.black, size: size)
+            let data = try PDFBuilder().makePDF(from: [image], pageSize: pageSize)
+            let page = try XCTUnwrap(PDFDocument(data: data)?.page(at: 0))
+            let rendered = page.thumbnail(of: size, for: .mediaBox)
+
+            XCTAssertGreaterThan(try luminance(of: rendered, x: 5, y: 5), 0.9)
+            XCTAssertLessThan(try luminance(of: rendered, x: 30, y: 30), 0.1)
+        }
+    }
+
+    /// .fitImage は画像をページ端まで描くことを検証する。
+    /// - 入力: なし
+    /// - 出力: なし
+    /// - 処理: 黒画像を Fit to Image PDF にし、隅の画素が黒いことを確認する
+    func testFitImageDrawsEdgeToEdge() throws {
+        let image = TestImageFactory.solid(.black, size: CGSize(width: 320, height: 240))
+        let data = try PDFBuilder().makePDF(from: [image], pageSize: .fitImage)
+        let page = try XCTUnwrap(PDFDocument(data: data)?.page(at: 0))
+        let rendered = page.thumbnail(of: CGSize(width: 320, height: 240), for: .mediaBox)
+        XCTAssertLessThan(try luminance(of: rendered, x: 1, y: 1), 0.1)
+    }
+
     /// 空配列で noPages エラーが送出されることを検証する。
     /// - 入力: なし
     /// - 出力: なし
@@ -74,5 +103,15 @@ final class PDFBuilderTests: XCTestCase {
         XCTAssertThrowsError(try PDFBuilder().makePDF(from: [], pageSize: .a4)) { error in
             XCTAssertEqual(error as? PDFBuilderError, .noPages)
         }
+    }
+
+    private func luminance(of image: UIImage, x: Int, y: Int) throws -> CGFloat {
+        let color = try XCTUnwrap(TestImageFactory.pixelColor(of: image, x: x, y: y))
+        var red: CGFloat = 0
+        var green: CGFloat = 0
+        var blue: CGFloat = 0
+        var alpha: CGFloat = 0
+        color.getRed(&red, green: &green, blue: &blue, alpha: &alpha)
+        return (red + green + blue) / 3
     }
 }

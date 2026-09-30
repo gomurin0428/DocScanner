@@ -62,7 +62,7 @@ struct PDFBuilder {
                 let bounds = pageBounds(for: image, pageSize: pageSize)
                 context.beginPage(withBounds: bounds, pageInfo: [:])
                 // JPEG 再エンコードにより PDF 内の画像サイズを抑える
-                image.draw(in: contentRect(for: image, in: bounds))
+                image.draw(in: contentRect(for: image, in: bounds, pageSize: pageSize))
             }
         }
         return data
@@ -82,10 +82,9 @@ struct PDFBuilder {
     /// ページ内の画像描画領域を計算する。
     /// - 入力: image … ページ画像、bounds … ページ境界
     /// - 出力: 画像を描画する CGRect
-    /// - 処理: fitImage 相当（マージン不要な等サイズ）なら全領域、それ以外はマージン内へ aspect-fit で中央配置
-    private func contentRect(for image: UIImage, in bounds: CGRect) -> CGRect {
-        let pageSize = bounds.size
-        if pageSize == image.size {
+    /// - 処理: fitImage のみ全領域、それ以外はマージン内へ aspect-fit で中央配置
+    private func contentRect(for image: UIImage, in bounds: CGRect, pageSize: PDFPageSize) -> CGRect {
+        if pageSize == .fitImage {
             return bounds
         }
         let available = bounds.insetBy(dx: pageMargin, dy: pageMargin)

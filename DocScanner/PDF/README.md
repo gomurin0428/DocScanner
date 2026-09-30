@@ -10,7 +10,7 @@
 | `PDFBuilder` | `init()` | ビルダー生成（状態なし） |
 | `PDFBuilder` | `makePDF(from:pageSize:jpegQuality:)` | 画像配列 → PDF Data（1 画像 1 ページ、JPEG 再エンコード、throws） |
 | `PDFBuilder` | `pageBounds(for:pageSize:)` (private) | ページ境界計算（固定サイズ or 画像サイズ） |
-| `PDFBuilder` | `contentRect(for:in:)` (private) | ページ内の描画領域（aspect-fit・18pt マージン中央配置） |
+| `PDFBuilder` | `contentRect(for:in:pageSize:)` (private) | 固定 A4/Letter は aspect-fit・18pt マージン中央配置、`.fitImage` のみページ端まで描画 |
 
 ## クラス図
 
@@ -36,7 +36,7 @@ sequenceDiagram
     B->>B: 空チェック（noPages）
     loop 各画像
         B->>R: beginPage(bounds)
-        B->>B: contentRect 計算（マージン内 aspect-fit）
+        B->>B: contentRect（.fitImage 以外は18ptマージン内 aspect-fit）
         B->>B: jpegData 再エンコード → draw(in:)
     end
     R-->>B: pdfData

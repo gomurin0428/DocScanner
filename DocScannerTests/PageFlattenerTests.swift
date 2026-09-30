@@ -1,4 +1,6 @@
 import XCTest
+import CoreGraphics
+import Foundation
 @testable import DocScanner
 
 /// PageFlattener（マスク輪郭追跡 + Coons パッチ矩形化）のテスト。ML には依存しない。
@@ -118,6 +120,40 @@ final class PageFlattenerTests: XCTestCase {
         XCTAssertEqual(Double(output.height), 1400, accuracy: 1400 * 0.02)
     }
 
+    /// 上原点 raw 画像とマスクで、ページ位置・上下マーカーを保って flatten することを検証する。
+    /// - 入力: なし
+    /// - 出力: なし
+    /// - 処理: 非対称な 100x150 RGBA 画像・上原点マスク・縦オフセット四角形で
+    ///   PageBitmap のサンプルと出力の上下マーカー位置を確認する
+    func testTopOriginAsymmetricImageAndMaskKeepMarkerPositions() throws {
+        let image = try makeTopOriginRawImage(width: 100, height: 150)
+        let bitmap = try PageBitmap(image)
+        let topSourceOffset = (50 * bitmap.width + 37) * 4
+        let bottomSourceOffset = (109 * bitmap.width + 63) * 4
+        XCTAssertGreaterThan(bitmap.data[topSourceOffset], 200)
+        XCTAssertLessThan(bitmap.data[topSourceOffset + 2], 80)
+        XCTAssertLessThan(bitmap.data[bottomSourceOffset], 80)
+        XCTAssertGreaterThan(bitmap.data[bottomSourceOffset + 2], 200)
+
+        let corners = [
+            CGPoint(x: 20, y: 30), CGPoint(x: 80, y: 30),
+            CGPoint(x: 80, y: 130), CGPoint(x: 20, y: 130)
+        ]
+        let mask = makeTopOriginMask(width: 100, height: 150)
+        let output = try flattener.flatten(image, corners: corners, mask: mask)
+        let outputBitmap = try PageBitmap(output)
+        let topX = Int(Double(output.width) * 0.28)
+        let topY = Int(Double(output.height) * 0.21)
+        let bottomX = Int(Double(output.width) * 0.75)
+        let bottomY = Int(Double(output.height) * 0.79)
+        let topOffset = (topY * outputBitmap.width + topX) * 4
+        let bottomOffset = (bottomY * outputBitmap.width + bottomX) * 4
+        XCTAssertGreaterThan(outputBitmap.data[topOffset], 180)
+        XCTAssertLessThan(outputBitmap.data[topOffset + 2], 80)
+        XCTAssertLessThan(outputBitmap.data[bottomOffset], 80)
+        XCTAssertGreaterThan(outputBitmap.data[bottomOffset + 2], 180)
+    }
+
     /// 上下辺 ±40px・左辺 30px に湾曲したページ形状の CGPath を返す。
     /// - 入力: なし
     /// - 出力: 左上→右上→右下→左下の閉パス（左上原点座標）
@@ -185,5 +221,49 @@ final class PageFlattenerTests: XCTestCase {
         let values = buf.map { Float($0) / 255 }
         return SegmentationMask(width: mw, height: mh, values: values,
                                 imageWidth: Int(size.width), imageHeight: Int(size.height))
+    }
+
+    private func makeTopOriginRawImage(width: Int, height: Int) throws -> CGImage {
+        var bytes = [UInt8](repeating: 0, count: width * height * 4)
+        for y in 0..<height {
+            for x in 0..<width {
+                let offset = (y * width + x) * 4
+                let isPage = (20..<80).contains(x) && (30..<130).contains(y)
+                let color: (UInt8, UInt8, UInt8) = {
+                    if (30..<45).contains(x) && (44..<59).contains(y) { return (255, 0, 0) }
+                    if (56..<71).contains(x) && (102..<117).contains(y) { return (0, 0, 255) }
+                    return isPage ? (245, 245, 245) : (40, 40, 40)
+                }()
+                bytes[offset] = color.0
+                bytes[offset + 1] = color.1
+                bytes[offset + 2] = color.2
+                bytes[offset + 3] = 255
+            }
+        }
+        let provider = CGDataProvider(data: Data(bytes) as CFData)!
+        return try XCTUnwrap(CGImage(
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bitsPerPixel: 32,
+            bytesPerRow: width * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.last.rawValue),
+            provider: provider,
+            decode: nil,
+            shouldInterpolate: false,
+            intent: .defaultIntent
+        ))
+    }
+
+    private func makeTopOriginMask(width: Int, height: Int) -> SegmentationMask {
+        var values = [Float](repeating: 0, count: width * height)
+        for y in 30..<130 {
+            for x in 20..<80 {
+                values[y * width + x] = 1
+            }
+        }
+        return SegmentationMask(width: width, height: height, values: values,
+                                imageWidth: width, imageHeight: height)
     }
 }

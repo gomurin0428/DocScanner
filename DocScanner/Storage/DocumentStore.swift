@@ -134,6 +134,18 @@ final class DocumentStore {
         try reload()
     }
 
+    /// 一覧の選択オフセットに対応するドキュメントを削除する。
+    /// - 入力: offsets … 削除対象の一覧インデックス
+    /// - 出力: なし
+    /// - 処理: reload で一覧が変わる前に対象を確定し、既存の単件削除へ委譲する
+    /// - Throws: 削除失敗時に CocoaError
+    func delete(at offsets: IndexSet) throws {
+        let targets = offsets.map { documents[$0] }
+        for document in targets {
+            try delete(document)
+        }
+    }
+
     /// 保存済みドキュメントの名前を変更する。
     /// - 入力: document … 対象、newName … 拡張子なしの新しい名前
     /// - 出力: リネーム後の SavedDocument
@@ -143,6 +155,9 @@ final class DocumentStore {
     func rename(_ document: SavedDocument, to newName: String) throws -> SavedDocument {
         let base = try FileNameSanitizer.sanitize(newName)
         let url = uniqueURL(for: base, excluding: document.url)
+        if url.lastPathComponent == document.url.lastPathComponent {
+            return document
+        }
         try FileManager.default.moveItem(at: document.url, to: url)
         try reload()
         // save と同様、URL 等価ではなくファイル名で照合する

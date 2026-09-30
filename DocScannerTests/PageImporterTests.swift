@@ -29,6 +29,77 @@ final class PageImporterTests: XCTestCase {
         XCTAssertEqual(result.undetectedImages.count, 1)
     }
 
+    /// 実際の検出結果が混在画像の入力順を保持することを検証する。
+    /// - 入力: なし
+    /// - 出力: なし
+    /// - 処理: 未検出・検出・未検出・検出の画像を順に渡し、Entry の並びを確認する
+    func testMakePagesPreservesSourceOrder() throws {
+        let blank = TestImageFactory.solid(UIColor(white: 0.5, alpha: 1),
+                                           size: CGSize(width: 400, height: 300))
+        let document = Self.makeDocumentImage(size: CGSize(width: 1200, height: 1600))
+        let result = try importer.makePages(from: [blank, document, blank, document])
+
+        XCTAssertEqual(result.entries.count, 4)
+        XCTAssertEqual(result.entries.map { entry in
+            switch entry {
+            case .detected(_): return "detected"
+            case .undetected(_): return "undetected"
+            }
+        }, ["undetected", "detected", "undetected", "detected"])
+    }
+
+    /// フル画像採用時に交互の検出結果を入力順へ再構成することを検証する。
+    /// - 入力: なし
+    /// - 出力: なし
+    /// - 処理: [未検出, 検出, 未検出, 検出] の Entry から色マーカー順を確認する
+    func testImportResultAcceptsUndetectedPagesInInputOrder() throws {
+        let result = makeInterleavedResult()
+        let pages = result.pages(includingUndetected: true)
+        let expected = [UIColor.red, .green, .blue, .yellow]
+
+        XCTAssertEqual(pages.count, expected.count)
+        for (page, color) in zip(pages, expected) {
+            let actual = try XCTUnwrap(TestImageFactory.pixelColor(of: page.baseImage, x: 5, y: 5))
+            var red: CGFloat = 0, green: CGFloat = 0, blue: CGFloat = 0, alpha: CGFloat = 0
+            actual.getRed(&red, green: &green, blue: &blue, alpha: &alpha)
+            var expectedRed: CGFloat = 0, expectedGreen: CGFloat = 0
+            var expectedBlue: CGFloat = 0, expectedAlpha: CGFloat = 0
+            color.getRed(&expectedRed, green: &expectedGreen,
+                         blue: &expectedBlue, alpha: &expectedAlpha)
+            XCTAssertEqual(red, expectedRed, accuracy: 0.05)
+            XCTAssertEqual(green, expectedGreen, accuracy: 0.05)
+            XCTAssertEqual(blue, expectedBlue, accuracy: 0.05)
+        }
+    }
+
+    /// キャンセル時は既存ページの後ろに検出済み項目だけを入力順で追加することを検証する。
+    /// - 入力: なし
+    /// - 出力: なし
+    /// - 処理: 交互結果の undetected を除外し、既存ページが先頭に残ることを確認する
+    func testImportResultCancelKeepsDetectedPagesAfterExistingPages() {
+        let result = makeInterleavedResult()
+        let existing = ScannedPage(baseImage: TestImageFactory.solid(.black, size: CGSize(width: 10, height: 10)))
+        let draft = DocumentDraft(pages: [existing])
+
+        draft.append(result.pages(includingUndetected: false))
+
+        XCTAssertEqual(draft.pages.map(\.id),
+                       [existing.id, result.detectedPages[0].id, result.detectedPages[1].id])
+    }
+
+    private func makeInterleavedResult() -> ImportResult {
+        let red = TestImageFactory.solid(.red, size: CGSize(width: 10, height: 10))
+        let green = TestImageFactory.solid(.green, size: CGSize(width: 10, height: 10))
+        let blue = TestImageFactory.solid(.blue, size: CGSize(width: 10, height: 10))
+        let yellow = TestImageFactory.solid(.yellow, size: CGSize(width: 10, height: 10))
+        return ImportResult(entries: [
+            .undetected(red),
+            .detected(ScannedPage(baseImage: green)),
+            .undetected(blue),
+            .detected(ScannedPage(baseImage: yellow))
+        ])
+    }
+
     /// 上限を超える入力が検出前に縮小されることを検証する。
     /// - 入力: なし
     /// - 出力: なし

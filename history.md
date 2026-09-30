@@ -69,3 +69,8 @@
 - 変更概要：VNDocumentCameraViewController（自動キャプチャ）を自前の AVCaptureSession カメラへ置き換え、撮影タイミングをユーザー操作の手動シャッターへ変更。実機で「指が写り込んだ状態で自動撮影される」報告への対応（VisionKit にシャッター任意化 API が無い）。CameraController（@Observable、.photo プリセット + maxPhotoDimensions=フォーマット最大 + 品質優先、AVCaptureVideoDataOutput で 3 フレーム毎に VNDetectRectanglesRequest 実行して検出四角形のみ公開）と CameraCaptureView（フルスクリーン aspectFill プレビュー + 緑 quad オーバレイ + 手動シャッター + 枚数/サムネイル + Done/Cancel + 白フラッシュ）を新設。権限拒否時は Open Settings 導線アラート、カメラ非搭載（シミュレータ）は既存アラートを AVCaptureDevice 判定へ変更。撮影画像は PageImporter.makePages と同じ検出パイプライン（seg フラット化含む）へ流すため、handleImages を両ビューの importItems から切り出して共通化。DocumentCameraView.swift と VisionKit import を削除。overlayPoints（y-up 正規化→aspect-fill ビュー座標）を static 化し CameraCaptureViewTests 3 件追加。CURRENT_PROJECT_VERSION=4。
 - 関連PR/コミット：カメラ置換コミット（feature/2026-09-29-ios-document-scanner）
 - 備考：カメラ UI 自体はシミュレータで動作確認不可（デバイス無し）。generic/platform=iOS でのコンパイル確認を実施。
+
+## 2026-09-30T10:02:35+09:00
+- 変更概要：機能レビュー指摘 7 件を修正。sanitize 後の同名 rename を no-op 化し、symlink 名比較を維持。複数削除は reload 前に対象をスナップショット。固定 A4/Letter PDF の余白判定を PDFPageSize のみに基づかせ、.fitImage は全面描画を維持。ImportResult を入力順 Entry に変更し、Use Full Image / Cancel の両経路で順序を保持。カメラの configure/start/stop を sessionQueue で直列化して世代ガードを導入し、capture pending と完了/エラーを MainActor 上で一括更新。PageFlattener の top-origin 非対称マーカー回帰テストを追加し、PageBitmap.draw の向きは変更せず確認。関連 README と TROUBLESHOOTING を更新。
+- 検証：Xcode 27 RC / iOS Simulator D0B64A8A でフォーカス 29/29、全体 60/60 pass。generic/platform=iOS Release build 成功。
+- 備考：シミュレータにカメラがないため物理カメラ UI は未検証。SwiftLint 実行ファイル/構成なし。

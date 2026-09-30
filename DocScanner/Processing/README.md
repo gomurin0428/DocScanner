@@ -33,10 +33,11 @@ Core Image / Vision を使った画像処理（フィルタ・回転・書類検
 | `PagePoint` | `+` / `-` / `*` / `length` | Double 精度 2D 点（左上原点） |
 | `PageGeometry` | `solveLinear(_:_:)` / `homography(from:to:)` / `apply(_:to:)` / `arcLength(_:)` / `sample(_:at:)` (static) | 線形ソルバ・ホモグラフィ・曲線サンプリング（throws） |
 | `PageImporterError` | `loadFailed(index, message)` / `decodeFailed(index)` | 写真読み込み失敗の LocalizedError（index と元エラーメッセージ付き） |
-| `ImportResult` | `detectedPages` / `undetectedImages` | 検出済みページと未検出元画像の振り分け結果 |
+| `ImportResult.Entry` | `detected(ScannedPage)` / `undetected(UIImage)` | 各入力画像の結果を元の選択順に保持 |
+| `ImportResult` | `entries` / `detectedPages` / `undetectedImages` / `pages(includingUndetected:)` | 入力順の結果と互換用の分類配列。選択に応じて順序を保ったページ列を再構成 |
 | `PageImporter` | `init()` | DocumentDetector と DocumentImageProcessor を生成 |
 | `PageImporter` | `loadImages(from:)` (static) | PhotosPickerItem → UIImage（失敗は throw、非同期） |
-| `PageImporter` | `makePages(from:)` | 縮小 → 検出を実行し ImportResult を返す（throws） |
+| `PageImporter` | `makePages(from:)` | 縮小 → 検出を入力順に実行し ImportResult.entries へ追加（throws） |
 
 ## クラス図
 
@@ -67,6 +68,15 @@ classDiagram
         +loadImages(from)$ [UIImage]
         +makePages(from) ImportResult
     }
+    class ImportResult {
+        +entries: [Entry]
+        +pages(includingUndetected) [ScannedPage]
+    }
+    class ImportResult.Entry {
+        <<enum>>
+        detected(ScannedPage)
+        undetected(UIImage)
+    }
     DocumentImageProcessor ..> ImageProcessingError : throws
     DocumentDetector ..> DocumentDetectionError : throws
     class PageFlattener {
@@ -88,6 +98,7 @@ classDiagram
     PageImporter --> DocumentDetector
     PageImporter --> DocumentImageProcessor : 縮小
     PageImporter --> ImportResult
+    ImportResult --> ImportResult.Entry : 入力順
     PageImporter ..> PageImporterError : throws
 ```
 
@@ -95,16 +106,22 @@ classDiagram
 
 ```mermaid
 sequenceDiagram
-    participant UI as DocumentListView
+    participant Picker as PhotosPicker
+    participant UI as DocumentListView / EditorView
     participant Det as DocumentDetector
     participant VN as VNImageRequestHandler
     participant CI as CIFilter(CIPerspectiveCorrection)
-    UI->>Det: detectAndCorrect(photo)
-    Det->>Det: 向き正規化 → CIImage
-    Det->>VN: perform(VNDetectRectanglesRequest)
-    VN-->>Det: VNRectangleObservation（なければ noDocumentFound）
-    Det->>Det: 正規化座標 → ピクセル座標へ変換
-    Det->>CI: inputTopLeft/TopRight/BottomLeft/BottomRight
-    CI-->>Det: 補正済み CIImage
-    Det-->>UI: 補正済み UIImage
+    Picker-->>UI: 選択順の PhotosPickerItem[]
+    UI->>UI: selectionBehavior = .ordered
+    loop 元画像の入力順
+        UI->>Det: detectAndCorrect(photo)
+        Det->>Det: 四角形検出、seg が一致すれば flatten
+        Det-->>UI: detected(page) または undetected(image)
+    end
+    UI->>UI: pending ImportResult を保持
+    alt Use Full Image
+        UI->>UI: pages(includingUndetected: true)
+    else Cancel
+        UI->>UI: pages(includingUndetected: false)
+    end
 ```

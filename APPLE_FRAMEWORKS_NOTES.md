@@ -10,7 +10,9 @@ DocScanner で使っている Apple フレームワークの使い方とハマ�
 - 写真：`AVCapturePhotoSettings()` で `capturePhoto(with:delegate:)` → `fileDataRepresentation()` → `UIImage(data:)`（EXIF 向きは UIImage が保持）。
 - オーバレイ：直列キューの `AVCaptureVideoDataOutput` で 3 フレーム毎に `VNDetectRectanglesRequest`（DocumentDetector と同パラメータ）を実行し正規化四角形だけを公開（自動撮影はしない）。aspect-fill プレビューへの座標変換は `CameraCaptureView.overlayPoints`（y 反転 + 中央クロップオフセット）。
 - 権限：`AVCaptureDevice.authorizationStatus(for: .video)` / `requestAccess`。denied/restricted は `UIApplication.openSettingsURLString` への導線アラート。`NSCameraUsageDescription` 必須（`INFOPLIST_KEY_NSCameraUsageDescription` で生成済み）。
-- セッションの configure/startRunning/stopRunning は専用直列キューで実行しメインスレッドをブロックしない。**シミュレータにはカメラデバイスが無い**ため `AVCaptureDevice.default(for: .video)` が nil → UI 側でアラート。
+- セッションの configure+startRunning は専用直列キューで連続実行し、stopRunning も同じキューへ積む。UI の `.task` が権限要求を所有し、await 後に cancellation と世代トークンを再確認するため、画面終了後に遅れて完了した権限/構成処理は開始・UI 更新を行わない。UI 準備状態は MainActor のみで更新する。
+- 撮影開始時は MainActor で pending を同期設定し、最終 `didFinishCaptureFor` まで次のシャッターと Done を無効化する。処理 callback の画像/エラーと最終 callback の失敗をまとめて MainActor へ一度に配信し、処理 callback が欠けても pending を解除する。
+- **シミュレータにはカメラデバイスが無い**ため `AVCaptureDevice.default(for: .video)` が nil → UI 側でアラート。
 
 ## VisionKit（VNDocumentCameraViewController）
 
@@ -67,5 +69,5 @@ DocScanner で使っている Apple フレームワークの使い方とハマ�
 ## その他
 
 - `@Observable`（Observation フレームワーク、iOS 17+）：DocumentStore。View では `@Environment(DocumentStore.self)` で受ける。
-- PhotosPicker：`loadTransferable(type: Data.self)` → `UIImage(data:)`。重い変換・検出は `Task.detached` でメインスレッド外へ。
+- PhotosPicker：`selectionBehavior: .ordered` と `loadTransferable(type: Data.self)` → `UIImage(data:)` で明示的選択順を保持。`PageImporter` は検出済み/未検出の `ImportResult.Entry` を入力順で保持し、ユーザー選択後に順序を保ったページ列を再構成する。アラート表示 Bool と pending 結果は分離し、SwiftUI の自動 dismiss が未処理データを消さないようにする。重い変換・検出は `Task.detached` でメインスレッド外へ。
 - シェア：`ShareLink(item: fileURL)` で UIActivityViewController 相当が出せる（iOS 16+）。
