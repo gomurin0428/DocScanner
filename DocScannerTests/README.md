@@ -2,7 +2,35 @@
 
 ユニットテスト（XCTest、`@testable import DocScanner`、TEST_HOST はアプリ本体）。
 
-## ヘルパー
+## CameraShutterButtonTests
+
+| テスト | 検証内容 |
+| --- | --- |
+| `testVisibleBoundarySurvivesLossDuringPressAndImports` | 押下開始後に枠が消えても固定輪郭を使い、未検出確認なしで同じ大きさのページを生成 |
+| `testReplacementDuringPressAppliesOnlyToNextCapture` | 押下中の候補変更は次の撮影にだけ反映 |
+| `testPressWithoutOutlineKeepsExplicitMissingBoundary` | 枠なしで触れた場合は、その後現れた別候補を使わない |
+| `testCancelledPressDoesNotCaptureOrRetainOldBoundary` | touchCancel / touchUpOutside では撮影も輪郭の持ち越しもしない |
+| `testPrimaryActionUsesDisplayedBoundaryAndRespectsDisabledState` | タッチなしの標準実行は表示輪郭を使い、無効時は撮影しない |
+
+```mermaid
+classDiagram
+    CameraShutterButtonTests --> CameraShutterButtonControl : UIControl イベント
+    CameraShutterButtonControl --> CameraPreviewSelection : snapshot
+    CameraShutterButtonTests --> PageImporter : 固定輪郭からページ生成
+```
+
+```mermaid
+sequenceDiagram
+    XCTest->>CameraPreviewSelection: display(輪郭A)
+    XCTest->>Control: touchDown
+    XCTest->>CameraPreviewSelection: display(nil / 輪郭B)
+    XCTest->>Control: primaryActionTriggered
+    Control-->>XCTest: 輪郭A
+    XCTest->>PageImporter: makePages(camera(image, 輪郭A))
+    PageImporter-->>XCTest: 検出済みページ
+```
+
+## ヘルパー一覧
 
 | 型 | メソッド | 役割 |
 | --- | --- | --- |

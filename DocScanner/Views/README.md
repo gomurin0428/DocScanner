@@ -10,7 +10,10 @@ SwiftUI 画面群を格納する。
 | `DocumentListView` | `importItems` / `handleImages` / `acceptUndetectedImages` / `discardUndetectedImages` / `delete` / `performRename` / `present` (private) | 順序付き写真・カメラ取り込み（pending ImportResult と独立した alert Bool を保持）、未検出確認、削除、リネーム、エラー表示 |
 | `DocumentRow` (private) | `body` / `metaText` / `loadThumbnail` | 1 行表示（PDFKit 1 ページ目サムネイル + 日時・ページ数・サイズ） |
 | `CameraError` | `noCameraDevice` / `cannotCreateInput` / `cannotAddInput` / `cannotAddPhotoOutput` / `cannotAddVideoOutput` / `captureFailed` / `invalidPhotoData` | カメラ構成・撮影失敗の LocalizedError |
-| `CameraController` | `isAvailable()` (static) / `beginActivation()` / `start(generation:)` / `stop()` / `capture()` | @Observable な AVCaptureSession ラッパー。sessionQueue で configure+start/stop を直列化し、世代トークンで遅延開始・UI 通知を抑止。写真 pending は MainActor で同期設定し、最終 callback まで単一撮影を維持 |
+| `CameraController` | `isAvailable()` (static) / `beginActivation()` / `start(generation:)` / `stop()` / `capture(boundary:)` | @Observable な AVCaptureSession ラッパー。表示側で固定した境界を撮影へ渡す。sessionQueue で開始/停止を直列化し、世代トークンと写真 pending で単一撮影を維持 |
+| `CameraPreviewSelection` | `snapshot` / `display(_:)` | MainActor 上で CAShapeLayer に描画した輪郭を保持。解析値とは独立し、枠の非表示・画面終了で nil |
+| `CameraShutterButton` | `makeUIView(context:)` / `updateUIView(_:context:)` | 表示輪郭を共有する UIKit ボタンを生成し、撮影可否とコールバックを更新 |
+| `CameraShutterButton.Control` | `init(selection:onCapture:)` / `beginPress()` / `cancelPress()` / `capture()` | touchDown で輪郭を固定し primaryActionTriggered で撮影。キャンセルでは破棄。タッチ以外の実行は現在の表示輪郭を使用 |
 | `CameraController` | `detectedQuad` / `detectedBoundary` / `capturedSources` / `frameSize` / `captures` / `lastCapture` / `isCapturing` / `canFinish` / `error` / `isConfigured` / `captureSession` | 表示輪郭と撮影入力を公開。撮影中は枠を固定しシャッター/Done を無効化 |
 | `CameraPhotoState` | `init(captures:)` / `sources` / `captures` / `beginCapture()` / `finishCapture(image:shouldAppend:boundary:)` / `isCapturing` / `canFinish` | 各写真と固定輪郭を入力順で保持。失敗・旧世代の撮影は追加しない |
 | `CameraCaptureGeometry` | `transform(origin:x:y:)` / `normalizedPhotoPoint(_:size:orientation:)` | 出力変換のアフィン写像と EXIF 向きの変換。写真ピクセルから表示向きの左下原点正規化座標へ変換 |
@@ -44,6 +47,10 @@ sequenceDiagram
     T-->>C: 安定した四隅または nil
     C->>C: マスク輪郭抽出・平滑化四隅へ写像
     C->>U: 輪郭とmetadata座標を同時更新
+    U->>CameraPreviewSelection: 緑枠を描画して display(boundary)
+    CameraShutterButton->>CameraPreviewSelection: touchDown で snapshot を固定
+    Note over U,CameraShutterButton: 解析・描画が nil や別候補へ進んでも押下輪郭は維持
+    CameraShutterButton->>C: primaryActionTriggered → capture(boundary: 固定輪郭)
 ```
 
 ```mermaid
@@ -92,6 +99,9 @@ classDiagram
     CameraController --> DocumentRectangleDetector : 書類領域の形状検証
     CameraController --> PageFlattener : 曲線輪郭抽出
     CameraController --> CameraPhotoCaptureDelegate : シャッター時の輪郭固定
+    CameraCaptureView --> CameraPreviewSelection : 描画済み輪郭
+    CameraShutterButton --> CameraPreviewSelection : touchDown で固定
+    CameraShutterButton --> CameraController : capture(boundary:)
     CameraPhotoCaptureDelegate --> CameraCaptureGeometry : 写真の画角・向きへ変換
     CameraController --> CameraLifecycleState : 世代ガード
     CameraController --> CameraPhotoState : single-flight 撮影状態

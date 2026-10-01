@@ -17,6 +17,7 @@ struct CameraCaptureView: View {
     @State private var controller = CameraController()
     /// 撮影時の白フラッシュ表示フラグ。
     @State private var flash = false
+    @State private var previewSelection = CameraPreviewSelection()
     /// カメラ権限拒否/制限時のアラート表示フラグ。
     @State private var showPermissionAlert = false
     /// セッション/撮影エラーのアラート表示フラグ。
@@ -30,7 +31,8 @@ struct CameraCaptureView: View {
             GeometryReader { _ in
                 CameraPreviewView(session: controller.captureSession,
                                   isConfigured: controller.isConfigured,
-                                  boundary: controller.metadataBoundary)
+                                  boundary: controller.metadataBoundary,
+                                  selection: previewSelection)
             }
             .ignoresSafeArea()
             .allowsHitTesting(false)
@@ -46,7 +48,10 @@ struct CameraCaptureView: View {
             }
         }
         .task { await startIfAuthorized() }
-        .onDisappear { controller.stop() }
+        .onDisappear {
+            previewSelection.display(nil)
+            controller.stop()
+        }
         .onChange(of: controller.error) { _, error in
             if error != nil { showCameraErrorAlert = true }
         }
@@ -113,21 +118,17 @@ struct CameraCaptureView: View {
     /// - 出力: シャッターボタンのビュー
     /// - 処理: 押下で白フラッシュを短時間表示して撮影する
     private var shutterButton: some View {
-        Button {
+        CameraShutterButton(selection: previewSelection,
+                            isEnabled: controller.isConfigured && !controller.isCapturing) { boundary in
             guard controller.isConfigured, !controller.isCapturing else { return }
             flash = true
-            controller.capture()
+            controller.capture(boundary: boundary)
             Task {
                 try? await Task.sleep(for: .milliseconds(150))
                 flash = false
             }
-        } label: {
-            Circle()
-                .fill(.white)
-                .frame(width: 72, height: 72)
-                .overlay(Circle().stroke(.white.opacity(0.6), lineWidth: 4).padding(-6))
         }
-        .disabled(!controller.isConfigured || controller.isCapturing)
+        .frame(width: 72, height: 72)
     }
 
     /// 権限状態に応じてセッションを開始する。
@@ -191,6 +192,7 @@ private struct CameraPreviewView: UIViewRepresentable {
     /// セッション構成後に接続の回転を再設定するための更新トリガー。
     let isConfigured: Bool
     let boundary: DocumentBoundary?
+    let selection: CameraPreviewSelection
 
     /// プレビュー用 UIView を生成する。
     /// - 入力: context … Representable コンテキスト
@@ -202,6 +204,7 @@ private struct CameraPreviewView: UIViewRepresentable {
         view.previewLayer.videoGravity = .resizeAspectFill
         view.previewLayer.addSublayer(view.outlineLayer)
         view.boundary = boundary
+        view.selection = selection
         view.updateRotation()
         return view
     }
@@ -220,6 +223,7 @@ private struct CameraPreviewView: UIViewRepresentable {
     final class PreviewView: UIView {
         let outlineLayer = CAShapeLayer()
         var boundary: DocumentBoundary?
+        var selection: CameraPreviewSelection?
 
         /// metadata 輪郭を実際のプレビューレイヤ座標へ変換し、曲線を描画する。
         override func layoutSubviews() {
@@ -233,11 +237,13 @@ private struct CameraPreviewView: UIViewRepresentable {
             outlineLayer.lineWidth = 3
             guard previewLayer.connection != nil, let boundary else {
                 outlineLayer.path = nil
+                selection?.display(nil)
                 return
             }
             let points = boundary.outline.map { previewLayer.layerPointConverted(fromCaptureDevicePoint: $0) }
             guard let first = points.first, points.allSatisfy({ $0.x.isFinite && $0.y.isFinite }) else {
                 outlineLayer.path = nil
+                selection?.display(nil)
                 return
             }
             let path = CGMutablePath()
@@ -245,6 +251,7 @@ private struct CameraPreviewView: UIViewRepresentable {
             for point in points.dropFirst() { path.addLine(to: point) }
             path.closeSubpath()
             outlineLayer.path = path
+            selection?.display(boundary)
         }
         /// 利用可能な接続に、解析フレームと同じ縦向きの回転を設定する。
         /// - 入力: なし

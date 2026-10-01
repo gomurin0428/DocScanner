@@ -70,6 +70,8 @@ DocScanner で使っている Apple フレームワークの使い方とハマ�
 
 ## その他
 
+- UIKit のシャッターは `touchDown` で描画済み輪郭を固定し、`primaryActionTriggered` で撮影する。`touchCancel` / `touchUpOutside` は固定を解除する。SwiftUI の Button アクションで解析状態を初めて読むと、指離しまでの間に状態が変わる。参照: https://developer.apple.com/documentation/uikit/uicontrol/event/primaryactiontriggered
+
 - `@Observable`（Observation フレームワーク、iOS 17+）：DocumentStore。View では `@Environment(DocumentStore.self)` で受ける。
 - PhotosPicker：`selectionBehavior: .ordered` と `loadTransferable(type: Data.self)` → `UIImage(data:)` で明示的選択順を保持。`PageImporter` は検出済み/未検出の `ImportResult.Entry` を入力順で保持し、ユーザー選択後に順序を保ったページ列を再構成する。アラート表示 Bool と pending 結果は分離し、SwiftUI の自動 dismiss が未処理データを消さないようにする。重い変換・検出は `Task.detached` でメインスレッド外へ。
 - シェア：`ShareLink(item: fileURL)` で UIActivityViewController 相当が出せる（iOS 16+）。

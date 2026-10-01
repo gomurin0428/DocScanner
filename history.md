@@ -1,5 +1,11 @@
 # history
 
+## 2026-10-01T16:35:18+09:00
+- 緑枠が見えているときの押下が、指離し時の解析値 nil / 別候補に置き換わるタイミング競合を修正。描画済み輪郭を CameraPreviewSelection に保存し、UIKit の touchDown で固定、primaryActionTriggered で capture(boundary:) に渡す。枠なし・キャンセル・次の撮影を区別し、勝手な再検出はしない。
+- XCTest の UIControl イベントと PageImporter の連携で、押下中の枠消失・候補変更・キャンセル・枠なし・無効化を検証。フォーカス16件、全92件が成功。任意の診断収集を -collect-test-diagnostics never で無効化し、テストは省略せず終了コード0を確認。
+- 実機で報告された失敗の全原因は未確定。カメラ実機と実タッチのUI操作は未確認。macOS/iOSの既存Xcode/XCTestを使用し、SwiftLint実行ファイル・設定なし。
+- Generic iOS Release build・build 11 の署名付き archive 成功（Swift型検査）。git diff --check 成功。
+
 ## 2026-10-01T15:38:47+09:00
 - 固定輪郭・湾曲検出の実装 afbc287 を KDocScanner 1.0 (10) として署名・archive・export・upload。App Store Connectで VALID / IN_BETA_TESTING、Internalグループの全ビルドアクセスを確認。
 - 配信ID: 8a7c4dae-b300-4973-830f-21171de5d4db。IPA SHA-256: e2d36d86a923d64a4c7d846599f70ea680bab003fefa8fca8b5d4984e716515b。実機のカメラ位置合わせ・湾曲紙の検出は未確認。

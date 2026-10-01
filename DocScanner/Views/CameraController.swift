@@ -201,16 +201,16 @@ final class CameraController: NSObject {
     }
 
     /// シャッター: 写真を 1 枚だけ撮影する。
-    /// - 入力: なし
+    /// - 入力: boundary … シャッターボタンが固定した表示済み metadata 輪郭
     /// - 出力: なし（完了まで isCapturing を維持する）
     /// - 処理: MainActor で pending を同期設定してからセッションキューへ撮影を依頼する
-    func capture() {
+    func capture(boundary: DocumentBoundary?) {
         guard isConfigured,
               !photoState.isCapturing,
               let generation = lifecycle.currentGeneration,
               photoState.beginCapture() else { return }
         error = nil
-        let delegate = CameraPhotoCaptureDelegate(boundary: metadataBoundary) { [weak self] delegate, image, boundary, captureError in
+        let delegate = CameraPhotoCaptureDelegate(boundary: boundary) { [weak self] delegate, image, boundary, captureError in
             Task { @MainActor in
                 self?.completeCapture(delegate: delegate, image: image,
                                       boundary: boundary, error: captureError, generation: generation)
