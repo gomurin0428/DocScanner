@@ -331,17 +331,13 @@ extension CameraController: AVCaptureVideoDataOutputSampleBufferDelegate {
         guard frameCounter % Self.detectEveryNthFrame == 0,
               let buffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
 
-        let request = VNDetectRectanglesRequest()
-        request.minimumConfidence = 0.6
-        request.minimumAspectRatio = 0.3
-        request.maximumObservations = 1
-        request.quadratureTolerance = 30
+        let request = DocumentRectangleDetector.makeRequest()
         let orientation = currentVisionOrientation()
         let handler = VNImageRequestHandler(cvPixelBuffer: buffer, orientation: orientation)
         // perform は Void なので結果は request.results から取る
         let quad: [CGPoint]?
         if (try? handler.perform([request])) != nil,
-           let observation = request.results?.first as? VNRectangleObservation {
+           let observation = DocumentRectangleDetector.preferred(in: request.results ?? []) {
             quad = [observation.topLeft, observation.topRight,
                     observation.bottomRight, observation.bottomLeft]
         } else {

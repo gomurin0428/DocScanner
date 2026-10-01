@@ -20,7 +20,8 @@ Core Image / Vision を使った画像処理（フィルタ・回転・書類検
 | `ShadingCorrector` | `levels(_:black:white:gamma:)` (static) | ramp + CIGammaAdjust のレベル補正（throws） |
 | `DocumentDetectionError` | `noDocumentFound` / `invalidImage` / `visionFailed` / `correctionFailed` / `renderFailed` / `unexpectedMaskFormat` / `bitmapContextFailed` / `singularHomography` | 検出・フラット化失敗の LocalizedError |
 | `DocumentDetector` | `init()` | CIContext 生成 |
-| `DocumentDetector` | `detectAndCorrect(_:)` | VNDetectRectanglesRequest で四角形検出 → seg が一致すれば PageFlattener、なければ CIPerspectiveCorrection（throws） |
+| `DocumentRectangleDetector` | `makeRequest()` / `preferred(in:)` (static) | 最小サイズ 0.1・縦横比 0.15・角度許容 45° で最大 8 候補を取得し、実面積×信頼度で紙を選択。カメラと静止画で共通利用 |
+| `DocumentDetector` | `detectAndCorrect(_:)` | 複数四角形検出 → seg がいずれかと一致すれば PageFlattener、なければ優先候補へ CIPerspectiveCorrection（throws） |
 | `DocumentDetector` | `quadsAgree(_:_:width:height:)` (static) | seg 四角形と検出四角形の 4 隅距離が max(W,H)×8% 以内か判定 |
 | `DocumentDetector` | `perspectiveCorrect(_:rectangle:scale:)` (private) | CIPerspectiveCorrection 適用 + レンダリング |
 | `DocumentDetector` | `normalizedCGImage(of:)` (private) | UIImage の向きを .up に正規化 |
@@ -90,6 +91,7 @@ classDiagram
         +homography(from:to:)$ [Double]
     }
     DocumentDetector ..> VNDetectRectanglesRequest : 検出
+    DocumentDetector --> DocumentRectangleDetector : 共通候補検出
     DocumentDetector ..> VNDetectDocumentSegmentationRequest : seg+マスク
     DocumentDetector --> PageFlattener : quadsAgree 合格時
     PageFlattener --> SegmentationMask
@@ -115,7 +117,7 @@ sequenceDiagram
     UI->>UI: selectionBehavior = .ordered
     loop 元画像の入力順
         UI->>Det: detectAndCorrect(photo)
-        Det->>Det: 四角形検出、seg が一致すれば flatten
+        Det->>Det: 最大8候補を検出、seg がいずれかと一致すれば flatten
         Det-->>UI: detected(page) または undetected(image)
     end
     UI->>UI: pending ImportResult を保持

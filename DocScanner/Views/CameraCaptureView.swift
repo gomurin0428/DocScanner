@@ -27,11 +27,9 @@ struct CameraCaptureView: View {
     /// - 処理: 表示時に権限確認→セッション構成・開始、非表示時に停止する
     var body: some View {
         ZStack {
-            CameraPreviewView(session: controller.captureSession)
-                .ignoresSafeArea()
-
-            // 検出四角形オーバレイ（緑）
             GeometryReader { geometry in
+                CameraPreviewView(session: controller.captureSession,
+                                  isConfigured: controller.isConfigured)
                 if let quad = controller.detectedQuad, controller.frameSize != .zero {
                     let points = Self.overlayPoints(
                         normalized: quad,
@@ -45,6 +43,7 @@ struct CameraCaptureView: View {
                     .stroke(.green, lineWidth: 3)
                 }
             }
+            .ignoresSafeArea()
             .allowsHitTesting(false)
 
             // 撮影時の白フラッシュ
@@ -200,6 +199,8 @@ private struct CameraPreviewView: UIViewRepresentable {
 
     /// 表示対象のキャプチャセッション。
     let session: AVCaptureSession
+    /// セッション構成後に接続の回転を再設定するための更新トリガー。
+    let isConfigured: Bool
 
     /// プレビュー用 UIView を生成する。
     /// - 入力: context … Representable コンテキスト
@@ -209,21 +210,30 @@ private struct CameraPreviewView: UIViewRepresentable {
         let view = PreviewView()
         view.previewLayer.session = session
         view.previewLayer.videoGravity = .resizeAspectFill
-        if let connection = view.previewLayer.connection,
-           connection.isVideoRotationAngleSupported(90) {
-            connection.videoRotationAngle = 90
-        }
+        view.updateRotation()
         return view
     }
 
     /// プレビュー UIView を更新する。
     /// - 入力: uiView … 対象、context … コンテキスト
     /// - 出力: なし
-    /// - 処理: 更新する状態は無いため何もしない
-    func updateUIView(_ uiView: PreviewView, context: Context) {}
+    /// - 処理: セッション構成後に生成された接続へ縦向きの回転を設定する
+    func updateUIView(_ uiView: PreviewView, context: Context) {
+        if isConfigured { uiView.updateRotation() }
+    }
 
     /// レイヤーが AVCaptureVideoPreviewLayer の UIView。
     final class PreviewView: UIView {
+        /// 利用可能な接続に、解析フレームと同じ縦向きの回転を設定する。
+        /// - 入力: なし
+        /// - 出力: なし
+        /// - 処理: 接続が 90 度の回転をサポートしている場合に適用する
+        func updateRotation() {
+            if let connection = previewLayer.connection,
+               connection.isVideoRotationAngleSupported(90) {
+                connection.videoRotationAngle = 90
+            }
+        }
         /// このビューの backing layer クラス（AVCaptureVideoPreviewLayer 固定）。
         override class var layerClass: AnyClass { AVCaptureVideoPreviewLayer.self }
 

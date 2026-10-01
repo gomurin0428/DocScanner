@@ -14,6 +14,14 @@
 
 ## テストケース一覧
 
+### 書類検出の追加回帰テスト
+
+| 型 | テスト | 役割 |
+| --- | --- | --- |
+| `DocumentDetectorTests` | `testDetectsSmallDocument` | 1000×1400 の画像内の 140×200 の紙を検出し、切り抜き後の寸法を照合 |
+| `DocumentDetectorTests` | `testDetectsNarrowReceipt` | 縦横比 0.18 のレシートを検出し、切り抜き後の寸法を照合 |
+| `DocumentDetectorTests` | `testSelectsPaperInsteadOfFirstInnerRectangle` | 候補順に依存せず内枠より紙全体を選択、候補なしは nil |
+
 ### PDFBuilderTests
 | テスト | 内容 |
 | --- | --- |

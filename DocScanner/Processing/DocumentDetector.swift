@@ -72,18 +72,14 @@ struct DocumentDetector {
         let height = CGFloat(cg.height)
         let handler = VNImageRequestHandler(ciImage: ciImage, options: [:])
 
-        // まず従来どおり四角形検出を行う（見つからなければ noDocumentFound）
-        let request = VNDetectRectanglesRequest()
-        request.minimumConfidence = 0.6
-        request.minimumAspectRatio = 0.3
-        request.maximumObservations = 1
-        request.quadratureTolerance = 30
+        let request = DocumentRectangleDetector.makeRequest()
         do {
             try handler.perform([request])
         } catch {
             throw DocumentDetectionError.visionFailed(error.localizedDescription)
         }
-        guard let rectangle = request.results?.first else {
+        let rectangles = request.results ?? []
+        guard let rectangle = DocumentRectangleDetector.preferred(in: rectangles) else {
             throw DocumentDetectionError.noDocumentFound
         }
 
@@ -99,12 +95,12 @@ struct DocumentDetector {
         if let observation = segRequest.results?.first,
            observation.confidence >= Self.segConfidenceThreshold,
            let maskBuffer = observation.globalSegmentationMask,
-           Self.quadsAgree(
+           rectangles.contains(where: { candidate in Self.quadsAgree(
                [observation.topLeft, observation.topRight,
                 observation.bottomRight, observation.bottomLeft],
-               [rectangle.topLeft, rectangle.topRight,
-                rectangle.bottomRight, rectangle.bottomLeft],
-               width: width, height: height) {
+               [candidate.topLeft, candidate.topRight,
+                candidate.bottomRight, candidate.bottomLeft],
+               width: width, height: height) }) {
             let mask = try SegmentationMask(
                 pixelBuffer: maskBuffer.pixelBuffer,
                 imageWidth: cg.width,

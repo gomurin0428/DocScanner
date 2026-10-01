@@ -14,7 +14,8 @@ SwiftUI 画面群を格納する。
 | `CameraController` | `detectedQuad` / `frameSize` / `captures` / `lastCapture` / `isCapturing` / `canFinish` / `error` / `isConfigured` / `captureSession` | UI 公開状態。撮影中はシャッター/Done を無効化し、Done は画像ありかつ pending なしの場合のみ有効 |
 | `CameraCaptureView` | `body` / `startIfAuthorized` (async) | フルスクリーンカメラ画面。preview（aspectFill）+ 緑 quad オーバレイ + 手動シャッター（白フラッシュ）+ 枚数/サムネイル + Done/Cancel。SwiftUI task が権限要求を所有し、denied は Open Settings、撮影失敗は pending 解除後も画面を保つエラーアラート |
 | `CameraCaptureView` | `overlayPoints(normalized:bufferSize:viewSize:)` (static) | Vision y-up 正規化座標 → aspect-fill ビュー座標変換（単体テスト対象） |
-| `CameraPreviewView` (private) | `makeUIView` / `updateUIView` | AVCaptureVideoPreviewLayer の Representable（resizeAspectFill、rotation 90） |
+| `CameraPreviewView` (private) | `makeUIView` / `updateUIView` | AVCaptureVideoPreviewLayer の Representable。緑枠と同一の全画面 GeometryReader を共有（resizeAspectFill）。isConfigured 更新後にも接続回転を設定 |
+| `CameraPreviewView.PreviewView` (private) | `updateRotation()` | 接続が利用可能なら解析フレームと同じ rotation 90 を適用 |
 | `EditorView` | `body` / `init(pages:)` | 新規ドキュメント編集（List .onMove 並べ替え・削除、ファイル名、用紙サイズ、追加スキャン/インポート、全ページフィルタ、Save PDF は下部 safeAreaInset のフル幅ボタン）。ページは共有 `DocumentDraft` で保持し、行タップ→ `editingPageID` → `.navigationDestination(item:)` で遷移（item/値ベース遷移の混在は不可） |
 | `EditorView` | `importItems` / `handleImages` / `save` / `applyFilterToAll` / `showCameraOrAlert` / `acceptUndetected` / `discardUndetected` (private) | 順序付き pending ImportResult から既存ページの後ろへ取込・保存 |
 | `PageRow` (private) | `body` / `loadThumbnail` / `thumbnailKey` | ページ縮小サムネイル行（失敗時は警告アイコン）。draft+pageID で参照し Filter All の変更も Observation で反映、非同期完了時にキーが変わっていれば古い結果を破棄。行は Button+chevron で包み `.onMove`/`.onDelete` は維持 |
@@ -63,6 +64,7 @@ classDiagram
     }
     DocumentListView --> CameraCaptureView : Scan 起動
     CameraCaptureView --> CameraController : セッション・撮影
+    CameraController --> DocumentRectangleDetector : 最大8候補から面積×信頼度で選択
     CameraController --> CameraLifecycleState : 世代ガード
     CameraController --> CameraPhotoState : single-flight 撮影状態
     DocumentListView --> EditorView : スキャン/インポート後
