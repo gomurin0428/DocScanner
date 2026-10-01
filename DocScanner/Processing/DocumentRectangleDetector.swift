@@ -24,6 +24,22 @@ enum DocumentRectangleDetector {
         observations.max { score($0) < score($1) }
     }
 
+    /// 優先矩形が書類領域検出でも裏付けられる場合だけライブ表示候補を返す。
+    /// - 入力: observations … 矩形候補、document … 書類領域、size … 向き補正済み画素寸法
+    /// - 出力: 確認済み矩形、信頼度不足・不一致なら nil
+    /// - 処理: 書類領域の信頼度 0.8 と四隅の一致を要求し、矩形だけでは緑枠を表示しない
+    static func confirmedDocument(in observations: [VNRectangleObservation],
+                                  document: VNRectangleObservation?,
+                                  size: CGSize) -> VNRectangleObservation? {
+        guard let document, document.confidence >= 0.8,
+              let rectangle = preferred(in: observations),
+              DocumentDetector.quadsAgree(
+                [document.topLeft, document.topRight, document.bottomRight, document.bottomLeft],
+                [rectangle.topLeft, rectangle.topRight, rectangle.bottomRight, rectangle.bottomLeft],
+                width: size.width, height: size.height) else { return nil }
+        return rectangle
+    }
+
     /// 正規化四角形の面積に信頼度を掛けた値を返す。
     /// - 入力: 検出した四角形
     /// - 出力: 面積と信頼度の積

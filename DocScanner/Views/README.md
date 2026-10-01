@@ -12,6 +12,7 @@ SwiftUI 画面群を格納する。
 | `CameraError` | `noCameraDevice` / `cannotCreateInput` / `cannotAddInput` / `cannotAddPhotoOutput` / `cannotAddVideoOutput` / `captureFailed` / `invalidPhotoData` | カメラ構成・撮影失敗の LocalizedError |
 | `CameraController` | `isAvailable()` (static) / `beginActivation()` / `start(generation:)` / `stop()` / `capture()` | @Observable な AVCaptureSession ラッパー。sessionQueue で configure+start/stop を直列化し、世代トークンで遅延開始・UI 通知を抑止。写真 pending は MainActor で同期設定し、最終 callback まで単一撮影を維持 |
 | `CameraController` | `detectedQuad` / `frameSize` / `captures` / `lastCapture` / `isCapturing` / `canFinish` / `error` / `isConfigured` / `captureSession` | UI 公開状態。撮影中はシャッター/Done を無効化し、Done は画像ありかつ pending なしの場合のみ有効 |
+| `DocumentRectangleTracker` | `update(_:at:)` | 書類候補とフレーム時刻から安定した四隅を返す。3 回・0.35 秒以上の連続確認、四隅の平滑化、0.75 秒の消失猶予で枠の点滅・飛び移りを抑える |
 | `CameraCaptureView` | `body` / `startIfAuthorized` (async) | フルスクリーンカメラ画面。preview（aspectFill）+ 緑 quad オーバレイ + 手動シャッター（白フラッシュ）+ 枚数/サムネイル + Done/Cancel。SwiftUI task が権限要求を所有し、denied は Open Settings、撮影失敗は pending 解除後も画面を保つエラーアラート |
 | `CameraCaptureView` | `overlayPoints(normalized:bufferSize:viewSize:)` (static) | Vision y-up 正規化座標 → aspect-fill ビュー座標変換（単体テスト対象） |
 | `CameraPreviewView` (private) | `makeUIView` / `updateUIView` | AVCaptureVideoPreviewLayer の Representable。緑枠と同一の全画面 GeometryReader を共有（resizeAspectFill）。isConfigured 更新後にも接続回転を設定 |
@@ -24,6 +25,21 @@ SwiftUI 画面群を格納する。
 | `PDFPreviewView` | `body` / `deleteDocument` | 保存済み PDF プレビュー + ShareLink + Delete |
 
 ## クラス図
+
+ライブ解析はビデオキューで最大毎秒 5 回実行し、矩形候補のうち面積×信頼度が最大の候補が、信頼度 0.8 以上の書類領域と一致する場合だけ追跡に渡す。単なる矩形では表示しない。候補変更時は旧候補の消失猶予と新候補の連続確認を両方要求する。カメラ起動世代・画像寸法の変更時に追跡を初期化し、古い世代の UI 通知は破棄する。手動シャッターは緑枠の有無によらず使える。
+
+```mermaid
+sequenceDiagram
+    participant C as CameraController (videoQueue)
+    participant V as Vision
+    participant T as DocumentRectangleTracker
+    participant U as MainActor
+    C->>V: 矩形 + 書類領域検出（最大 5Hz）
+    V-->>C: 優先候補と書類領域
+    C->>T: update(一致した候補または nil, フレーム時刻)
+    T-->>C: 安定した四隅または nil
+    C->>U: 世代が有効なら枠を更新
+```
 
 ```mermaid
 classDiagram
@@ -47,6 +63,10 @@ classDiagram
         +deactivate()
         +canStart(generation, taskIsCancelled) Bool
     }
+    class DocumentRectangleTracker {
+        +update(observation, time) [CGPoint]?
+    }
+    CameraController --> DocumentRectangleTracker
     class CameraPhotoState {
         +beginCapture() Bool
         +finishCapture(image, shouldAppend)

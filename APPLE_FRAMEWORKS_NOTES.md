@@ -22,6 +22,7 @@ DocScanner で使っている Apple フレームワークの使い方とハマ�
 
 - カメラライブプレビューと静止画像の書類検出で共有。`DocumentRectangleDetector.makeRequest()` を `VNImageRequestHandler(ciImage:)` で実行する。
 - 共通パラメータ：`minimumConfidence 0.6`、`minimumAspectRatio 0.15`、`minimumSize 0.1`、`maximumObservations 8`、`quadratureTolerance 45`。静止画では `preferred(in:)` が面積×信頼度で優先候補を選ぶ。
+- ライブでは `VNImageRequestHandler(cvPixelBuffer:orientation:)` で矩形と `VNDetectDocumentSegmentationRequest` を最大 5Hz で実行。優先矩形が信頼度 0.8 以上の書類領域と一致した場合だけ時間的な追跡へ渡す。`DocumentRectangleTracker` は 3 回・0.35 秒の確認、係数 0.35 の平滑化、0.75 秒の消失猶予を適用。矩形だけの結果を即時表示しない。実機の演算速度・誤検出率は未検証。
 - **座標系の罠**：`VNRectangleObservation` の topLeft/topRight/bottomLeft/bottomRight は「左下原点の正規化座標(0〜1)」。CIImage も左下原点なので変換は `CGPoint(x: p.x * w, y: p.y * h)`（`VNImagePointForNormalizedPoint` 相当）。`(1 - p.y)` で反転すると補正画像が上下ミラーになる。
 - `results` が空なら「検出できず」として明示的にエラーにし、UI 側で「Use Full Image / Cancel」のユーザー選択を取る（サイレントフォールバック禁止）。
 - シミュレータでも動作するが、コントラストの低い合成画像では検出に失敗することがある。テストは「暗い背景 + 白い四角形」で十分なコントラストを確保する。

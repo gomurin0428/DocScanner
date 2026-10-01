@@ -49,7 +49,7 @@ enum CameraError: LocalizedError, Equatable {
 @Observable
 final class CameraController: NSObject {
 
-    /// 直近フレームで検出された書類四角形（Vision 正規化座標 y-up、TL,TR,BR,BL の順）。
+    /// 連続検出で確認した書類四角形（Vision 正規化座標 y-up、TL,TR,BR,BL の順）。
     /// 未検出時は nil。メインスレッドでのみ更新する。
     private(set) var detectedQuad: [CGPoint]?
     /// プレビューバッファを縦向きで見たときのピクセルサイズ（オーバレイ座標変換用）。
@@ -93,12 +93,15 @@ final class CameraController: NSObject {
     /// ビデオバッファを Vision へ渡す際の向き（接続の回転可否に応じて設定する）。
     @ObservationIgnored
     private var visionOrientation: CGImagePropertyOrientation = .right
-    /// 検出間引き用フレームカウンタ（3 フレームに 1 回実行）。
+    /// ビデオキュー内の検出時刻と追跡状態。
     @ObservationIgnored
-    private var frameCounter = 0
-
-    /// 四角形検出を行うフレーム間隔。
-    private static let detectEveryNthFrame = 3
+    private var lastDetectionTime: TimeInterval?
+    @ObservationIgnored
+    private var trackingGeneration: UInt64?
+    @ObservationIgnored
+    private var trackingSize: CGSize = .zero
+    @ObservationIgnored
+    private var rectangleTracker = DocumentRectangleTracker()
 
     /// コントローラを初期化する。
     /// - 入力: なし
@@ -320,34 +323,44 @@ extension CameraController: AVCaptureVideoDataOutputSampleBufferDelegate {
     /// プレビューフレームを受け取り書類四角形を検出する。
     /// - 入力: output … ビデオ出力、sampleBuffer … フレームバッファ、connection … 接続
     /// - 出力: なし（detectedQuad / frameSize をメインスレッドで更新する）
-    /// - 処理: 3 フレームに 1 回、DocumentDetector と同パラメータの
-    ///   VNDetectRectanglesRequest を実行し正規化四角形を公開する。自動撮影は行わない
+    /// - 処理: 最大毎秒 5 回、矩形と書類領域の一致を検証し、時間的に安定した枠だけ公開する
     nonisolated func captureOutput(_ output: AVCaptureOutput,
                                    didOutput sampleBuffer: CMSampleBuffer,
                                    from connection: AVCaptureConnection) {
         guard let generation = lifecycle.currentGeneration,
               lifecycle.isActive(generation) else { return }
-        frameCounter += 1
-        guard frameCounter % Self.detectEveryNthFrame == 0,
+        let time = CMSampleBufferGetPresentationTimeStamp(sampleBuffer).seconds
+        guard time.isFinite,
               let buffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
-
-        let request = DocumentRectangleDetector.makeRequest()
-        let orientation = currentVisionOrientation()
-        let handler = VNImageRequestHandler(cvPixelBuffer: buffer, orientation: orientation)
-        // perform は Void なので結果は request.results から取る
-        let quad: [CGPoint]?
-        if (try? handler.perform([request])) != nil,
-           let observation = DocumentRectangleDetector.preferred(in: request.results ?? []) {
-            quad = [observation.topLeft, observation.topRight,
-                    observation.bottomRight, observation.bottomLeft]
-        } else {
-            quad = nil
+        if trackingGeneration != generation {
+            trackingGeneration = generation
+            rectangleTracker = DocumentRectangleTracker()
+            lastDetectionTime = nil
         }
+        if let lastDetectionTime, time >= lastDetectionTime, time - lastDetectionTime < 0.2 { return }
+        lastDetectionTime = time
+        let orientation = currentVisionOrientation()
         let size = CGSize(width: CVPixelBufferGetWidth(buffer),
                           height: CVPixelBufferGetHeight(buffer))
         let orientedSize = orientation == .up
             ? size
             : CGSize(width: size.height, height: size.width)
+        if trackingSize != orientedSize {
+            trackingSize = orientedSize
+            rectangleTracker = DocumentRectangleTracker()
+        }
+        let request = DocumentRectangleDetector.makeRequest()
+        let documentRequest = VNDetectDocumentSegmentationRequest()
+        let handler = VNImageRequestHandler(cvPixelBuffer: buffer, orientation: orientation)
+        let candidate: VNRectangleObservation?
+        if (try? handler.perform([request, documentRequest])) != nil {
+            candidate = DocumentRectangleDetector.confirmedDocument(
+                in: request.results ?? [], document: documentRequest.results?.first,
+                size: orientedSize)
+        } else {
+            candidate = nil
+        }
+        let quad = rectangleTracker.update(candidate, at: time)
         Task { @MainActor in
             guard self.lifecycle.isActive(generation) else { return }
             self.detectedQuad = quad

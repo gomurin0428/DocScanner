@@ -21,6 +21,7 @@ Core Image / Vision を使った画像処理（フィルタ・回転・書類検
 | `DocumentDetectionError` | `noDocumentFound` / `invalidImage` / `visionFailed` / `correctionFailed` / `renderFailed` / `unexpectedMaskFormat` / `bitmapContextFailed` / `singularHomography` | 検出・フラット化失敗の LocalizedError |
 | `DocumentDetector` | `init()` | CIContext 生成 |
 | `DocumentRectangleDetector` | `makeRequest()` / `preferred(in:)` (static) | 共通設定（信頼度 0.6・最小サイズ 0.1・縦横比 0.15・角度許容 45°・最大 8 候補）で検出し、実面積×信頼度で優先候補を選択。カメラと静止画で共通利用 |
+| `DocumentRectangleDetector` | `confirmedDocument(in:document:size:)` (static) | ライブ表示用。優先候補が信頼度 0.8 以上の書類領域と一致する場合だけ返す。別候補との一致では表示しない |
 | `DocumentDetector` | `detectAndCorrect(_:)` | 複数四角形検出 → 面積×信頼度で選んだ優先候補と seg が一致すれば PageFlattener、なければその候補へ CIPerspectiveCorrection（throws） |
 | `DocumentDetector` | `quadsAgree(_:_:width:height:)` (static) | seg 四角形と優先候補の 4 隅距離が max(W,H)×8% 以内か判定 |
 | `DocumentDetector` | `perspectiveCorrect(_:rectangle:scale:)` (private) | CIPerspectiveCorrection 適用 + レンダリング |

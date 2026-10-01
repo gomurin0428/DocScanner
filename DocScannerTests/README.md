@@ -14,6 +14,21 @@
 
 ## テストケース一覧
 
+### DocumentRectangleTrackerTests
+
+| テスト | 内容 |
+| --- | --- |
+| `testAlternatingCandidatesNeverFlash` | 交互に変わる候補を表示せず、同じ候補の連続時だけ表示 |
+| `testAcquisitionRequiresElapsedTimeAsWellAsFrameCount` | 3 フレームだけでなく経過時間も確認 |
+| `testJitterAndBriefDropoutKeepTheTrackedPaper` | 微小揺れの平滑化、単発の未検出・遠方候補の無視 |
+| `testSustainedLossClearsOverlayAndRequiresReacquisition` | 長い未検出で消去し、再確認なしに再表示しない |
+| `testNewDocumentDoesNotReplaceOverlayImmediately` | 新候補の確認と旧候補の消失猶予の両方を満たして切替 |
+| `testTimestampDiscontinuitiesResetTracking` | フレーム中断・時刻逆行・不正時刻で追跡を初期化 |
+| `testMissingFrameInterruptsAcquisition` | 確認中の未検出が連続カウントを切る |
+| `testLiveGateRequiresSegmentationToAgreeWithPreferredRectangle` | segmentation 不在・不一致・非優先候補との一致を拒否 |
+
+実カメラを使わない状態遷移・候補条件の検証であり、実写での認識精度・処理速度は未検証。
+
 ### 書類検出の追加回帰テスト
 
 | 型 | テスト | 役割 |
