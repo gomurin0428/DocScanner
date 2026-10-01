@@ -8,7 +8,7 @@ DocScanner で使っている Apple フレームワークの使い方とハマ�
 - 構成：`AVCaptureSession`（`.photo` プリセット）+ 背面広角 `AVCaptureDeviceInput` + `AVCapturePhotoOutput` + `AVCaptureVideoDataOutput`。`maxPhotoDimensions` にはアクティブフォーマットの `supportedMaxPhotoDimensions` の最大を設定し、`maxPhotoQualityPrioritization = .quality`。
 - 縦向き：撮影・プレビュー・ビデオ各接続で `isVideoRotationAngleSupported(90)` を確認し `videoRotationAngle = 90`。ビデオ出力接続が回転非対応の場合はバッファがセンサー横向きのままなので Vision へ `orientation: .right` を渡す（対応なら `.up`）。
 - 写真：`AVCapturePhotoSettings()` で `capturePhoto(with:delegate:)` → `fileDataRepresentation()` → `UIImage(data:)`（EXIF 向きは UIImage が保持）。
-- オーバレイ：直列キューの `AVCaptureVideoDataOutput` で 3 フレーム毎に `VNDetectRectanglesRequest`（DocumentDetector と同パラメータ）を実行し正規化四角形だけを公開（自動撮影はしない）。aspect-fill プレビューへの座標変換は `CameraCaptureView.overlayPoints`（y 反転 + 中央クロップオフセット）。
+- オーバレイ：直列キューの `AVCaptureVideoDataOutput` で 3 フレーム毎に `DocumentRectangleDetector.makeRequest()` を実行し正規化四角形だけを公開（自動撮影はしない）。静止画検出と同じ設定を使う。aspect-fill プレビューへの座標変換は `CameraCaptureView.overlayPoints`（y 反転 + 中央クロップオフセット）。
 - 権限：`AVCaptureDevice.authorizationStatus(for: .video)` / `requestAccess`。denied/restricted は `UIApplication.openSettingsURLString` への導線アラート。`NSCameraUsageDescription` 必須（`INFOPLIST_KEY_NSCameraUsageDescription` で生成済み）。
 - セッションの configure+startRunning は専用直列キューで連続実行し、stopRunning も同じキューへ積む。UI の `.task` が権限要求を所有し、await 後に cancellation と世代トークンを再確認するため、画面終了後に遅れて完了した権限/構成処理は開始・UI 更新を行わない。UI 準備状態は MainActor のみで更新する。
 - 撮影開始時は MainActor で pending を同期設定し、最終 `didFinishCaptureFor` まで次のシャッターと Done を無効化する。処理 callback の画像/エラーと最終 callback の失敗をまとめて MainActor へ一度に配信し、処理 callback が欠けても pending を解除する。
@@ -20,8 +20,8 @@ DocScanner で使っている Apple フレームワークの使い方とハマ�
 
 ## Vision（VNDetectRectanglesRequest）
 
-- 写真インポート時の書類検出に使用。`VNImageRequestHandler(ciImage:)` で `perform`。
-- パラメータ：`minimumConfidence 0.6`、`minimumAspectRatio 0.3`、`maximumObservations 1`、`quadratureTolerance 30`。
+- カメラライブプレビューと静止画像の書類検出で共有。`DocumentRectangleDetector.makeRequest()` を `VNImageRequestHandler(ciImage:)` で実行する。
+- 共通パラメータ：`minimumConfidence 0.6`、`minimumAspectRatio 0.15`、`minimumSize 0.1`、`maximumObservations 8`、`quadratureTolerance 45`。静止画では `preferred(in:)` が面積×信頼度で優先候補を選ぶ。
 - **座標系の罠**：`VNRectangleObservation` の topLeft/topRight/bottomLeft/bottomRight は「左下原点の正規化座標(0〜1)」。CIImage も左下原点なので変換は `CGPoint(x: p.x * w, y: p.y * h)`（`VNImagePointForNormalizedPoint` 相当）。`(1 - p.y)` で反転すると補正画像が上下ミラーになる。
 - `results` が空なら「検出できず」として明示的にエラーにし、UI 側で「Use Full Image / Cancel」のユーザー選択を取る（サイレントフォールバック禁止）。
 - シミュレータでも動作するが、コントラストの低い合成画像では検出に失敗することがある。テストは「暗い背景 + 白い四角形」で十分なコントラストを確保する。
@@ -49,7 +49,7 @@ DocScanner で使っている Apple フレームワークの使い方とハマ�
 
 - iOS 15+。`VNRectangleObservation` を返し、`globalSegmentationMask`（低解像度 Float32 確率マスク、`kCVPixelFormatType_OneComponent32Float`）が取れる。マスクバッファは行が上から順。
 - **プラットフォーム差が大きい**：本環境では macOS CLI は実写に conf 0.99 + 正しい四角形を返すが、iOS シミュレータ（26.5）はコンテンツ無関係に「画面下端 1/4 帯」程度の退化四角形を conf 0.83–0.99 で返す（無地画像でも 0.8 超）。同一画像・同一プロセスでも観測が変わることがある。実機では要検証だが、seg 結果は信用せず必ず別ソースで検証する設計にする。
-- 対策: 先に `VNDetectRectanglesRequest` で四角形を確定させ、seg は `confidence >= 0.8` + マスクあり + 4 隅が検出四角形と max(W,H)×8% 以内（`DocumentDetector.quadsAgree`）のときだけ輪郭追跡フラット化に使う。Vision/VisionKit/Core Image に公開のデワープ API は無いため、マスク輪郭追跡 + ホモグラフィ空間 Coons パッチで自前実装（`PageFlattener`）。
+- 対策: 先に `DocumentRectangleDetector.preferred(in:)` で優先四角形を選び、seg は `confidence >= 0.8` + マスクあり + 4 隅が優先四角形と max(W,H)×8% 以内（`DocumentDetector.quadsAgree`）のときだけ輪郭追跡フラット化に使う。他候補との一致ではフラット化しない。Vision/VisionKit/Core Image に公開のデワープ API は無いため、マスク輪郭追跡 + ホモグラフィ空間 Coons パッチで自前実装（`PageFlattener`）。
 - 輪郭追跡: 四角形各辺の外向き法線を −80..+80px 走査して mask≥0.5 の最外点を取り、±20px 内で内外 3px 平均輝度差（±2px ギャップ）が最大の位置で精緻化（>12 で採用）。メディアン5→移動平均7 で平滑化し 4px 内側へ寄せる。px 定数は max(W,H)/3000 でスケール。
 - Coons パッチ: 4 辺を矩形空間へ写像（ホモグラフィ）し `(u,v) → 辺補間 + 辺補間 − 双線形補間` で内部を充填、逆ホモグラフィで元画像を双線形サンプル（1 回リサンプル）。出力サイズ = 写像後の上下辺平均弧長 × 左右辺平均弧長。
 

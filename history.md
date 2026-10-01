@@ -1,9 +1,13 @@
 # history
 
 ## 2026-10-01T10:14:43+09:00
-- 書類検出の最小サイズ・縦横比・角度条件を見直し、最大 8 候補から面積×信頼度で選ぶ処理を静止画とカメラで共通化。seg の湾曲補正は、いずれかの矩形候補と一致した場合に適用。
+- 書類検出の最小サイズ・縦横比・角度条件を見直し、最大 8 候補から面積×信頼度で選ぶ処理を静止画とカメラで共通化。seg の湾曲補正は、優先候補と一致した場合に適用。
 - カメラ映像と緑枠の safe area を揃え、セッション構成後にもプレビュー接続の回転を設定。小さい紙・レシート・複数候補の回帰テストを追加。実機での位置合わせ・実写の検出精度は別途確認が必要。
 - 検証: 指定シミュレータ focused tests 13/13、generic iOS Release build 成功、全テスト 63/63。全テスト後の simulator 診断収集は 600 秒でタイムアウトしたが `TEST SUCCEEDED`。SwiftLint 実行ファイル・構成なし。
+
+## 2026-10-01T11:20:59+09:00
+- 変更概要：seg のフラット化一致ゲートを `DocumentRectangleDetector.preferred(in:)` で選んだ優先候補だけに限定。優先候補以外との一致で別シートを採用する経路を除去。Vision の共有検出設定と静止画・ライブプレビューでの共通利用を文書化。
+- 検証：`DocumentDetectorTests` 7/7 pass、generic iOS Release build 成功。
 
 ## 2026-09-30T20:07:13+09:00
 - main の bb105458b557c0c30c7cf36fdaddc9df14591a21 から KDocScanner 1.0 (5) を署名・アーカイブ・エクスポートし、TestFlight 内部グループ Internal に配信。App Store Connect で VALID / IN_BETA_TESTING を確認。

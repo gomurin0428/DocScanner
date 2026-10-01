@@ -95,12 +95,12 @@ struct DocumentDetector {
         if let observation = segRequest.results?.first,
            observation.confidence >= Self.segConfidenceThreshold,
            let maskBuffer = observation.globalSegmentationMask,
-           rectangles.contains(where: { candidate in Self.quadsAgree(
+           Self.quadsAgree(
                [observation.topLeft, observation.topRight,
                 observation.bottomRight, observation.bottomLeft],
-               [candidate.topLeft, candidate.topRight,
-                candidate.bottomRight, candidate.bottomLeft],
-               width: width, height: height) }) {
+               [rectangle.topLeft, rectangle.topRight,
+                rectangle.bottomRight, rectangle.bottomLeft],
+               width: width, height: height) {
             let mask = try SegmentationMask(
                 pixelBuffer: maskBuffer.pixelBuffer,
                 imageWidth: cg.width,
