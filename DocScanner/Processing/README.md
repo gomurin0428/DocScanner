@@ -22,7 +22,9 @@ Core Image / Vision を使った画像処理（フィルタ・回転・書類検
 | `DocumentDetector` | `init()` | CIContext 生成 |
 | `DocumentRectangleDetector` | `makeRequest()` / `preferred(in:)` (static) | 共通設定（信頼度 0.6・最小サイズ 0.1・縦横比 0.15・角度許容 45°・最大 8 候補）で検出し、実面積×信頼度で優先候補を選択。カメラと静止画で共通利用 |
 | `DocumentRectangleDetector` | `confirmedDocument(in:document:size:)` (static) | 優先矩形が信頼度 0.8 以上の書類領域と一致する場合だけ返す |
-| `DocumentRectangleDetector` | `liveDocument(in:document:size:)` (static) | 一致矩形、または信頼度・画像内四隅・凸形状・辺長を検証した書類領域を返す。ライブと静止画の共通選択規則 |
+| `DocumentRectangleDetector` | `liveDocument(in:document:size:)` (static) | confidence ≥ 0.6・画像内四隅・凸形状・辺長を検証した書類領域を返す。直線矩形の出入りで角を切り替えない |
+| `DocumentDetector` | `correct(_:boundary:)` | 保存済み輪郭で補正し、対象を再検出しない（throws） |
+| `DocumentBoundary` | `init(top:right:bottom:left:)` / `init(corners:)` / `corners` / `outline` / `map(_:)` / `isValid` | 左下原点の正規化四辺。表示・座標変換・補正で共有し、有限性・範囲・凸な四隅を検証 |
 | `DocumentDetector` | `detectAndCorrect(_:)` | 矩形・書類領域を両方検出し、ライブと同じ書類候補を優先。書類候補がない場合は矩形を使用。選択候補と seg が一致しマスクがあれば PageFlattener、なければ CIPerspectiveCorrection（throws） |
 | `DocumentDetector` | `quadsAgree(_:_:width:height:)` (static) | seg 四角形と優先候補の 4 隅距離が max(W,H)×8% 以内か判定 |
 | `DocumentDetector` | `perspectiveCorrect(_:rectangle:scale:)` (private) | CIPerspectiveCorrection 適用 + レンダリング |
@@ -33,6 +35,7 @@ Core Image / Vision を使った画像処理（フィルタ・回転・書類検
 | `PageBitmap` | `init(_:)` | CGImage → sRGB RGBA8 ビットマップ（throws） |
 | `PageBitmap` | `luminance(atX:y:)` / `sampleRGB(atX:y:into:)` | 最近傍輝度 / 双線形 RGB サンプル |
 | `PageFlattener` | `flatten(_:corners:mask:)` | マスク輪郭追跡 + Coons パッチで湾曲辺を矩形化（throws） |
+| `PageFlattener` | `traceBoundary(_:corners:mask:)` / `flatten(_:boundary:)` | 輪郭抽出と補正を分離。ライブ画像から曲線を抽出し、別解像度の写真にも同じ正規化輪郭を使える |
 | `PagePoint` | `+` / `-` / `*` / `length` | Double 精度 2D 点（左上原点） |
 | `PageGeometry` | `solveLinear(_:_:)` / `homography(from:to:)` / `apply(_:to:)` / `arcLength(_:)` / `sample(_:at:)` (static) | 線形ソルバ・ホモグラフィ・曲線サンプリング（throws） |
 | `PageImporterError` | `loadFailed(index, message)` / `decodeFailed(index)` | 写真読み込み失敗の LocalizedError（index と元エラーメッセージ付き） |
@@ -40,7 +43,8 @@ Core Image / Vision を使った画像処理（フィルタ・回転・書類検
 | `ImportResult` | `entries` / `detectedPages` / `undetectedImages` / `pages(includingUndetected:)` | 入力順の結果と互換用の分類配列。選択に応じて順序を保ったページ列を再構成 |
 | `PageImporter` | `init()` | DocumentDetector と DocumentImageProcessor を生成 |
 | `PageImporter` | `loadImages(from:)` (static) | PhotosPickerItem → UIImage（失敗は throw、非同期） |
-| `PageImporter` | `makePages(from:)` | 縮小 → 検出を入力順に実行し ImportResult.entries へ追加（throws） |
+| `PageSource` | `photo(UIImage)` / `camera(UIImage, boundary:)` / `image` | 写真の自動検出と、シャッター時の固定輪郭を区別。カメラの nil 境界は未検出として確認に回す |
+| `PageImporter` | `makePages(from:)`（UIImage / PageSource 配列） | 縮小 → 写真なら検出、カメラなら固定輪郭で補正。ImportResult.entries へ入力順に追加（throws） |
 
 ## クラス図
 
@@ -84,7 +88,12 @@ classDiagram
     DocumentDetector ..> DocumentDetectionError : throws
     class PageFlattener {
         +flatten(image, corners, mask) CGImage
+        +traceBoundary(image, corners, mask) DocumentBoundary
+        +flatten(image, boundary) CGImage
     }
+    PageSource --> DocumentBoundary : シャッター時に固定
+    PageImporter --> PageSource
+    PageFlattener --> DocumentBoundary
     class SegmentationMask {
         +value(at) Double
     }

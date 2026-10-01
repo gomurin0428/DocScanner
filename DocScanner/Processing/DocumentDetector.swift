@@ -50,6 +50,14 @@ struct DocumentDetector {
     /// CI レンダリング用の共有コンテキスト。
     private let context = CIContext()
 
+    /// 撮影時に固定した輪郭だけを補正する。Vision による対象の再選択は行わない。
+    /// - 入力: 撮影画像と正規化輪郭、出力: 同じ輪郭を矩形にした画像
+    func correct(_ image: UIImage, boundary: DocumentBoundary) throws -> UIImage {
+        let cg = try normalizedCGImage(of: image)
+        let output = try PageFlattener().flatten(cg, boundary: boundary)
+        return UIImage(cgImage: output, scale: image.scale, orientation: .up)
+    }
+
     /// セグメンテーション結果を採用する最低信頼度。
     /// 無地画像は 0〜0.55、実書類は 0.99 程度のため 0.8 で弾く。
     private static let segConfidenceThreshold: VNConfidence = 0.8

@@ -9,7 +9,7 @@ import SwiftUI
 struct CameraCaptureView: View {
 
     /// Done 押下時に撮影済み画像配列を返すコールバック。
-    let onDone: ([UIImage]) -> Void
+    let onDone: ([PageSource]) -> Void
     /// キャンセル時のコールバック。
     let onCancel: () -> Void
 
@@ -27,21 +27,10 @@ struct CameraCaptureView: View {
     /// - 処理: 表示時に権限確認→セッション構成・開始、非表示時に停止する
     var body: some View {
         ZStack {
-            GeometryReader { geometry in
+            GeometryReader { _ in
                 CameraPreviewView(session: controller.captureSession,
-                                  isConfigured: controller.isConfigured)
-                if let quad = controller.detectedQuad, controller.frameSize != .zero {
-                    let points = Self.overlayPoints(
-                        normalized: quad,
-                        bufferSize: controller.frameSize,
-                        viewSize: geometry.size)
-                    Path { path in
-                        path.move(to: points[0])
-                        for point in points.dropFirst() { path.addLine(to: point) }
-                        path.closeSubpath()
-                    }
-                    .stroke(.green, lineWidth: 3)
-                }
+                                  isConfigured: controller.isConfigured,
+                                  boundary: controller.metadataBoundary)
             }
             .ignoresSafeArea()
             .allowsHitTesting(false)
@@ -110,7 +99,7 @@ struct CameraCaptureView: View {
             }
             Button("Done") {
                 guard controller.canFinish else { return }
-                onDone(controller.captures)
+                onDone(controller.capturedSources)
             }
                 .disabled(!controller.canFinish)
                 .foregroundStyle(.white)
@@ -201,6 +190,7 @@ private struct CameraPreviewView: UIViewRepresentable {
     let session: AVCaptureSession
     /// セッション構成後に接続の回転を再設定するための更新トリガー。
     let isConfigured: Bool
+    let boundary: DocumentBoundary?
 
     /// プレビュー用 UIView を生成する。
     /// - 入力: context … Representable コンテキスト
@@ -210,6 +200,8 @@ private struct CameraPreviewView: UIViewRepresentable {
         let view = PreviewView()
         view.previewLayer.session = session
         view.previewLayer.videoGravity = .resizeAspectFill
+        view.previewLayer.addSublayer(view.outlineLayer)
+        view.boundary = boundary
         view.updateRotation()
         return view
     }
@@ -220,10 +212,40 @@ private struct CameraPreviewView: UIViewRepresentable {
     /// - 処理: セッション構成後に生成された接続へ縦向きの回転を設定する
     func updateUIView(_ uiView: PreviewView, context: Context) {
         if isConfigured { uiView.updateRotation() }
+        uiView.boundary = boundary
+        uiView.setNeedsLayout()
     }
 
     /// レイヤーが AVCaptureVideoPreviewLayer の UIView。
     final class PreviewView: UIView {
+        let outlineLayer = CAShapeLayer()
+        var boundary: DocumentBoundary?
+
+        /// metadata 輪郭を実際のプレビューレイヤ座標へ変換し、曲線を描画する。
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            defer { CATransaction.commit() }
+            outlineLayer.frame = bounds
+            outlineLayer.fillColor = UIColor.clear.cgColor
+            outlineLayer.strokeColor = UIColor.green.cgColor
+            outlineLayer.lineWidth = 3
+            guard previewLayer.connection != nil, let boundary else {
+                outlineLayer.path = nil
+                return
+            }
+            let points = boundary.outline.map { previewLayer.layerPointConverted(fromCaptureDevicePoint: $0) }
+            guard let first = points.first, points.allSatisfy({ $0.x.isFinite && $0.y.isFinite }) else {
+                outlineLayer.path = nil
+                return
+            }
+            let path = CGMutablePath()
+            path.move(to: first)
+            for point in points.dropFirst() { path.addLine(to: point) }
+            path.closeSubpath()
+            outlineLayer.path = path
+        }
         /// 利用可能な接続に、解析フレームと同じ縦向きの回転を設定する。
         /// - 入力: なし
         /// - 出力: なし

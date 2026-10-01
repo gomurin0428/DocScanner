@@ -7,6 +7,43 @@ final class DocumentRectangleTrackerTests: XCTestCase {
     private let paper = VNRectangleObservation(boundingBox: CGRect(x: 0.2, y: 0.2, width: 0.35, height: 0.6))
     private let other = VNRectangleObservation(boundingBox: CGRect(x: 0.6, y: 0.1, width: 0.3, height: 0.5))
 
+    /// 湾曲紙の角が 4% を超えて揺れても、同じ紙の連続観測として取得する。
+    func testCurvedCornerJitterAcquiresWithoutSwitchingToOtherPaper() throws {
+        let shifted = VNRectangleObservation(requestRevision: 1,
+            topLeft: CGPoint(x: paper.topLeft.x + 0.055, y: paper.topLeft.y),
+            bottomLeft: paper.bottomLeft, bottomRight: paper.bottomRight, topRight: paper.topRight)
+        var tracker = DocumentRectangleTracker()
+        XCTAssertNil(tracker.update(paper, at: 0))
+        XCTAssertNil(tracker.update(shifted, at: 0.2))
+        let quad = try XCTUnwrap(tracker.update(paper, at: 0.4))
+        XCTAssertTrue(tracker.didMatchObservation)
+        XCTAssertEqual(tracker.update(other, at: 0.6), quad)
+        XCTAssertFalse(tracker.didMatchObservation)
+    }
+
+    /// 中程度の信頼度でも安定した書類領域は採用し、低信頼度は拒否する。
+    func testModerateConfidenceCurvedDocumentStillRequiresStability() throws {
+        let document = ModerateConfidenceDocument(boundingBox: paper.boundingBox)
+        let candidate = try XCTUnwrap(DocumentRectangleDetector.liveDocument(
+            in: [], document: document, size: CGSize(width: 1000, height: 1400)))
+        var tracker = DocumentRectangleTracker()
+        XCTAssertNil(tracker.update(candidate, at: 0))
+        XCTAssertNil(tracker.update(candidate, at: 0.2))
+        XCTAssertNotNil(tracker.update(candidate, at: 0.4))
+        XCTAssertNil(DocumentRectangleDetector.liveDocument(in: [],
+            document: LowConfidenceDocument(boundingBox: paper.boundingBox),
+            size: CGSize(width: 1000, height: 1400)))
+    }
+
+    /// 直線検出が出入りしても、曲線側と直線側の角を交互に選び直さない。
+    func testRectangleAppearanceDoesNotChangeSegmentationCorners() {
+        let shifted = VNRectangleObservation(boundingBox: paper.boundingBox.offsetBy(dx: 0.035, dy: 0))
+        for rectangles in [[VNRectangleObservation](), [shifted], []] {
+            XCTAssertEqual(DocumentRectangleDetector.liveDocument(in: rectangles,
+                document: paper, size: CGSize(width: 1000, height: 1400))?.uuid, paper.uuid)
+        }
+    }
+
     /// 単発候補や交互に変わる矩形は表示せず、同じ紙が連続した場合だけ表示する。
     func testAlternatingCandidatesNeverFlash() {
         var tracker = DocumentRectangleTracker()
@@ -146,4 +183,12 @@ final class DocumentRectangleTrackerTests: XCTestCase {
         _ = tracker.update(paper, at: 0.4)
         return tracker
     }
+}
+
+private final class ModerateConfidenceDocument: VNRectangleObservation {
+    override var confidence: VNConfidence { 0.65 }
+}
+
+private final class LowConfidenceDocument: VNRectangleObservation {
+    override var confidence: VNConfidence { 0.4 }
 }

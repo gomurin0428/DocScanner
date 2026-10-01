@@ -2,6 +2,7 @@ import Vision
 
 /// 連続した検出だけを表示し、単発の誤検出や候補変更を抑える状態。
 struct DocumentRectangleTracker {
+    private(set) var didMatchObservation = false
     private var displayed: [CGPoint]?
     private var lastMatched: [CGPoint]?
     private var lastSeen: TimeInterval = 0
@@ -15,6 +16,7 @@ struct DocumentRectangleTracker {
     /// - 出力: 平滑化した四隅。確認中または消失時は nil
     /// - 処理: 3 回かつ 0.35 秒の一致で表示し、0.75 秒の未検出で解除する
     mutating func update(_ observation: VNRectangleObservation?, at time: TimeInterval) -> [CGPoint]? {
+        didMatchObservation = false
         guard time.isFinite else {
             self = Self()
             return nil
@@ -35,6 +37,7 @@ struct DocumentRectangleTracker {
         let quad = [observation.topLeft, observation.topRight,
                     observation.bottomRight, observation.bottomLeft]
         if let lastMatched, let displayed, Self.matches(quad, lastMatched) {
+            didMatchObservation = true
             self.displayed = zip(displayed, quad).map { old, new in
                 CGPoint(x: old.x + (new.x - old.x) * 0.35,
                         y: old.y + (new.y - old.y) * 0.35)
@@ -53,6 +56,7 @@ struct DocumentRectangleTracker {
             pendingCount = 1
         }
         if displayed == nil, pendingCount >= 3, time - pendingSince >= 0.35 {
+            didMatchObservation = true
             displayed = quad
             lastMatched = quad
             lastSeen = time
@@ -66,7 +70,7 @@ struct DocumentRectangleTracker {
     private static func matches(_ lhs: [CGPoint], _ rhs: [CGPoint]) -> Bool {
         let width = (rhs.map(\.x).max() ?? 0) - (rhs.map(\.x).min() ?? 0)
         let height = (rhs.map(\.y).max() ?? 0) - (rhs.map(\.y).min() ?? 0)
-        let tolerance = min(0.04, min(width, height) * 0.2)
+        let tolerance = min(0.07, min(width, height) * 0.2)
         return zip(lhs, rhs).allSatisfy { a, b in
             hypot(a.x - b.x, a.y - b.y) <= tolerance
         }

@@ -24,17 +24,14 @@ enum DocumentRectangleDetector {
         observations.max { score($0) < score($1) }
     }
 
-    /// 書類領域を主候補とし、一致する優先矩形があればその直線境界を使う。
+    /// 直線矩形の有無に依存せず、書類領域を一貫して追跡候補に使う。
     /// - 入力: observations … 矩形候補、document … 書類領域、size … 向き補正済み寸法
     /// - 出力: 書類候補。不確かな領域や画面端の退化領域は nil
     /// - 処理: 信頼度と四角形の形状を検証し、矩形の有無だけで書類を除外しない
     static func liveDocument(in observations: [VNRectangleObservation],
                              document: VNRectangleObservation?,
                              size: CGSize) -> VNRectangleObservation? {
-        if let confirmed = confirmedDocument(in: observations, document: document, size: size) {
-            return confirmed
-        }
-        guard let document, document.confidence >= 0.8,
+        guard let document, document.confidence >= 0.6,
               size.width > 0, size.height > 0 else { return nil }
         let points = [document.topLeft, document.topRight,
                       document.bottomRight, document.bottomLeft]

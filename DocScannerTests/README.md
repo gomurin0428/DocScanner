@@ -14,6 +14,47 @@
 
 ## テストケース一覧
 
+### CameraCaptureTests
+
+| テスト | 内容 |
+| --- | --- |
+| `testCameraImportKeepsSelectedRegionInsteadOfRedetecting` | 大きい別書類があっても保存した小さい赤い領域だけを補正 |
+| `testCameraWithoutOverlayRequiresFullImageConfirmation` | 枠なし撮影は未検出として全文画像の確認へ回す |
+| `testRotatedPhotoUsesUprightBoundary` | EXIF右回転写真でも同じ選択範囲と出力寸法を保持 |
+| `testHighResolutionCapturePreservesNormalizedSelection` | 4200px画像を3000pxへ縮小しても正規化選択領域を保持 |
+| `testPhotoStateKeepsEachCaptureBoundaryAndSkipsFailure` | ページごとの固定輪郭、撮影順、失敗時の非追加 |
+| `testDifferentVideoAndPhotoFieldsOfView` | video→metadata→photoの異なる画角を模したアフィン変換 |
+| `testAllPhotoOrientations` | 8種類のEXIF向きの座標変換 |
+| `testInvalidSavedBoundaryIsRejected` | 不正な保存輪郭を再検出で隠さずエラーにする |
+
+### 保存輪郭・湾曲候補の追加回帰
+
+| テスト | 内容 |
+| --- | --- |
+| `PageFlattenerTests.testSavedCurvedBoundaryIsReusedAtPhotoResolution` | 低解像度で抽出した曲線を2倍の写真へ再利用し、紙の上辺に背景が残らない |
+| `DocumentRectangleTrackerTests.testCurvedCornerJitterAcquiresWithoutSwitchingToOtherPaper` | 湾曲紙の角の5.5%揺れを許容しつつ別候補へ飛ばない |
+| `DocumentRectangleTrackerTests.testModerateConfidenceCurvedDocumentStillRequiresStability` | confidence 0.65の安定候補を採用、0.4は拒否 |
+| `DocumentRectangleTrackerTests.testRectangleAppearanceDoesNotChangeSegmentationCorners` | 直線矩形の出入りでsegmentationの角を切り替えない |
+
+```mermaid
+classDiagram
+    CameraCaptureTests --> PageImporter
+    CameraCaptureTests --> CameraCaptureGeometry
+    CameraCaptureTests --> CameraPhotoState
+    PageFlattenerTests --> DocumentBoundary
+```
+
+```mermaid
+sequenceDiagram
+    participant T as CameraCaptureTests
+    participant I as PageImporter
+    participant F as PageFlattener
+    T->>I: camera(画像, 固定輪郭)
+    I->>F: flatten(画像, 同じ輪郭)
+    F-->>T: 選択領域の画素・寸法
+    T->>T: 別書類・背景が混ざらないことを検証
+```
+
 ### DocumentRectangleTrackerTests
 
 | テスト | 内容 |

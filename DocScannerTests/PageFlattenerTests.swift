@@ -9,6 +9,35 @@ final class PageFlattenerTests: XCTestCase {
     /// 対象フラットナ。
     private let flattener = PageFlattener()
 
+    /// プレビューでなぞった湾曲輪郭を保存し、解像度が違う写真にも同じ四辺を使う。
+    func testSavedCurvedBoundaryIsReusedAtPhotoResolution() throws {
+        let size = CGSize(width: 1500, height: 2000)
+        let path = curvedPagePath()
+        let photo = renderPage(path: path, size: size)
+        var scale = CGAffineTransform(scaleX: 0.5, y: 0.5)
+        let previewPath = try XCTUnwrap(path.copy(using: &scale))
+        let previewSize = CGSize(width: 750, height: 1000)
+        let preview = renderPage(path: previewPath, size: previewSize)
+        let boundary = try flattener.traceBoundary(preview, corners: [
+            CGPoint(x: 100, y: 150), CGPoint(x: 650, y: 175),
+            CGPoint(x: 640, y: 875), CGPoint(x: 115, y: 850)
+        ], mask: makeMask(path: previewPath, size: previewSize))
+        XCTAssertTrue(boundary.isValid)
+        XCTAssertEqual(boundary.top.count, 65)
+        let straightMidpoint = (boundary.top[0].y + boundary.top[64].y) / 2
+        XCTAssertGreaterThan(abs(boundary.top[32].y - straightMidpoint), 0.004)
+        let output = try flattener.flatten(photo, boundary: boundary)
+        XCTAssertGreaterThan(output.width, 1000)
+        XCTAssertGreaterThan(output.height, 1300)
+        let result = UIImage(cgImage: output)
+        for x in stride(from: 10, to: output.width - 10, by: 100) {
+            let color = try XCTUnwrap(TestImageFactory.pixelColor(of: result, x: x, y: 10))
+            var red: CGFloat = 0, green: CGFloat = 0, blue: CGFloat = 0, alpha: CGFloat = 0
+            color.getRed(&red, green: &green, blue: &blue, alpha: &alpha)
+            XCTAssertGreaterThan((red + green + blue) / 3, 0.8)
+        }
+    }
+
     /// 各テストの前処理。
     /// - 入力: なし
     /// - 出力: なし
