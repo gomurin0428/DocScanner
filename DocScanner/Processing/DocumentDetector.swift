@@ -79,18 +79,17 @@ struct DocumentDetector {
             throw DocumentDetectionError.visionFailed(error.localizedDescription)
         }
         let rectangles = request.results ?? []
-        guard let rectangle = DocumentRectangleDetector.preferred(in: rectangles) else {
-            throw DocumentDetectionError.noDocumentFound
-        }
-
-        // 四角形が取れた場合のみセグメンテーションを試す。
-        // 信頼度・マスク有無・四角形との一致を全て満たす場合だけ
-        // 輪郭追跡フラット化を使い、それ以外は従来の台形補正に留める
         let segRequest = VNDetectDocumentSegmentationRequest()
         do {
             try handler.perform([segRequest])
         } catch {
             throw DocumentDetectionError.visionFailed(error.localizedDescription)
+        }
+        guard let rectangle = DocumentRectangleDetector.liveDocument(
+            in: rectangles, document: segRequest.results?.first,
+            size: CGSize(width: width, height: height))
+            ?? DocumentRectangleDetector.preferred(in: rectangles) else {
+            throw DocumentDetectionError.noDocumentFound
         }
         if let observation = segRequest.results?.first,
            observation.confidence >= Self.segConfidenceThreshold,

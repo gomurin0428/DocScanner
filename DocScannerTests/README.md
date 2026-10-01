@@ -25,7 +25,11 @@
 | `testNewDocumentDoesNotReplaceOverlayImmediately` | 新候補の確認と旧候補の消失猶予の両方を満たして切替 |
 | `testTimestampDiscontinuitiesResetTracking` | フレーム中断・時刻逆行・不正時刻で追跡を初期化 |
 | `testMissingFrameInterruptsAcquisition` | 確認中の未検出が連続カウントを切る |
-| `testLiveGateRequiresSegmentationToAgreeWithPreferredRectangle` | segmentation 不在・不一致・非優先候補との一致を拒否 |
+| `testLiveGateRequiresSegmentationToAgreeWithPreferredRectangle` | 矩形を採用する一致判定 `confirmedDocument` の単独テスト |
+| `testSegmentationOnlyDocumentRequiresStableFrames` | 矩形なしの書類領域も 3 フレーム後に表示。単発では表示しない |
+| `testUnrelatedRectangleDoesNotVetoDocument` | 背景矩形との不一致で書類を捨てず、一致時は矩形を使用。書類領域なしの矩形は非表示 |
+| `testAlternatingSegmentationOnlyDocumentsNeverFlash` | 矩形なしでも交互に変わる書類領域は表示しない |
+| `testSegmentationOnlyRejectsDegenerateRegions` | 全画面・端の帯・細い潰れた領域・寸法不正を拒否 |
 
 実カメラを使わない状態遷移・候補条件の検証であり、実写での認識精度・処理速度は未検証。
 

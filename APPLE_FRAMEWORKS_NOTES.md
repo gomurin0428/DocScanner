@@ -22,7 +22,7 @@ DocScanner で使っている Apple フレームワークの使い方とハマ�
 
 - カメラライブプレビューと静止画像の書類検出で共有。`DocumentRectangleDetector.makeRequest()` を `VNImageRequestHandler(ciImage:)` で実行する。
 - 共通パラメータ：`minimumConfidence 0.6`、`minimumAspectRatio 0.15`、`minimumSize 0.1`、`maximumObservations 8`、`quadratureTolerance 45`。静止画では `preferred(in:)` が面積×信頼度で優先候補を選ぶ。
-- ライブでは `VNImageRequestHandler(cvPixelBuffer:orientation:)` で矩形と `VNDetectDocumentSegmentationRequest` を最大 5Hz で実行。優先矩形が信頼度 0.8 以上の書類領域と一致した場合だけ時間的な追跡へ渡す。`DocumentRectangleTracker` は 3 回・0.35 秒の確認、係数 0.35 の平滑化、0.75 秒の消失猶予を適用。矩形だけの結果を即時表示しない。実機の演算速度・誤検出率は未検証。
+- ライブでは `VNImageRequestHandler(cvPixelBuffer:orientation:)` で矩形と `VNDetectDocumentSegmentationRequest` を最大 5Hz で実行。`liveDocument` は一致する優先矩形、または信頼度 0.8 以上で画像内に収まる凸形状の書類領域を返す。矩形 0 件でも書類を採用する。`DocumentRectangleTracker` は 3 回・0.35 秒の確認、係数 0.35 の平滑化、0.75 秒の消失猶予を適用。矩形だけの結果を表示しない。実機の演算速度・誤検出率は未検証。
 - **座標系の罠**：`VNRectangleObservation` の topLeft/topRight/bottomLeft/bottomRight は「左下原点の正規化座標(0〜1)」。CIImage も左下原点なので変換は `CGPoint(x: p.x * w, y: p.y * h)`（`VNImagePointForNormalizedPoint` 相当）。`(1 - p.y)` で反転すると補正画像が上下ミラーになる。
 - `results` が空なら「検出できず」として明示的にエラーにし、UI 側で「Use Full Image / Cancel」のユーザー選択を取る（サイレントフォールバック禁止）。
 - シミュレータでも動作するが、コントラストの低い合成画像では検出に失敗することがある。テストは「暗い背景 + 白い四角形」で十分なコントラストを確保する。
@@ -49,8 +49,8 @@ DocScanner で使っている Apple フレームワークの使い方とハマ�
 ## VNDetectDocumentSegmentationRequest（書類領域セグメンテーション）
 
 - iOS 15+。`VNRectangleObservation` を返し、`globalSegmentationMask`（低解像度 Float32 確率マスク、`kCVPixelFormatType_OneComponent32Float`）が取れる。マスクバッファは行が上から順。
-- **プラットフォーム差が大きい**：本環境では macOS CLI は実写に conf 0.99 + 正しい四角形を返すが、iOS シミュレータ（26.5）はコンテンツ無関係に「画面下端 1/4 帯」程度の退化四角形を conf 0.83–0.99 で返す（無地画像でも 0.8 超）。同一画像・同一プロセスでも観測が変わることがある。実機では要検証だが、seg 結果は信用せず必ず別ソースで検証する設計にする。
-- 対策: 先に `DocumentRectangleDetector.preferred(in:)` で優先四角形を選び、seg は `confidence >= 0.8` + マスクあり + 4 隅が優先四角形と max(W,H)×8% 以内（`DocumentDetector.quadsAgree`）のときだけ輪郭追跡フラット化に使う。他候補との一致ではフラット化しない。Vision/VisionKit/Core Image に公開のデワープ API は無いため、マスク輪郭追跡 + ホモグラフィ空間 Coons パッチで自前実装（`PageFlattener`）。
+- **プラットフォーム差が大きい**：本環境では macOS CLI は実写に conf 0.99 + 正しい四角形を返すが、iOS シミュレータ（26.5）はコンテンツ無関係に「画面下端 1/4 帯」程度の退化四角形を conf 0.83–0.99 で返す（無地画像でも 0.8 超）。同一画像・同一プロセスでも観測が変わることがある。信頼度だけで採用せず形状も検証する。
+- 対策: `liveDocument` をライブと静止画の共通候補選択に使う。優先矩形と一致しない seg には全四隅の 1〜99% 内包・凸形状・最短辺 10%・辺長比 0.15 の条件を課し、画面端の帯や全画面を除外する。矩形が取れない折れた紙でも seg 単独で採用可能。静止画は選択した候補と seg の一致・マスク有無を検証して `PageFlattener` へ渡す。別候補へ途中で切り替えない。
 - 輪郭追跡: 四角形各辺の外向き法線を −80..+80px 走査して mask≥0.5 の最外点を取り、±20px 内で内外 3px 平均輝度差（±2px ギャップ）が最大の位置で精緻化（>12 で採用）。メディアン5→移動平均7 で平滑化し 4px 内側へ寄せる。px 定数は max(W,H)/3000 でスケール。
 - Coons パッチ: 4 辺を矩形空間へ写像（ホモグラフィ）し `(u,v) → 辺補間 + 辺補間 − 双線形補間` で内部を充填、逆ホモグラフィで元画像を双線形サンプル（1 回リサンプル）。出力サイズ = 写像後の上下辺平均弧長 × 左右辺平均弧長。
 

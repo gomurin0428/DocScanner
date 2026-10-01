@@ -24,10 +24,44 @@ enum DocumentRectangleDetector {
         observations.max { score($0) < score($1) }
     }
 
-    /// 優先矩形が書類領域検出でも裏付けられる場合だけライブ表示候補を返す。
+    /// 書類領域を主候補とし、一致する優先矩形があればその直線境界を使う。
+    /// - 入力: observations … 矩形候補、document … 書類領域、size … 向き補正済み寸法
+    /// - 出力: 書類候補。不確かな領域や画面端の退化領域は nil
+    /// - 処理: 信頼度と四角形の形状を検証し、矩形の有無だけで書類を除外しない
+    static func liveDocument(in observations: [VNRectangleObservation],
+                             document: VNRectangleObservation?,
+                             size: CGSize) -> VNRectangleObservation? {
+        if let confirmed = confirmedDocument(in: observations, document: document, size: size) {
+            return confirmed
+        }
+        guard let document, document.confidence >= 0.8,
+              size.width > 0, size.height > 0 else { return nil }
+        let points = [document.topLeft, document.topRight,
+                      document.bottomRight, document.bottomLeft]
+        guard points.allSatisfy({ (0.01...0.99).contains($0.x) && (0.01...0.99).contains($0.y) }) else {
+            return nil
+        }
+        let edges = points.indices.map { index in
+            let a = points[index]
+            let b = points[(index + 1) % 4]
+            return CGPoint(x: (b.x - a.x) * size.width, y: (b.y - a.y) * size.height)
+        }
+        guard edges.indices.allSatisfy({ index in
+            let a = edges[index]
+            let b = edges[(index + 1) % 4]
+            return a.x * b.y - a.y * b.x < 0
+        }) else { return nil }
+        let lengths = edges.map { hypot($0.x, $0.y) }
+        guard let shortest = lengths.min(), let longest = lengths.max(),
+              shortest >= min(size.width, size.height) * 0.1,
+              shortest / longest >= 0.15 else { return nil }
+        return document
+    }
+
+    /// 優先矩形が書類領域検出でも裏付けられる場合だけ矩形候補を返す。
     /// - 入力: observations … 矩形候補、document … 書類領域、size … 向き補正済み画素寸法
     /// - 出力: 確認済み矩形、信頼度不足・不一致なら nil
-    /// - 処理: 書類領域の信頼度 0.8 と四隅の一致を要求し、矩形だけでは緑枠を表示しない
+    /// - 処理: 書類領域の信頼度 0.8 と優先矩形の四隅の一致を要求する
     static func confirmedDocument(in observations: [VNRectangleObservation],
                                   document: VNRectangleObservation?,
                                   size: CGSize) -> VNRectangleObservation? {

@@ -323,7 +323,7 @@ extension CameraController: AVCaptureVideoDataOutputSampleBufferDelegate {
     /// プレビューフレームを受け取り書類四角形を検出する。
     /// - 入力: output … ビデオ出力、sampleBuffer … フレームバッファ、connection … 接続
     /// - 出力: なし（detectedQuad / frameSize をメインスレッドで更新する）
-    /// - 処理: 最大毎秒 5 回、矩形と書類領域の一致を検証し、時間的に安定した枠だけ公開する
+    /// - 処理: 最大毎秒 5 回、書類領域を検証し、時間的に安定した枠だけ公開する
     nonisolated func captureOutput(_ output: AVCaptureOutput,
                                    didOutput sampleBuffer: CMSampleBuffer,
                                    from connection: AVCaptureConnection) {
@@ -354,7 +354,7 @@ extension CameraController: AVCaptureVideoDataOutputSampleBufferDelegate {
         let handler = VNImageRequestHandler(cvPixelBuffer: buffer, orientation: orientation)
         let candidate: VNRectangleObservation?
         if (try? handler.perform([request, documentRequest])) != nil {
-            candidate = DocumentRectangleDetector.confirmedDocument(
+            candidate = DocumentRectangleDetector.liveDocument(
                 in: request.results ?? [], document: documentRequest.results?.first,
                 size: orientedSize)
         } else {

@@ -5,7 +5,7 @@
 ## 機能
 
 - **スキャン**: 自前の AVCaptureSession カメラによる手動シャッター撮影（複数ページ蓄積、検出四角形オーバレイ表示、撮影タイミングはユーザー判断）。撮影後は写真インポートと同じ書類検出パイプラインへ流す
-- **写真インポート**: PhotosPicker 複数選択（選択順を保持）→ VNDetectRectanglesRequest で書類検出 + 台形補正。VNDetectDocumentSegmentationRequest のマスクが取得でき検出四角形と一致すれば輪郭追跡で湾曲した紙の辺も直線化（曲線輪郭 → Coons パッチ矩形化）。未検出時は「Use Full Image / Cancel」を確認し、選択に応じても入力順を維持
+- **写真インポート**: PhotosPicker 複数選択（選択順を保持）→ 矩形・書類領域を検出して補正。矩形が見つからない折れた紙も、信頼度と形状を検証した書類領域を使用。VNDetectDocumentSegmentationRequest のマスクが取得でき選択候補と一致すれば輪郭追跡で湾曲した紙の辺も直線化（曲線輪郭 → Coons パッチ矩形化）。未検出時は「Use Full Image / Cancel」を確認し、選択に応じても入力順を維持
 - **編集**: ページごとのフィルタ（Original / Enhanced / Grayscale / Black & White［適応閾値+AA］）、左右 90° 回転、削除、並べ替え（ドラッグ）、全ページ一括フィルタ、ページ追加
 - **PDF 出力**: A4 / Letter（画像寸法が用紙と一致しても 18pt マージン aspect-fit 中央配置）/ Fit to Image（端まで描画）、JPEG 再エンコードでファイルサイズ抑制
 - **管理**: Documents/Scans に保存、一覧表示（サムネイル・日時・ページ数・サイズ）、リネーム・削除・共有（ShareLink）、PDFKit プレビュー

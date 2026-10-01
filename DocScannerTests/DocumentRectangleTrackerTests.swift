@@ -90,6 +90,54 @@ final class DocumentRectangleTrackerTests: XCTestCase {
         XCTAssertEqual(DocumentRectangleDetector.confirmedDocument(in: [paper], document: paper, size: size)?.uuid, paper.uuid)
     }
 
+    /// 矩形がなくても書類領域が連続していれば表示し、単発では表示しない。
+    func testSegmentationOnlyDocumentRequiresStableFrames() throws {
+        let candidate = try XCTUnwrap(DocumentRectangleDetector.liveDocument(
+            in: [], document: paper, size: CGSize(width: 1000, height: 1400)))
+        var tracker = DocumentRectangleTracker()
+        XCTAssertNil(tracker.update(candidate, at: 0))
+        XCTAssertNil(tracker.update(candidate, at: 0.2))
+        XCTAssertEqual(tracker.update(candidate, at: 0.4)?.first, paper.topLeft)
+    }
+
+    /// 背景矩形との不一致で書類を捨てず、切り抜きにも使う書類領域を返す。
+    func testUnrelatedRectangleDoesNotVetoDocument() {
+        let background = VNRectangleObservation(boundingBox: CGRect(x: 0, y: 0, width: 1, height: 1))
+        let size = CGSize(width: 1000, height: 1400)
+        XCTAssertEqual(DocumentRectangleDetector.liveDocument(
+            in: [background], document: paper, size: size)?.uuid, paper.uuid)
+        XCTAssertEqual(DocumentRectangleDetector.liveDocument(
+            in: [paper], document: paper, size: size)?.uuid, paper.uuid)
+        XCTAssertNil(DocumentRectangleDetector.liveDocument(
+            in: [background], document: nil, size: size))
+    }
+
+    /// 書類領域だけの候補が交互に変わっても枠を点滅させない。
+    func testAlternatingSegmentationOnlyDocumentsNeverFlash() {
+        var tracker = DocumentRectangleTracker()
+        for index in 0..<20 {
+            let candidate = DocumentRectangleDetector.liveDocument(
+                in: [], document: index.isMultiple(of: 2) ? paper : other,
+                size: CGSize(width: 1000, height: 1400))
+            XCTAssertNotNil(candidate)
+            XCTAssertNil(tracker.update(candidate, at: Double(index) * 0.2))
+        }
+    }
+
+    /// 全画面・画面端の帯・潰れた領域・画素寸法不正は矩形なしで採用しない。
+    func testSegmentationOnlyRejectsDegenerateRegions() {
+        for box in [CGRect(x: 0, y: 0, width: 1, height: 1),
+                    CGRect(x: 0, y: 0, width: 1, height: 0.25),
+                    CGRect(x: 0.1, y: 0.1, width: 0.8, height: 0.02)] {
+            XCTAssertNil(DocumentRectangleDetector.liveDocument(
+                in: [], document: VNRectangleObservation(boundingBox: box),
+                size: CGSize(width: 1000, height: 1400)))
+        }
+        XCTAssertNil(DocumentRectangleDetector.liveDocument(in: [], document: paper, size: .zero))
+        XCTAssertNil(DocumentRectangleDetector.liveDocument(
+            in: [], document: nil, size: CGSize(width: 1000, height: 1400)))
+    }
+
     /// 共通の紙を 3 回確認済みの追跡状態を生成する。
     private func acquiredTracker() -> DocumentRectangleTracker {
         var tracker = DocumentRectangleTracker()
