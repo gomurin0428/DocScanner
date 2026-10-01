@@ -1,5 +1,9 @@
 # history
 
+## 2026-10-01T16:41:20+09:00
+- 押下時の描画済み輪郭固定 f2ee367 を KDocScanner 1.0 (11) として archive・export・署名検証・upload。App Store Connectで VALID / IN_BETA_TESTING、Internalグループの全ビルドアクセスを確認。
+- 配信ID: 2f798a10-e7f9-48f1-9ef1-1289a9c681ac。IPA SHA-256: 4c87388c815189eded3cb1bb656cb45b481bae07a0966e9908ea2d398dbc4319。実機カメラでの再現解消は未確認。
+
 ## 2026-10-01T16:35:18+09:00
 - 緑枠が見えているときの押下が、指離し時の解析値 nil / 別候補に置き換わるタイミング競合を修正。描画済み輪郭を CameraPreviewSelection に保存し、UIKit の touchDown で固定、primaryActionTriggered で capture(boundary:) に渡す。枠なし・キャンセル・次の撮影を区別し、勝手な再検出はしない。
 - XCTest の UIControl イベントと PageImporter の連携で、押下中の枠消失・候補変更・キャンセル・枠なし・無効化を検証。フォーカス16件、全92件が成功。任意の診断収集を -collect-test-diagnostics never で無効化し、テストは省略せず終了コード0を確認。
