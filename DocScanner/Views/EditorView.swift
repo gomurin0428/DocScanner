@@ -141,7 +141,7 @@ struct EditorView: View {
             CameraCaptureView(
                 onDone: { images in
                     showCamera = false
-                    handleImages(images)
+                    handleSources(images)
                 },
                 onCancel: { showCamera = false }
             )
@@ -219,10 +219,15 @@ struct EditorView: View {
     /// - 処理: バックグラウンドで makePages を実行し、検出済みは draft へ追加、
     ///   未検出は確認アラート用に保持する
     private func handleImages(_ images: [UIImage]) {
+        handleSources(images.map { .photo($0) })
+    }
+
+    /// 写真と固定輪郭付き撮影を処理し、入力順で下書きへ追加する。
+    private func handleSources(_ sources: [PageSource]) {
         isImporting = true
         Task.detached {
             do {
-                let result = try PageImporter().makePages(from: images)
+                let result = try PageImporter().makePages(from: sources)
                 await MainActor.run {
                     isImporting = false
                     if result.undetectedImages.isEmpty {

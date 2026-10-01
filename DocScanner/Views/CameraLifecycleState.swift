@@ -46,12 +46,13 @@ final class CameraLifecycleState: @unchecked Sendable {
 
 /// 手動撮影の UI 状態を保持する。
 struct CameraPhotoState {
-    private(set) var captures: [UIImage]
+    private(set) var sources: [PageSource]
+    var captures: [UIImage] { sources.map(\.image) }
     private(set) var isCapturing = false
 
     /// 初期撮影済み画像を設定する。
     init(captures: [UIImage] = []) {
-        self.captures = captures
+        self.sources = captures.map { .camera($0, boundary: nil) }
     }
 
     /// Done を実行できる状態かを返す。
@@ -68,10 +69,10 @@ struct CameraPhotoState {
     }
 
     /// 撮影トランザクションを完了し、必要なら画像を追加する。
-    mutating func finishCapture(image: UIImage?, shouldAppend: Bool) {
+    mutating func finishCapture(image: UIImage?, shouldAppend: Bool, boundary: DocumentBoundary? = nil) {
         guard isCapturing else { return }
         if shouldAppend, let image {
-            captures.append(image)
+            sources.append(.camera(image, boundary: boundary))
         }
         isCapturing = false
     }

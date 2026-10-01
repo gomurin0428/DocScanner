@@ -85,7 +85,7 @@ struct DocumentListView: View {
                 CameraCaptureView(
                     onDone: { images in
                         showCamera = false
-                        handleImages(images)
+                        handleSources(images)
                     },
                     onCancel: { showCamera = false }
                 )
@@ -198,10 +198,15 @@ struct DocumentListView: View {
     /// - 出力: なし（draftPages または pendingImportResult を更新する）
     /// - 処理: バックグラウンドで makePages を実行し、順序付き結果を保持して選択を確認する
     private func handleImages(_ images: [UIImage]) {
+        handleSources(images.map { .photo($0) })
+    }
+
+    /// 写真と固定輪郭付き撮影を処理し、入力順で編集画面へ渡す。
+    private func handleSources(_ sources: [PageSource]) {
         isProcessing = true
         Task.detached {
             do {
-                let result = try PageImporter().makePages(from: images)
+                let result = try PageImporter().makePages(from: sources)
                 await MainActor.run {
                     isProcessing = false
                     if result.undetectedImages.isEmpty {

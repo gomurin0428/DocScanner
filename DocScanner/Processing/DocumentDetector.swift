@@ -50,6 +50,14 @@ struct DocumentDetector {
     /// CI レンダリング用の共有コンテキスト。
     private let context = CIContext()
 
+    /// 撮影時に固定した輪郭だけを補正する。Vision による対象の再選択は行わない。
+    /// - 入力: 撮影画像と正規化輪郭、出力: 同じ輪郭を矩形にした画像
+    func correct(_ image: UIImage, boundary: DocumentBoundary) throws -> UIImage {
+        let cg = try normalizedCGImage(of: image)
+        let output = try PageFlattener().flatten(cg, boundary: boundary)
+        return UIImage(cgImage: output, scale: image.scale, orientation: .up)
+    }
+
     /// セグメンテーション結果を採用する最低信頼度。
     /// 無地画像は 0〜0.55、実書類は 0.99 程度のため 0.8 で弾く。
     private static let segConfidenceThreshold: VNConfidence = 0.8
@@ -72,29 +80,24 @@ struct DocumentDetector {
         let height = CGFloat(cg.height)
         let handler = VNImageRequestHandler(ciImage: ciImage, options: [:])
 
-        // まず従来どおり四角形検出を行う（見つからなければ noDocumentFound）
-        let request = VNDetectRectanglesRequest()
-        request.minimumConfidence = 0.6
-        request.minimumAspectRatio = 0.3
-        request.maximumObservations = 1
-        request.quadratureTolerance = 30
+        let request = DocumentRectangleDetector.makeRequest()
         do {
             try handler.perform([request])
         } catch {
             throw DocumentDetectionError.visionFailed(error.localizedDescription)
         }
-        guard let rectangle = request.results?.first else {
-            throw DocumentDetectionError.noDocumentFound
-        }
-
-        // 四角形が取れた場合のみセグメンテーションを試す。
-        // 信頼度・マスク有無・四角形との一致を全て満たす場合だけ
-        // 輪郭追跡フラット化を使い、それ以外は従来の台形補正に留める
+        let rectangles = request.results ?? []
         let segRequest = VNDetectDocumentSegmentationRequest()
         do {
             try handler.perform([segRequest])
         } catch {
             throw DocumentDetectionError.visionFailed(error.localizedDescription)
+        }
+        guard let rectangle = DocumentRectangleDetector.liveDocument(
+            in: rectangles, document: segRequest.results?.first,
+            size: CGSize(width: width, height: height))
+            ?? DocumentRectangleDetector.preferred(in: rectangles) else {
+            throw DocumentDetectionError.noDocumentFound
         }
         if let observation = segRequest.results?.first,
            observation.confidence >= Self.segConfidenceThreshold,

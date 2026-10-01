@@ -9,7 +9,7 @@ import SwiftUI
 struct CameraCaptureView: View {
 
     /// Done 押下時に撮影済み画像配列を返すコールバック。
-    let onDone: ([UIImage]) -> Void
+    let onDone: ([PageSource]) -> Void
     /// キャンセル時のコールバック。
     let onCancel: () -> Void
 
@@ -17,6 +17,7 @@ struct CameraCaptureView: View {
     @State private var controller = CameraController()
     /// 撮影時の白フラッシュ表示フラグ。
     @State private var flash = false
+    @State private var previewSelection = CameraPreviewSelection()
     /// カメラ権限拒否/制限時のアラート表示フラグ。
     @State private var showPermissionAlert = false
     /// セッション/撮影エラーのアラート表示フラグ。
@@ -27,24 +28,13 @@ struct CameraCaptureView: View {
     /// - 処理: 表示時に権限確認→セッション構成・開始、非表示時に停止する
     var body: some View {
         ZStack {
-            CameraPreviewView(session: controller.captureSession)
-                .ignoresSafeArea()
-
-            // 検出四角形オーバレイ（緑）
-            GeometryReader { geometry in
-                if let quad = controller.detectedQuad, controller.frameSize != .zero {
-                    let points = Self.overlayPoints(
-                        normalized: quad,
-                        bufferSize: controller.frameSize,
-                        viewSize: geometry.size)
-                    Path { path in
-                        path.move(to: points[0])
-                        for point in points.dropFirst() { path.addLine(to: point) }
-                        path.closeSubpath()
-                    }
-                    .stroke(.green, lineWidth: 3)
-                }
+            GeometryReader { _ in
+                CameraPreviewView(session: controller.captureSession,
+                                  isConfigured: controller.isConfigured,
+                                  boundary: controller.metadataBoundary,
+                                  selection: previewSelection)
             }
+            .ignoresSafeArea()
             .allowsHitTesting(false)
 
             // 撮影時の白フラッシュ
@@ -58,7 +48,10 @@ struct CameraCaptureView: View {
             }
         }
         .task { await startIfAuthorized() }
-        .onDisappear { controller.stop() }
+        .onDisappear {
+            previewSelection.display(nil)
+            controller.stop()
+        }
         .onChange(of: controller.error) { _, error in
             if error != nil { showCameraErrorAlert = true }
         }
@@ -111,7 +104,7 @@ struct CameraCaptureView: View {
             }
             Button("Done") {
                 guard controller.canFinish else { return }
-                onDone(controller.captures)
+                onDone(controller.capturedSources)
             }
                 .disabled(!controller.canFinish)
                 .foregroundStyle(.white)
@@ -125,21 +118,17 @@ struct CameraCaptureView: View {
     /// - 出力: シャッターボタンのビュー
     /// - 処理: 押下で白フラッシュを短時間表示して撮影する
     private var shutterButton: some View {
-        Button {
+        CameraShutterButton(selection: previewSelection,
+                            isEnabled: controller.isConfigured && !controller.isCapturing) { boundary in
             guard controller.isConfigured, !controller.isCapturing else { return }
             flash = true
-            controller.capture()
+            controller.capture(boundary: boundary)
             Task {
                 try? await Task.sleep(for: .milliseconds(150))
                 flash = false
             }
-        } label: {
-            Circle()
-                .fill(.white)
-                .frame(width: 72, height: 72)
-                .overlay(Circle().stroke(.white.opacity(0.6), lineWidth: 4).padding(-6))
         }
-        .disabled(!controller.isConfigured || controller.isCapturing)
+        .frame(width: 72, height: 72)
     }
 
     /// 権限状態に応じてセッションを開始する。
@@ -200,6 +189,10 @@ private struct CameraPreviewView: UIViewRepresentable {
 
     /// 表示対象のキャプチャセッション。
     let session: AVCaptureSession
+    /// セッション構成後に接続の回転を再設定するための更新トリガー。
+    let isConfigured: Bool
+    let boundary: DocumentBoundary?
+    let selection: CameraPreviewSelection
 
     /// プレビュー用 UIView を生成する。
     /// - 入力: context … Representable コンテキスト
@@ -209,21 +202,67 @@ private struct CameraPreviewView: UIViewRepresentable {
         let view = PreviewView()
         view.previewLayer.session = session
         view.previewLayer.videoGravity = .resizeAspectFill
-        if let connection = view.previewLayer.connection,
-           connection.isVideoRotationAngleSupported(90) {
-            connection.videoRotationAngle = 90
-        }
+        view.previewLayer.addSublayer(view.outlineLayer)
+        view.boundary = boundary
+        view.selection = selection
+        view.updateRotation()
         return view
     }
 
     /// プレビュー UIView を更新する。
     /// - 入力: uiView … 対象、context … コンテキスト
     /// - 出力: なし
-    /// - 処理: 更新する状態は無いため何もしない
-    func updateUIView(_ uiView: PreviewView, context: Context) {}
+    /// - 処理: セッション構成後に生成された接続へ縦向きの回転を設定する
+    func updateUIView(_ uiView: PreviewView, context: Context) {
+        if isConfigured { uiView.updateRotation() }
+        uiView.boundary = boundary
+        uiView.setNeedsLayout()
+    }
 
     /// レイヤーが AVCaptureVideoPreviewLayer の UIView。
     final class PreviewView: UIView {
+        let outlineLayer = CAShapeLayer()
+        var boundary: DocumentBoundary?
+        var selection: CameraPreviewSelection?
+
+        /// metadata 輪郭を実際のプレビューレイヤ座標へ変換し、曲線を描画する。
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            defer { CATransaction.commit() }
+            outlineLayer.frame = bounds
+            outlineLayer.fillColor = UIColor.clear.cgColor
+            outlineLayer.strokeColor = UIColor.green.cgColor
+            outlineLayer.lineWidth = 3
+            guard previewLayer.connection != nil, let boundary else {
+                outlineLayer.path = nil
+                selection?.display(nil)
+                return
+            }
+            let points = boundary.outline.map { previewLayer.layerPointConverted(fromCaptureDevicePoint: $0) }
+            guard let first = points.first, points.allSatisfy({ $0.x.isFinite && $0.y.isFinite }) else {
+                outlineLayer.path = nil
+                selection?.display(nil)
+                return
+            }
+            let path = CGMutablePath()
+            path.move(to: first)
+            for point in points.dropFirst() { path.addLine(to: point) }
+            path.closeSubpath()
+            outlineLayer.path = path
+            selection?.display(boundary)
+        }
+        /// 利用可能な接続に、解析フレームと同じ縦向きの回転を設定する。
+        /// - 入力: なし
+        /// - 出力: なし
+        /// - 処理: 接続が 90 度の回転をサポートしている場合に適用する
+        func updateRotation() {
+            if let connection = previewLayer.connection,
+               connection.isVideoRotationAngleSupported(90) {
+                connection.videoRotationAngle = 90
+            }
+        }
         /// このビューの backing layer クラス（AVCaptureVideoPreviewLayer 固定）。
         override class var layerClass: AnyClass { AVCaptureVideoPreviewLayer.self }
 

@@ -1,4 +1,5 @@
 import XCTest
+import Vision
 @testable import DocScanner
 
 /// DocumentDetector の書類検出・台形補正のテスト。
@@ -6,6 +7,56 @@ final class DocumentDetectorTests: XCTestCase {
 
     /// 対象検出器。
     private let detector = DocumentDetector()
+
+    /// 画面内で小さく写った紙を補正できることを検証する。
+    /// - 入力: 短辺が画像短辺の 14% の紙
+    /// - 出力: なし
+    /// - 処理: 検出後の寸法が紙領域と一致するか確認する
+    func testDetectsSmallDocument() throws {
+        try assertDetectedPaper(CGRect(x: 430, y: 600, width: 140, height: 200))
+    }
+
+    /// 縦横比 0.18 のレシートを補正できることを検証する。
+    /// - 入力: 細長い合成紙
+    /// - 出力: なし
+    /// - 処理: 検出後の寸法が紙領域と一致するか確認する
+    func testDetectsNarrowReceipt() throws {
+        try assertDetectedPaper(CGRect(x: 410, y: 200, width: 180, height: 1000))
+    }
+
+    /// 内側の小さな枠より紙全体を優先することを検証する。
+    /// - 入力: 順番を入れ替えた二つの候補
+    /// - 出力: なし
+    /// - 処理: 入力順に依存せず紙を選び、候補なしなら nil となるか確認する
+    func testSelectsPaperInsteadOfFirstInnerRectangle() {
+        let paper = VNRectangleObservation(boundingBox: CGRect(x: 0.2, y: 0.2, width: 0.6, height: 0.6))
+        let inner = VNRectangleObservation(boundingBox: CGRect(x: 0.3, y: 0.3, width: 0.2, height: 0.2))
+        for observations in [[inner, paper], [paper, inner]] {
+            XCTAssertEqual(DocumentRectangleDetector.preferred(in: observations)?.boundingBox,
+                           paper.boundingBox)
+        }
+        XCTAssertNil(DocumentRectangleDetector.preferred(in: []))
+    }
+
+    /// 合成紙の検出・補正結果を照合する。
+    /// - 入力: 暗背景上の紙の矩形
+    /// - 出力: なし（検出失敗は throw）
+    /// - 処理: 1000×1400 画像を生成し、補正後寸法を 10px の誤差で比較する
+    private func assertDetectedPaper(_ paper: CGRect) throws {
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let size = CGSize(width: 1000, height: 1400)
+        let image = UIGraphicsImageRenderer(size: size, format: format).image { context in
+            UIColor(white: 0.15, alpha: 1).setFill()
+            context.fill(CGRect(origin: .zero, size: size))
+            UIColor(white: 0.95, alpha: 1).setFill()
+            context.fill(paper)
+        }
+        let corrected = try detector.detectAndCorrect(image)
+        let pixels = TestImageFactory.pixelSize(of: corrected)
+        XCTAssertEqual(pixels.width, paper.width, accuracy: 10)
+        XCTAssertEqual(pixels.height, paper.height, accuracy: 10)
+    }
 
     /// 各テストの前処理。
     /// - 入力: なし

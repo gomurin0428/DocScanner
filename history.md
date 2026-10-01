@@ -1,5 +1,63 @@
 # history
 
+## 2026-10-01T16:41:20+09:00
+- 押下時の描画済み輪郭固定 f2ee367 を KDocScanner 1.0 (11) として archive・export・署名検証・upload。App Store Connectで VALID / IN_BETA_TESTING、Internalグループの全ビルドアクセスを確認。
+- 配信ID: 2f798a10-e7f9-48f1-9ef1-1289a9c681ac。IPA SHA-256: 4c87388c815189eded3cb1bb656cb45b481bae07a0966e9908ea2d398dbc4319。実機カメラでの再現解消は未確認。
+
+## 2026-10-01T16:35:18+09:00
+- 緑枠が見えているときの押下が、指離し時の解析値 nil / 別候補に置き換わるタイミング競合を修正。描画済み輪郭を CameraPreviewSelection に保存し、UIKit の touchDown で固定、primaryActionTriggered で capture(boundary:) に渡す。枠なし・キャンセル・次の撮影を区別し、勝手な再検出はしない。
+- XCTest の UIControl イベントと PageImporter の連携で、押下中の枠消失・候補変更・キャンセル・枠なし・無効化を検証。フォーカス16件、全92件が成功。任意の診断収集を -collect-test-diagnostics never で無効化し、テストは省略せず終了コード0を確認。
+- 実機で報告された失敗の全原因は未確定。カメラ実機と実タッチのUI操作は未確認。macOS/iOSの既存Xcode/XCTestを使用し、SwiftLint実行ファイル・設定なし。
+- Generic iOS Release build・build 11 の署名付き archive 成功（Swift型検査）。git diff --check 成功。
+
+## 2026-10-01T15:38:47+09:00
+- 固定輪郭・湾曲検出の実装 afbc287 を KDocScanner 1.0 (10) として署名・archive・export・upload。App Store Connectで VALID / IN_BETA_TESTING、Internalグループの全ビルドアクセスを確認。
+- 配信ID: 8a7c4dae-b300-4973-830f-21171de5d4db。IPA SHA-256: e2d36d86a923d64a4c7d846599f70ea680bab003fefa8fca8b5d4984e716515b。実機のカメラ位置合わせ・湾曲紙の検出は未確認。
+
+## 2026-10-01T15:30:23+09:00
+- 緑枠で表示した湾曲輪郭をシャッター時に固定し、video→metadata→photo座標とEXIF向きを変換して同じ範囲を補正。撮影後の再検出を廃止し、枠なし撮影は全文画像確認へ回す。
+- 緑枠の描画も同じmetadata座標をAVCaptureVideoPreviewLayerの変換APIへ渡し、解析出力とプレビューの画角差を反映。
+- マスク輪郭抽出とCoons補正を分離。法線探索幅を長辺3000px換算で±200pxへ拡大。書類領域を一貫して追跡し、confidence下限0.6・角の揺れ上限0.07。3回/0.35秒確認・0.75秒消失猶予・手動シャッターを維持。
+- 合成画像の固定範囲、別書類除外、EXIF、解像度差、湾曲四辺の再利用、追跡の回帰を追加。最新コードのXCTest 87件成功、xcodebuild終了コード0。任意のSimulator診断収集はハングしたため診断子プロセスのみ終了。Release build成功。SwiftLint実行ファイル・設定なし。macOS/iOSのためWindows用BootstrapとMSTestは使わず、既存のXcode/XCTestを使用。
+- 提供写真のMac Vision解析で3解像度の書類検出と1920px版の補正を確認。私的な写真・派生画像はコミットしない。実機カメラの位置合わせ・検出精度・速度は未確認。
+
+## 2026-10-01T14:26:40+09:00
+- 提供写真で矩形 0 件・書類領域 confidence 0.984〜0.99 を確認。ライブと撮影後の候補選択に、矩形との一致を必須としない書類領域検出を追加。全画面・画面端の帯・潰れた形状は除外。
+- 3 フレームの確認、平滑化、消失猶予、手動シャッターを維持。ライブと静止画で同じ書類候補を優先する。
+- Mac 上で本番の候補選択・追跡・PageFlattener を用い、提供写真の 3 解像度で検出、1920px 版で切り抜きを確認。私的な画像・出力はコミットしない。実機カメラは未検証。
+- XCTest 75/75、TEST SUCCEEDED、終了コード 0。テスト後のシミュレータ診断収集のみ 600 秒でタイムアウト。Generic iOS Release build 成功（Swift 型検査）。SwiftLint の実行ファイル・設定はないため未実施。
+- 修正 4cfdfd31a51a73a7b9878132a7a896b429896301 を KDocScanner 1.0 (9) として配信。App Store Connect の VALID / IN_BETA_TESTING、Internal グループの全ビルドアクセスを確認。
+
+## 2026-10-01T13:41:26+09:00
+- 点滅対策 c0360d25e85d5fcf1c36f9b38da367dec5cb2b0e を KDocScanner 1.0 (8) として署名・配信。App Store Connect の VALID / IN_BETA_TESTING、Internal グループの全ビルドアクセスを確認。
+- 全 XCTest 71/71、xcodebuild は TEST SUCCEEDED / 終了コード 0。テスト後のシミュレータ診断収集のみ 600 秒でタイムアウト。実機の精度・速度・発熱は未検証。
+- Git プロキシ認証エラーは、保存済み GitHub 認証情報で HTTPS 接続して解消し、PR に反映済み。
+
+## 2026-10-01T13:31:34+09:00
+- ライブの緑枠を各フレーム即時表示から、書類領域との一致と連続確認後の表示へ変更。3 回・0.35 秒の確認、四隅の平滑化、0.75 秒の消失猶予、候補切替の保留を追加。解析は最大 5Hz、カメラ世代・画像寸法変更時に初期化。手動シャッターを維持。
+- 検証：新規時系列・候補ゲート 8 件を含む XCTest 71 件が失敗なしで完了。generic iOS Release build 成功。SwiftLint 実行ファイル・構成なし。実機カメラの精度・処理速度は未検証。
+
+## 2026-10-01T11:33:04+09:00
+- レビュー修正済み 642854c0b90afb0c51661102770748093c309409 を KDocScanner 1.0 (7) として署名・アップロード。App Store Connect で VALID / IN_BETA_TESTING、Internal グループの全ビルドアクセスを確認。
+- IPA の Bundle ID com.komurasoft.DocScanner、Team ID 5N2M793R62、署名有効を確認。実機カメラの緑枠・認識精度はユーザーの iPhone で確認が必要。
+
+## 2026-10-01T11:28:41+09:00
+- 初回の書類認識修正版 ed5fa2ff103884247452bc4511ec5e1df03274f9 を KDocScanner 1.0 (6) としてアップロード。altool の成功と App Store Connect の VALID を確認。
+- 配信準備中にレビューで判明した候補選択の不一致を 642854c0b90afb0c51661102770748093c309409 で修正したため、実機確認用には次の build 7 を配信する。
+
+## 2026-10-01T10:14:43+09:00
+- 書類検出の最小サイズ・縦横比・角度条件を見直し、最大 8 候補から面積×信頼度で選ぶ処理を静止画とカメラで共通化。seg の湾曲補正は、優先候補と一致した場合に適用。
+- カメラ映像と緑枠の safe area を揃え、セッション構成後にもプレビュー接続の回転を設定。小さい紙・レシート・複数候補の回帰テストを追加。実機での位置合わせ・実写の検出精度は別途確認が必要。
+- 検証: 指定シミュレータ focused tests 13/13、generic iOS Release build 成功、全テスト 63/63。全テスト後の simulator 診断収集は 600 秒でタイムアウトしたが `TEST SUCCEEDED`。SwiftLint 実行ファイル・構成なし。
+
+## 2026-10-01T11:20:59+09:00
+- 変更概要：seg のフラット化一致ゲートを `DocumentRectangleDetector.preferred(in:)` で選んだ優先候補だけに限定。優先候補以外との一致で別シートを採用する経路を除去。Vision の共有検出設定と静止画・ライブプレビューでの共通利用を文書化。
+- 検証：`DocumentDetectorTests` 7/7 pass、generic iOS Release build 成功。
+
+## 2026-09-30T20:07:13+09:00
+- main の bb105458b557c0c30c7cf36fdaddc9df14591a21 から KDocScanner 1.0 (5) を署名・アーカイブ・エクスポートし、TestFlight 内部グループ Internal に配信。App Store Connect で VALID / IN_BETA_TESTING を確認。
+- ビルド番号は CURRENT_PROJECT_VERSION=5 のビルド時指定。アプリのソース変更なし。実機カメラ確認は引き続き必要。
+
 ## 2026-09-29T00:00:00+09:00
 - 変更概要：DocScanner 新規作成。VisionKit ドキュメントカメラ + PhotosPicker インポート、VNDetectRectanglesRequest + CIPerspectiveCorrection による書類検出・台形補正、Core Image フィルタ（Enhanced/Grayscale/Black&White）・90°回転、ページ並べ替え・削除・追加編集、UIGraphicsPDFRenderer で A4/Letter/FitImage の PDF 生成、Documents/Scans への保存・一覧・リネーム・削除・共有、PDFKit プレビューを実装。XCTest 27 件追加。プロジェクトは objectVersion 77 + PBXFileSystemSynchronizedRootGroup 方式でフォルダ同期（ファイル追加時の pbxproj 編集不要）。
 - 関連PR/コミット：初回作成（feature/2026-09-29-ios-document-scanner）

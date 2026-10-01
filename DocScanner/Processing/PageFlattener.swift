@@ -165,6 +165,12 @@ struct PageFlattener {
     ///   80/20/INSET/窓サイズ等の px 定数は max(W,H)/3000 でスケールする
     /// - Throws: ビットマップ生成失敗・ホモグラフィ特異・出力生成失敗
     func flatten(_ image: CGImage, corners: [CGPoint], mask: SegmentationMask) throws -> CGImage {
+        try flatten(image, boundary: traceBoundary(image, corners: corners, mask: mask))
+    }
+
+    /// 画像とマスクから曲がった四辺を抽出し、正規化座標で返す。
+    /// - 処理: マスク走査・輝度精緻化・平滑化・角整合を行う。描画と補正で共有する。
+    func traceBoundary(_ image: CGImage, corners: [CGPoint], mask: SegmentationMask) throws -> DocumentBoundary {
         guard corners.count == 4 else {
             throw DocumentDetectionError.invalidImage
         }
@@ -173,7 +179,7 @@ struct PageFlattener {
         let H = Double(bitmap.height)
         // px 定数を解像度非依存にするためのスケール
         let scale = max(W, H) / Self.referenceSize
-        let searchRange = 80 * scale
+        let searchRange = 200 * scale
         let refineRange = 20 * scale
         let inset = 4 * scale
         let gap = 2 * scale
@@ -271,6 +277,27 @@ struct PageFlattener {
         reconcile(&bottom, cBL, cBR)
         reconcile(&left, cTL, cBL)
 
+        func normalize(_ points: [PagePoint]) -> [CGPoint] {
+            points.map { CGPoint(x: $0.x / W, y: 1 - $0.y / H) }
+        }
+        return DocumentBoundary(top: normalize(top), right: normalize(right),
+                                bottom: normalize(bottom), left: normalize(left))
+    }
+
+    /// 保存した四辺を再検出せず、そのまま矩形へ引き伸ばす。
+    /// - 入力: 向き正規化済み画像と左下原点の正規化輪郭、出力: 補正画像
+    func flatten(_ image: CGImage, boundary: DocumentBoundary) throws -> CGImage {
+        guard boundary.isValid else { throw DocumentDetectionError.invalidImage }
+        let bitmap = try PageBitmap(image)
+        func pixels(_ points: [CGPoint]) -> [PagePoint] {
+            points.map { PagePoint(x: $0.x * Double(bitmap.width), y: (1 - $0.y) * Double(bitmap.height)) }
+        }
+        let top = pixels(boundary.top), right = pixels(boundary.right)
+        let bottom = pixels(boundary.bottom), left = pixels(boundary.left)
+        let corners = pixels(boundary.corners)
+        let tl = corners[0], tr = corners[1], br = corners[2], bl = corners[3]
+        let cTL = tl, cTR = tr, cBR = br, cBL = bl
+
         // 矩形化用ホモグラフィ（出力は四角形の平均辺長の矩形）
         let rectW = ((tr - tl).length + (br - bl).length) / 2
         let rectH = ((bl - tl).length + (br - tr).length) / 2
@@ -290,6 +317,7 @@ struct PageFlattener {
         // 出力サイズ = 上下辺の平均弧長 × 左右辺の平均弧長
         let outW = Int(((PageGeometry.arcLength(mapTop) + PageGeometry.arcLength(mapBottom)) / 2).rounded())
         let outH = Int(((PageGeometry.arcLength(mapLeft) + PageGeometry.arcLength(mapRight)) / 2).rounded())
+        guard outW >= 2, outH >= 2 else { throw DocumentDetectionError.invalidImage }
 
         /// Coons パッチ: 矩形空間 (u,v) → 元画像座標。
         func coons(_ u: Double, _ v: Double) -> PagePoint {

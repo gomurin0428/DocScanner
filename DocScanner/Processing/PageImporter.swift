@@ -2,6 +2,18 @@ import PhotosUI
 import SwiftUI
 import UIKit
 
+/// 写真取り込みと、撮影時の輪郭が固定されたカメラ画像を区別する。
+enum PageSource {
+    case photo(UIImage)
+    case camera(UIImage, boundary: DocumentBoundary?)
+
+    var image: UIImage {
+        switch self {
+        case .photo(let image), .camera(let image, _): return image
+        }
+    }
+}
+
 /// 写真インポート処理中に発生するエラー。
 enum PageImporterError: LocalizedError {
     /// PhotosPickerItem からのデータ読み込みに失敗した（index と元エラーを保持）。
@@ -118,12 +130,25 @@ struct PageImporter {
     ///   それ以外のエラーは throw
     /// - Throws: 縮小・検出・補正の失敗時に各エラー
     func makePages(from images: [UIImage]) throws -> ImportResult {
+        try makePages(from: images.map { PageSource.photo($0) })
+    }
+
+    /// 入力順を保って補正する。カメラは固定輪郭を使い、枠なし撮影は確認に回す。
+    /// - 入力: 写真またはカメラ撮影、出力: 検出済みと未検出を保持した結果
+    func makePages(from sources: [PageSource]) throws -> ImportResult {
         var entries: [ImportResult.Entry] = []
-        for image in images {
+        for source in sources {
             // メモリ削減のため検出前に長辺を抑える
-            let downscaled = try processor.downscaled(image)
+            let downscaled = try processor.downscaled(source.image)
             do {
-                let corrected = try detector.detectAndCorrect(downscaled)
+                let corrected: UIImage
+                switch source {
+                case .photo:
+                    corrected = try detector.detectAndCorrect(downscaled)
+                case .camera(_, let boundary):
+                    guard let boundary else { throw DocumentDetectionError.noDocumentFound }
+                    corrected = try detector.correct(downscaled, boundary: boundary)
+                }
                 entries.append(.detected(ScannedPage(baseImage: corrected)))
             } catch let error as DocumentDetectionError where error == .noDocumentFound {
                 entries.append(.undetected(downscaled))

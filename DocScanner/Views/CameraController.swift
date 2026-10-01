@@ -1,4 +1,5 @@
 import AVFoundation
+import CoreImage
 import Observation
 import UIKit
 import Vision
@@ -19,6 +20,7 @@ enum CameraError: LocalizedError, Equatable {
     case invalidPhotoData
     /// カメラ入力を生成できなかった。
     case cannotCreateInput(String)
+    case detectionFailed(String)
 
     /// エラーの英語説明文を返す。
     var errorDescription: String? {
@@ -37,6 +39,8 @@ enum CameraError: LocalizedError, Equatable {
             return "The captured photo data could not be decoded as an image."
         case .cannotCreateInput(let message):
             return "The camera input could not be created: \(message)"
+        case .detectionFailed(let message):
+            return "The document boundary could not be processed: \(message)"
         }
     }
 }
@@ -44,18 +48,21 @@ enum CameraError: LocalizedError, Equatable {
 /// AVCaptureSession を使った手動シャッターカメラの制御。
 /// VisionKit（VNDocumentCameraViewController）には撮影タイミングをユーザーへ
 /// 委ねる API が無いため自前実装する。自動キャプチャは一切行わず、
-/// プレビュー上の書類四角形検出（VNDetectRectanglesRequest）はオーバレイ表示のみに使う。
+/// プレビューの輪郭は表示と撮影後の補正で共有する。
 /// @Observable で UI 向け状態（検出四角形・撮影済み画像・エラー）を公開する。
 @Observable
 final class CameraController: NSObject {
 
-    /// 直近フレームで検出された書類四角形（Vision 正規化座標 y-up、TL,TR,BR,BL の順）。
+    /// 連続検出で確認した書類四角形（Vision 正規化座標 y-up、TL,TR,BR,BL の順）。
     /// 未検出時は nil。メインスレッドでのみ更新する。
     private(set) var detectedQuad: [CGPoint]?
+    private(set) var detectedBoundary: DocumentBoundary?
+    private(set) var metadataBoundary: DocumentBoundary?
     /// プレビューバッファを縦向きで見たときのピクセルサイズ（オーバレイ座標変換用）。
     private(set) var frameSize: CGSize = .zero
     /// 撮影済み画像（撮影順、imageOrientation は保持される）。
     var captures: [UIImage] { photoState.captures }
+    var capturedSources: [PageSource] { photoState.sources }
     /// 直前の撮影済みサムネイル。
     var lastCapture: UIImage? { photoState.captures.last }
     /// 撮影トランザクションが進行中かどうか。
@@ -93,12 +100,18 @@ final class CameraController: NSObject {
     /// ビデオバッファを Vision へ渡す際の向き（接続の回転可否に応じて設定する）。
     @ObservationIgnored
     private var visionOrientation: CGImagePropertyOrientation = .right
-    /// 検出間引き用フレームカウンタ（3 フレームに 1 回実行）。
+    /// ビデオキュー内の検出時刻と追跡状態。
     @ObservationIgnored
-    private var frameCounter = 0
-
-    /// 四角形検出を行うフレーム間隔。
-    private static let detectEveryNthFrame = 3
+    private var lastDetectionTime: TimeInterval?
+    @ObservationIgnored
+    private var trackingGeneration: UInt64?
+    @ObservationIgnored
+    private var trackingSize: CGSize = .zero
+    @ObservationIgnored
+    private var rectangleTracker = DocumentRectangleTracker()
+    @ObservationIgnored
+    private var trackedBoundary: DocumentBoundary?
+    private let analysisContext = CIContext()
 
     /// コントローラを初期化する。
     /// - 入力: なし
@@ -125,6 +138,8 @@ final class CameraController: NSObject {
         let generation = lifecycle.activate()
         isConfigured = false
         detectedQuad = nil
+        detectedBoundary = nil
+        metadataBoundary = nil
         error = nil
         return generation
     }
@@ -178,25 +193,27 @@ final class CameraController: NSObject {
         lifecycle.deactivate()
         isConfigured = false
         detectedQuad = nil
+        detectedBoundary = nil
+        metadataBoundary = nil
         sessionQueue.async { [captureSession] in
             if captureSession.isRunning { captureSession.stopRunning() }
         }
     }
 
     /// シャッター: 写真を 1 枚だけ撮影する。
-    /// - 入力: なし
+    /// - 入力: boundary … シャッターボタンが固定した表示済み metadata 輪郭
     /// - 出力: なし（完了まで isCapturing を維持する）
     /// - 処理: MainActor で pending を同期設定してからセッションキューへ撮影を依頼する
-    func capture() {
+    func capture(boundary: DocumentBoundary?) {
         guard isConfigured,
               !photoState.isCapturing,
               let generation = lifecycle.currentGeneration,
               photoState.beginCapture() else { return }
         error = nil
-        let delegate = CameraPhotoCaptureDelegate { [weak self] delegate, image, captureError in
+        let delegate = CameraPhotoCaptureDelegate(boundary: boundary) { [weak self] delegate, image, boundary, captureError in
             Task { @MainActor in
                 self?.completeCapture(delegate: delegate, image: image,
-                                      error: captureError, generation: generation)
+                                      boundary: boundary, error: captureError, generation: generation)
             }
         }
         activePhotoDelegate = delegate
@@ -208,6 +225,7 @@ final class CameraController: NSObject {
                     self?.completeCapture(
                         delegate: delegate,
                         image: nil,
+                        boundary: nil,
                         error: .captureFailed("The capture session is not running."),
                         generation: generation
                     )
@@ -271,6 +289,7 @@ final class CameraController: NSObject {
         } else {
             setVisionOrientation(.right)
         }
+        videoOutput.connection(with: .video)?.preferredVideoStabilizationMode = .off
         isConfiguredOnQueue = true
     }
 
@@ -301,11 +320,13 @@ final class CameraController: NSObject {
     @MainActor
     private func completeCapture(delegate: CameraPhotoCaptureDelegate,
                                  image: UIImage?,
+                                 boundary: DocumentBoundary?,
                                  error captureError: CameraError?,
                                  generation: UInt64) {
         let shouldPublish = lifecycle.isActive(generation)
         photoState.finishCapture(image: image,
-                                 shouldAppend: shouldPublish && captureError == nil)
+                                 shouldAppend: shouldPublish && captureError == nil,
+                                 boundary: boundary)
         if activePhotoDelegate === delegate {
             activePhotoDelegate = nil
         }
@@ -320,92 +341,97 @@ extension CameraController: AVCaptureVideoDataOutputSampleBufferDelegate {
     /// プレビューフレームを受け取り書類四角形を検出する。
     /// - 入力: output … ビデオ出力、sampleBuffer … フレームバッファ、connection … 接続
     /// - 出力: なし（detectedQuad / frameSize をメインスレッドで更新する）
-    /// - 処理: 3 フレームに 1 回、DocumentDetector と同パラメータの
-    ///   VNDetectRectanglesRequest を実行し正規化四角形を公開する。自動撮影は行わない
+    /// - 処理: 最大毎秒 5 回、書類領域を検証し、時間的に安定した枠だけ公開する
     nonisolated func captureOutput(_ output: AVCaptureOutput,
                                    didOutput sampleBuffer: CMSampleBuffer,
                                    from connection: AVCaptureConnection) {
         guard let generation = lifecycle.currentGeneration,
               lifecycle.isActive(generation) else { return }
-        frameCounter += 1
-        guard frameCounter % Self.detectEveryNthFrame == 0,
+        let time = CMSampleBufferGetPresentationTimeStamp(sampleBuffer).seconds
+        guard time.isFinite,
               let buffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
-
-        let request = VNDetectRectanglesRequest()
-        request.minimumConfidence = 0.6
-        request.minimumAspectRatio = 0.3
-        request.maximumObservations = 1
-        request.quadratureTolerance = 30
-        let orientation = currentVisionOrientation()
-        let handler = VNImageRequestHandler(cvPixelBuffer: buffer, orientation: orientation)
-        // perform は Void なので結果は request.results から取る
-        let quad: [CGPoint]?
-        if (try? handler.perform([request])) != nil,
-           let observation = request.results?.first as? VNRectangleObservation {
-            quad = [observation.topLeft, observation.topRight,
-                    observation.bottomRight, observation.bottomLeft]
-        } else {
-            quad = nil
+        if trackingGeneration != generation {
+            trackingGeneration = generation
+            rectangleTracker = DocumentRectangleTracker()
+            trackedBoundary = nil
+            lastDetectionTime = nil
         }
+        if let lastDetectionTime, time >= lastDetectionTime, time - lastDetectionTime < 0.2 { return }
+        lastDetectionTime = time
+        let orientation = currentVisionOrientation()
         let size = CGSize(width: CVPixelBufferGetWidth(buffer),
                           height: CVPixelBufferGetHeight(buffer))
         let orientedSize = orientation == .up
             ? size
             : CGSize(width: size.height, height: size.width)
-        Task { @MainActor in
-            guard self.lifecycle.isActive(generation) else { return }
-            self.detectedQuad = quad
-            self.frameSize = orientedSize
+        if trackingSize != orientedSize {
+            trackingSize = orientedSize
+            rectangleTracker = DocumentRectangleTracker()
+            trackedBoundary = nil
         }
-    }
-}
-
-/// 1 件の撮影について処理結果と最終完了をまとめるデリゲート。
-private final class CameraPhotoCaptureDelegate: NSObject, AVCapturePhotoCaptureDelegate {
-
-    private let lock = NSLock()
-    private var image: UIImage?
-    private var processingError: CameraError?
-    private let completion: (CameraPhotoCaptureDelegate, UIImage?, CameraError?) -> Void
-
-    init(completion: @escaping (CameraPhotoCaptureDelegate, UIImage?, CameraError?) -> Void) {
-        self.completion = completion
-    }
-
-    /// 写真の処理結果を保持し、最終コールバックまで UI へ配信しない。
-    func photoOutput(_ output: AVCapturePhotoOutput,
-                     didFinishProcessingPhoto photo: AVCapturePhoto,
-                     error: (any Error)?) {
-        let resultImage: UIImage?
-        let resultError: CameraError?
-        if let error {
-            resultImage = nil
-            resultError = .captureFailed(error.localizedDescription)
-        } else if let data = photo.fileDataRepresentation(),
-                  let decoded = UIImage(data: data) {
-            resultImage = decoded
-            resultError = nil
+        let request = DocumentRectangleDetector.makeRequest()
+        let documentRequest = VNDetectDocumentSegmentationRequest()
+        let handler = VNImageRequestHandler(cvPixelBuffer: buffer, orientation: orientation)
+        let candidate: VNRectangleObservation?
+        if (try? handler.perform([request, documentRequest])) != nil {
+            candidate = DocumentRectangleDetector.liveDocument(
+                in: request.results ?? [], document: documentRequest.results?.first,
+                size: orientedSize)
         } else {
-            resultImage = nil
-            resultError = .invalidPhotoData
+            candidate = nil
         }
-        lock.lock()
-        image = resultImage
-        processingError = resultError
-        lock.unlock()
-    }
-
-    /// 最終コールバックで画像・エラーをまとめて配信する。
-    func photoOutput(_ output: AVCapturePhotoOutput,
-                     didFinishCaptureFor resolvedSettings: AVCaptureResolvedPhotoSettings,
-                     error: (any Error)?) {
-        lock.lock()
-        let processedImage = image
-        let processedError = processingError
-        lock.unlock()
-
-        let finalError = error.map { CameraError.captureFailed($0.localizedDescription) }
-            ?? processedError
-        completion(self, processedImage, finalError ?? (processedImage == nil ? .invalidPhotoData : nil))
+        let quad = rectangleTracker.update(candidate, at: time)
+        var detectionError: CameraError?
+        if quad == nil {
+            trackedBoundary = nil
+        } else if rectangleTracker.didMatchObservation, let candidate, let quad {
+            do {
+                let corners = [candidate.topLeft, candidate.topRight, candidate.bottomRight, candidate.bottomLeft]
+                let boundary: DocumentBoundary
+                if let maskBuffer = documentRequest.results?.first?.globalSegmentationMask?.pixelBuffer {
+                    let ci = CIImage(cvPixelBuffer: buffer).oriented(orientation)
+                    guard let cg = analysisContext.createCGImage(ci, from: ci.extent) else {
+                        throw DocumentDetectionError.invalidImage
+                    }
+                    let mask = try SegmentationMask(pixelBuffer: maskBuffer,
+                                                    imageWidth: cg.width, imageHeight: cg.height)
+                    boundary = try PageFlattener().traceBoundary(cg, corners: corners.map {
+                        CGPoint(x: $0.x * orientedSize.width, y: (1 - $0.y) * orientedSize.height)
+                    }, mask: mask)
+                } else {
+                    boundary = DocumentBoundary(corners: corners)
+                }
+                let transform = try PageGeometry.homography(
+                    from: corners.map { PagePoint(x: $0.x, y: $0.y) },
+                    to: quad.map { PagePoint(x: $0.x, y: $0.y) })
+                let smoothed = boundary.map {
+                    let point = PageGeometry.apply(transform, to: PagePoint(x: $0.x, y: $0.y))
+                    return CGPoint(x: point.x, y: point.y)
+                }
+                trackedBoundary = smoothed.isValid ? smoothed : nil
+            } catch {
+                trackedBoundary = nil
+                detectionError = .detectionFailed(error.localizedDescription)
+            }
+        }
+        let boundary = trackedBoundary
+        func toMetadata(_ point: CGPoint) -> CGPoint {
+            let pixel = orientation == .up
+                ? CGPoint(x: point.x * size.width, y: (1 - point.y) * size.height)
+                : CGPoint(x: (1 - point.y) * size.width, y: (1 - point.x) * size.height)
+            return output.metadataOutputRectConverted(fromOutputRect: CGRect(origin: pixel, size: .zero)).origin
+        }
+        let transform = CameraCaptureGeometry.transform(
+            origin: toMetadata(.zero), x: toMetadata(CGPoint(x: 1, y: 0)),
+            y: toMetadata(CGPoint(x: 0, y: 1)))
+        let metadata = boundary?.map { $0.applying(transform) }
+        Task { @MainActor in
+            guard self.lifecycle.isActive(generation), !self.isCapturing else { return }
+            self.detectedQuad = quad
+            self.detectedBoundary = boundary
+            self.metadataBoundary = metadata
+            self.frameSize = orientedSize
+            if let detectionError, self.error == nil { self.error = detectionError }
+        }
     }
 }

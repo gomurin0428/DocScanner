@@ -2,7 +2,35 @@
 
 ユニットテスト（XCTest、`@testable import DocScanner`、TEST_HOST はアプリ本体）。
 
-## ヘルパー
+## CameraShutterButtonTests
+
+| テスト | 検証内容 |
+| --- | --- |
+| `testVisibleBoundarySurvivesLossDuringPressAndImports` | 押下開始後に枠が消えても固定輪郭を使い、未検出確認なしで同じ大きさのページを生成 |
+| `testReplacementDuringPressAppliesOnlyToNextCapture` | 押下中の候補変更は次の撮影にだけ反映 |
+| `testPressWithoutOutlineKeepsExplicitMissingBoundary` | 枠なしで触れた場合は、その後現れた別候補を使わない |
+| `testCancelledPressDoesNotCaptureOrRetainOldBoundary` | touchCancel / touchUpOutside では撮影も輪郭の持ち越しもしない |
+| `testPrimaryActionUsesDisplayedBoundaryAndRespectsDisabledState` | タッチなしの標準実行は表示輪郭を使い、無効時は撮影しない |
+
+```mermaid
+classDiagram
+    CameraShutterButtonTests --> CameraShutterButtonControl : UIControl イベント
+    CameraShutterButtonControl --> CameraPreviewSelection : snapshot
+    CameraShutterButtonTests --> PageImporter : 固定輪郭からページ生成
+```
+
+```mermaid
+sequenceDiagram
+    XCTest->>CameraPreviewSelection: display(輪郭A)
+    XCTest->>Control: touchDown
+    XCTest->>CameraPreviewSelection: display(nil / 輪郭B)
+    XCTest->>Control: primaryActionTriggered
+    Control-->>XCTest: 輪郭A
+    XCTest->>PageImporter: makePages(camera(image, 輪郭A))
+    PageImporter-->>XCTest: 検出済みページ
+```
+
+## ヘルパー一覧
 
 | 型 | メソッド | 役割 |
 | --- | --- | --- |
@@ -13,6 +41,74 @@
 | `TestImageFactory` | `pixelSize(of:)` | ピクセル単位サイズ取得 |
 
 ## テストケース一覧
+
+### CameraCaptureTests
+
+| テスト | 内容 |
+| --- | --- |
+| `testCameraImportKeepsSelectedRegionInsteadOfRedetecting` | 大きい別書類があっても保存した小さい赤い領域だけを補正 |
+| `testCameraWithoutOverlayRequiresFullImageConfirmation` | 枠なし撮影は未検出として全文画像の確認へ回す |
+| `testRotatedPhotoUsesUprightBoundary` | EXIF右回転写真でも同じ選択範囲と出力寸法を保持 |
+| `testHighResolutionCapturePreservesNormalizedSelection` | 4200px画像を3000pxへ縮小しても正規化選択領域を保持 |
+| `testPhotoStateKeepsEachCaptureBoundaryAndSkipsFailure` | ページごとの固定輪郭、撮影順、失敗時の非追加 |
+| `testDifferentVideoAndPhotoFieldsOfView` | video→metadata→photoの異なる画角を模したアフィン変換 |
+| `testAllPhotoOrientations` | 8種類のEXIF向きの座標変換 |
+| `testInvalidSavedBoundaryIsRejected` | 不正な保存輪郭を再検出で隠さずエラーにする |
+
+### 保存輪郭・湾曲候補の追加回帰
+
+| テスト | 内容 |
+| --- | --- |
+| `PageFlattenerTests.testSavedCurvedBoundaryIsReusedAtPhotoResolution` | 低解像度で抽出した曲線を2倍の写真へ再利用し、紙の上辺に背景が残らない |
+| `DocumentRectangleTrackerTests.testCurvedCornerJitterAcquiresWithoutSwitchingToOtherPaper` | 湾曲紙の角の5.5%揺れを許容しつつ別候補へ飛ばない |
+| `DocumentRectangleTrackerTests.testModerateConfidenceCurvedDocumentStillRequiresStability` | confidence 0.65の安定候補を採用、0.4は拒否 |
+| `DocumentRectangleTrackerTests.testRectangleAppearanceDoesNotChangeSegmentationCorners` | 直線矩形の出入りでsegmentationの角を切り替えない |
+
+```mermaid
+classDiagram
+    CameraCaptureTests --> PageImporter
+    CameraCaptureTests --> CameraCaptureGeometry
+    CameraCaptureTests --> CameraPhotoState
+    PageFlattenerTests --> DocumentBoundary
+```
+
+```mermaid
+sequenceDiagram
+    participant T as CameraCaptureTests
+    participant I as PageImporter
+    participant F as PageFlattener
+    T->>I: camera(画像, 固定輪郭)
+    I->>F: flatten(画像, 同じ輪郭)
+    F-->>T: 選択領域の画素・寸法
+    T->>T: 別書類・背景が混ざらないことを検証
+```
+
+### DocumentRectangleTrackerTests
+
+| テスト | 内容 |
+| --- | --- |
+| `testAlternatingCandidatesNeverFlash` | 交互に変わる候補を表示せず、同じ候補の連続時だけ表示 |
+| `testAcquisitionRequiresElapsedTimeAsWellAsFrameCount` | 3 フレームだけでなく経過時間も確認 |
+| `testJitterAndBriefDropoutKeepTheTrackedPaper` | 微小揺れの平滑化、単発の未検出・遠方候補の無視 |
+| `testSustainedLossClearsOverlayAndRequiresReacquisition` | 長い未検出で消去し、再確認なしに再表示しない |
+| `testNewDocumentDoesNotReplaceOverlayImmediately` | 新候補の確認と旧候補の消失猶予の両方を満たして切替 |
+| `testTimestampDiscontinuitiesResetTracking` | フレーム中断・時刻逆行・不正時刻で追跡を初期化 |
+| `testMissingFrameInterruptsAcquisition` | 確認中の未検出が連続カウントを切る |
+| `testLiveGateRequiresSegmentationToAgreeWithPreferredRectangle` | 矩形を採用する一致判定 `confirmedDocument` の単独テスト |
+| `testSegmentationOnlyDocumentRequiresStableFrames` | 矩形なしの書類領域も 3 フレーム後に表示。単発では表示しない |
+| `testUnrelatedRectangleDoesNotVetoDocument` | 背景矩形との不一致で書類を捨てず、一致時は矩形を使用。書類領域なしの矩形は非表示 |
+| `testAlternatingSegmentationOnlyDocumentsNeverFlash` | 矩形なしでも交互に変わる書類領域は表示しない |
+| `testSegmentationOnlyRejectsDegenerateRegions` | 全画面・端の帯・細い潰れた領域・寸法不正を拒否 |
+
+実カメラを使わない状態遷移・候補条件の検証であり、実写での認識精度・処理速度は未検証。
+
+### 書類検出の追加回帰テスト
+
+| 型 | テスト | 役割 |
+| --- | --- | --- |
+| `DocumentDetectorTests` | `testDetectsSmallDocument` | 1000×1400 の画像内の 140×200 の紙を検出し、切り抜き後の寸法を照合 |
+| `DocumentDetectorTests` | `testDetectsNarrowReceipt` | 縦横比 0.18 のレシートを検出し、切り抜き後の寸法を照合 |
+| `DocumentDetectorTests` | `testSelectsPaperInsteadOfFirstInnerRectangle` | 候補順に依存せず内枠より紙全体を選択、候補なしは nil |
 
 ### PDFBuilderTests
 | テスト | 内容 |
