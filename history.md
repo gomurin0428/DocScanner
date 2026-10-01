@@ -1,10 +1,14 @@
 # history
 
+## 2026-10-01T15:38:47+09:00
+- 固定輪郭・湾曲検出の実装 afbc287 を KDocScanner 1.0 (10) として署名・archive・export・upload。App Store Connectで VALID / IN_BETA_TESTING、Internalグループの全ビルドアクセスを確認。
+- 配信ID: 8a7c4dae-b300-4973-830f-21171de5d4db。IPA SHA-256: e2d36d86a923d64a4c7d846599f70ea680bab003fefa8fca8b5d4984e716515b。実機のカメラ位置合わせ・湾曲紙の検出は未確認。
+
 ## 2026-10-01T15:30:23+09:00
 - 緑枠で表示した湾曲輪郭をシャッター時に固定し、video→metadata→photo座標とEXIF向きを変換して同じ範囲を補正。撮影後の再検出を廃止し、枠なし撮影は全文画像確認へ回す。
 - 緑枠の描画も同じmetadata座標をAVCaptureVideoPreviewLayerの変換APIへ渡し、解析出力とプレビューの画角差を反映。
 - マスク輪郭抽出とCoons補正を分離。法線探索幅を長辺3000px換算で±200pxへ拡大。書類領域を一貫して追跡し、confidence下限0.6・角の揺れ上限0.07。3回/0.35秒確認・0.75秒消失猶予・手動シャッターを維持。
-- 合成画像の固定範囲、別書類除外、EXIF、解像度差、湾曲四辺の再利用、追跡の回帰を追加。XCTest 87件が失敗なしで完了（xcodebuild終了待ち）。Release build成功。SwiftLint実行ファイル・設定なし。
+- 合成画像の固定範囲、別書類除外、EXIF、解像度差、湾曲四辺の再利用、追跡の回帰を追加。最新コードのXCTest 87件成功、xcodebuild終了コード0。任意のSimulator診断収集はハングしたため診断子プロセスのみ終了。Release build成功。SwiftLint実行ファイル・設定なし。macOS/iOSのためWindows用BootstrapとMSTestは使わず、既存のXcode/XCTestを使用。
 - 提供写真のMac Vision解析で3解像度の書類検出と1920px版の補正を確認。私的な写真・派生画像はコミットしない。実機カメラの位置合わせ・検出精度・速度は未確認。
 
 ## 2026-10-01T14:26:40+09:00
