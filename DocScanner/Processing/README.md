@@ -37,6 +37,8 @@ Core Image / Vision を使った画像処理（フィルタ・回転・書類検
 | `PageFlattener` | `flatten(_:corners:mask:)` | マスク輪郭追跡 + Coons パッチで湾曲辺を矩形化（throws） |
 | `PageFlattener` | `traceBoundary(_:corners:mask:)` / `flatten(_:boundary:)` | 輪郭抽出と補正を分離。ライブ画像から曲線を抽出し、別解像度の写真にも同じ正規化輪郭を使える |
 | `PagePoint` | `+` / `-` / `*` / `length` | Double 精度 2D 点（左上原点） |
+| `PageContentStraightener` | `straighten(_:)` / `render(_:model:rotated:)` | 輪郭補正後に Vision の文字中心点から平面化。横向き写真も解析座標を回転し、出力の向き・サイズは保持 |
+| `PageDewarpModel` | `fit(lines:)` / `displacement(at:)` / `sourcePoint(for:)` | 文字行ごとの高さを除去し、x の3次多項式×y の8節点をロバスト回帰。上下端固定、最大変位8%・縦倍率0.5〜1.5・逆写像を検証 |
 | `PageGeometry` | `solveLinear(_:_:)` / `homography(from:to:)` / `apply(_:to:)` / `arcLength(_:)` / `sample(_:at:)` (static) | 線形ソルバ・ホモグラフィ・曲線サンプリング（throws） |
 | `PageImporterError` | `loadFailed(index, message)` / `decodeFailed(index)` | 写真読み込み失敗の LocalizedError（index と元エラーメッセージ付き） |
 | `ImportResult.Entry` | `detected(ScannedPage)` / `undetected(UIImage)` | 各入力画像の結果を元の選択順に保持 |
@@ -44,7 +46,9 @@ Core Image / Vision を使った画像処理（フィルタ・回転・書類検
 | `PageImporter` | `init()` | DocumentDetector と DocumentImageProcessor を生成 |
 | `PageImporter` | `loadImages(from:)` (static) | PhotosPickerItem → UIImage（失敗は throw、非同期） |
 | `PageSource` | `photo(UIImage)` / `camera(UIImage, boundary:)` / `image` | 写真の自動検出と、シャッター時の固定輪郭を区別。カメラの nil 境界は未検出として確認に回す |
-| `PageImporter` | `makePages(from:)`（UIImage / PageSource 配列） | 縮小 → 写真なら検出、カメラなら固定輪郭で補正。ImportResult.entries へ入力順に追加（throws） |
+| `PageImporter` | `makePages(from:)`（UIImage / PageSource 配列） | 縮小 → 写真なら検出、カメラなら固定輪郭で補正。検出済みページは Enhanced 初期選択で ImportResult.entries へ入力順に追加（throws） |
+
+紙面内補正は最低6行、横幅45%・高さ25%以上に分布する文字を要求し、行内残差の中央値が30%以上改善する安全なモデルだけを適用する。空白・写真・文字が少ない紙や過大な変形は輪郭補正の結果を保持する。カメラの保存済み輪郭は変更・再検出しない。行方向の歪みを推定するため、QRの全辺や大きなロゴの形状まで完全な長方形へ復元する保証はない。
 
 ## クラス図
 

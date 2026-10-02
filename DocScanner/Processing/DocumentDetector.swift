@@ -54,7 +54,11 @@ struct DocumentDetector {
     /// - 入力: 撮影画像と正規化輪郭、出力: 同じ輪郭を矩形にした画像
     func correct(_ image: UIImage, boundary: DocumentBoundary) throws -> UIImage {
         let cg = try normalizedCGImage(of: image)
-        let output = try PageFlattener().flatten(cg, boundary: boundary)
+        if let output = try? UVDocUnwarper.shared.unwarp(cg, boundary: boundary) {
+            return UIImage(cgImage: output, scale: image.scale, orientation: .up)
+        }
+        let flattened = try PageFlattener().flatten(cg, boundary: boundary)
+        let output = try PageContentStraightener().straighten(flattened)
         return UIImage(cgImage: output, scale: image.scale, orientation: .up)
     }
 
@@ -118,13 +122,18 @@ struct DocumentDetector {
             func toTopLeft(_ p: CGPoint) -> CGPoint {
                 CGPoint(x: p.x * width, y: (1 - p.y) * height)
             }
-            let flattened = try PageFlattener().flatten(cg, corners: [
+            let boundary = try PageFlattener().traceBoundary(cg, corners: [
                 toTopLeft(observation.topLeft),
                 toTopLeft(observation.topRight),
                 toTopLeft(observation.bottomRight),
                 toTopLeft(observation.bottomLeft)
             ], mask: mask)
-            return UIImage(cgImage: flattened, scale: image.scale, orientation: .up)
+            if let output = try? UVDocUnwarper.shared.unwarp(cg, boundary: boundary) {
+                return UIImage(cgImage: output, scale: image.scale, orientation: .up)
+            }
+            let flattened = try PageFlattener().flatten(cg, boundary: boundary)
+            let straightened = try PageContentStraightener().straighten(flattened)
+            return UIImage(cgImage: straightened, scale: image.scale, orientation: .up)
         }
         return try perspectiveCorrect(
             ciImage, rectangle: rectangle, scale: image.scale)
@@ -160,6 +169,13 @@ struct DocumentDetector {
         let width = ciImage.extent.width
         let height = ciImage.extent.height
 
+        let boundary = DocumentBoundary(corners: [rectangle.topLeft, rectangle.topRight,
+                                                   rectangle.bottomRight, rectangle.bottomLeft])
+        if let original = context.createCGImage(ciImage, from: ciImage.extent),
+           let output = try? UVDocUnwarper.shared.unwarp(original, boundary: boundary) {
+            return UIImage(cgImage: output, scale: scale, orientation: .up)
+        }
+
         // Vision の正規化座標（左下原点）を CIImage 座標へ変換する。
         // CIImage も左下原点のため y の反転は不要（反転すると上下ミラー + 歪み + 背景混入になる）
         func toImagePoint(_ p: CGPoint) -> CGPoint {
@@ -179,7 +195,8 @@ struct DocumentDetector {
         guard let outputCG = context.createCGImage(corrected, from: corrected.extent) else {
             throw DocumentDetectionError.renderFailed
         }
-        return UIImage(cgImage: outputCG, scale: scale, orientation: .up)
+        let straightened = try PageContentStraightener().straighten(outputCG)
+        return UIImage(cgImage: straightened, scale: scale, orientation: .up)
     }
 
     /// UIImage の向きを正規化した CGImage を返す。

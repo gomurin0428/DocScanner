@@ -149,7 +149,7 @@ struct PageImporter {
                     guard let boundary else { throw DocumentDetectionError.noDocumentFound }
                     corrected = try detector.correct(downscaled, boundary: boundary)
                 }
-                entries.append(.detected(ScannedPage(baseImage: corrected)))
+                entries.append(.detected(ScannedPage(baseImage: corrected, filter: .enhanced)))
             } catch let error as DocumentDetectionError where error == .noDocumentFound {
                 entries.append(.undetected(downscaled))
             }

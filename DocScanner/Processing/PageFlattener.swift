@@ -91,7 +91,7 @@ struct PageBitmap {
     /// - 出力: ビットマップ
     /// - 処理: sRGB premultipliedLast コンテキストへ全体を描く
     /// - Throws: コンテキスト生成失敗時 DocumentDetectionError.bitmapContextFailed
-    init(_ image: CGImage) throws {
+    init(_ image: CGImage, background: CGColor? = nil) throws {
         width = image.width
         height = image.height
         var buffer = [UInt8](repeating: 0, count: width * height * 4)
@@ -102,6 +102,10 @@ struct PageBitmap {
             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
         ) else {
             throw DocumentDetectionError.bitmapContextFailed
+        }
+        if let background {
+            context.setFillColor(background)
+            context.fill(CGRect(x: 0, y: 0, width: width, height: height))
         }
         context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
         data = buffer
