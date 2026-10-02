@@ -210,6 +210,15 @@ sequenceDiagram
 | `testImportResultAcceptsUndetectedPagesInInputOrder` | Use Full Image の再構成で 4 項目の画像順を保つ |
 | `testImportResultCancelKeepsDetectedPagesAfterExistingPages` | Cancel は未検出を除き、既存ページの後ろに検出済みを順序通り追加 |
 
+### PageContentStraightenerTests
+| テスト | 内容 |
+| --- | --- |
+| `testCurvedRowsBecomeHorizontalDespiteOutliers` | 高さで変わる傾き・曲率を、外れた文字中心があっても補正 |
+| `testInsufficientStraightAndExtremeRowsAreNotWarped` | 文字不足・直線・過大な傾き・非有限点は補正しない |
+| `testInverseMapKeepsEdgesAndDoesNotFoldOrCrop` | 紙端の固定、非折り返し、範囲内逆写像と誤差を検証 |
+| `testRenderingStraightensMarksInBothCameraOrientations` | 横向き・縦向きとも合成マーカーの位置・画素保持と直線化を検証 |
+| `testBlankPageRemainsIdentical` | Vision に文字がない画像は同じ CGImage を返す |
+
 ## クラス図
 
 ```mermaid

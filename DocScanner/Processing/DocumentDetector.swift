@@ -54,7 +54,8 @@ struct DocumentDetector {
     /// - 入力: 撮影画像と正規化輪郭、出力: 同じ輪郭を矩形にした画像
     func correct(_ image: UIImage, boundary: DocumentBoundary) throws -> UIImage {
         let cg = try normalizedCGImage(of: image)
-        let output = try PageFlattener().flatten(cg, boundary: boundary)
+        let flattened = try PageFlattener().flatten(cg, boundary: boundary)
+        let output = try PageContentStraightener().straighten(flattened)
         return UIImage(cgImage: output, scale: image.scale, orientation: .up)
     }
 
@@ -124,7 +125,8 @@ struct DocumentDetector {
                 toTopLeft(observation.bottomRight),
                 toTopLeft(observation.bottomLeft)
             ], mask: mask)
-            return UIImage(cgImage: flattened, scale: image.scale, orientation: .up)
+            let straightened = try PageContentStraightener().straighten(flattened)
+            return UIImage(cgImage: straightened, scale: image.scale, orientation: .up)
         }
         return try perspectiveCorrect(
             ciImage, rectangle: rectangle, scale: image.scale)
@@ -179,7 +181,8 @@ struct DocumentDetector {
         guard let outputCG = context.createCGImage(corrected, from: corrected.extent) else {
             throw DocumentDetectionError.renderFailed
         }
-        return UIImage(cgImage: outputCG, scale: scale, orientation: .up)
+        let straightened = try PageContentStraightener().straighten(outputCG)
+        return UIImage(cgImage: straightened, scale: scale, orientation: .up)
     }
 
     /// UIImage の向きを正規化した CGImage を返す。
