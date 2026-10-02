@@ -35,7 +35,7 @@ struct PageContentStraightener {
     }
 
     func render(_ image: CGImage, model: PageDewarpModel, rotated: Bool) throws -> CGImage {
-        let bitmap = try PageBitmap(image)
+        let bitmap = try PageBitmap(image, background: CGColor(gray: 1, alpha: 1))
         let width = bitmap.width, height = bitmap.height
         let count = 64
         var grid: [PagePoint] = []

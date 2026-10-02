@@ -101,6 +101,33 @@ final class PageContentStraightenerTests: XCTestCase {
         }
     }
 
+    func testRenderingCompositesTransparentPixelsOntoWhite() throws {
+        let model = try XCTUnwrap(PageDewarpModel.fit(lines: curvedLines()))
+        let width = 200, height = 300
+        let colors: [[UInt8]] = [[0, 0, 0, 0], [0, 0, 0, 255], [0, 0, 0, 128], [128, 0, 0, 128]]
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        for y in 0..<height {
+            for x in 0..<width {
+                for channel in 0..<4 {
+                    pixels[(y * width + x) * 4 + channel] = colors[x / 50][channel]
+                }
+            }
+        }
+        let context = try XCTUnwrap(CGContext(data: &pixels, width: width, height: height,
+            bitsPerComponent: 8, bytesPerRow: width * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        let image = try XCTUnwrap(context.makeImage())
+        let result = try PageContentStraightener().render(image, model: model, rotated: false)
+        let bitmap = try PageBitmap(result)
+        let expected = [[255, 255, 255], [0, 0, 0], [127, 127, 127], [255, 127, 127]]
+        for band in 0..<4 {
+            let offset = (150 * width + band * 50 + 25) * 4
+            for channel in 0..<3 {
+                XCTAssertEqual(Double(bitmap.data[offset + channel]), Double(expected[band][channel]), accuracy: 1)
+            }
+        }
+    }
+
     func testBlankPageRemainsIdentical() throws {
         let image = try XCTUnwrap(TestImageFactory.solid(.white, size: CGSize(width: 300, height: 400)).cgImage)
         let result = try PageContentStraightener().straighten(image)
