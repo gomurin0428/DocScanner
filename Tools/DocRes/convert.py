@@ -43,7 +43,7 @@ def main():
     converted = ct.convert(
         traced, convert_to="mlprogram",
         inputs=[ct.TensorType(name="image", shape=sample.shape)],
-        outputs=[ct.TensorType(name="restored", shape=(1, 3, 512, 512))],
+        outputs=[ct.TensorType(name="restored")],
         minimum_deployment_target=ct.target.iOS16,
         compute_precision=ct.precision.FLOAT32,
         compute_units=ct.ComputeUnit.CPU_ONLY,
@@ -54,6 +54,17 @@ def main():
     converted.user_defined_metadata["upstream_commit"] = "d3e3a18c7c7ad10e4615ca2eb6a10f83128d8560"
     converted.user_defined_metadata["original_checkpoint_sha256"] = "1d6a89d754fe1e58ffd1865eab0ef3f03344798d39197b2d9a77ce4fbc8c02fd"
     converted.user_defined_metadata["state_checkpoint_sha256"] = digest
+    spec = converted.get_spec()
+    output = spec.description.output[0]
+    if output.name != "restored":
+        raise ValueError("Unexpected DocRes output feature")
+    del output.type.multiArrayType.shape[:]
+    output.type.multiArrayType.shape.extend([1, 3, 512, 512])
+    converted = ct.models.MLModel(
+        spec,
+        weights_dir=converted.weights_dir,
+        compute_units=ct.ComputeUnit.CPU_ONLY,
+    )
     converted.save(args.output)
 
 
