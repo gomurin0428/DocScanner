@@ -365,10 +365,17 @@ private struct PageRow: View {
     private func loadThumbnail() async {
         let key = thumbnailKey
         guard let snapshot = draft.page(id: pageID) else { return }
+        let worker = Task.detached {
+            try Task.checkCancellation()
+            return try snapshot.thumbnailImage()
+        }
         do {
-            let rendered = try await Task.detached {
-                try snapshot.renderedImage()
-            }.value
+            let rendered = try await withTaskCancellationHandler(operation: {
+                try await worker.value
+            }, onCancel: {
+                worker.cancel()
+            })
+            try Task.checkCancellation()
             // レンダリング中に編集が進んでいたら古い結果を捨てる
             guard thumbnailKey == key else { return }
             let maxSize = CGSize(width: 88, height: 112)
@@ -380,6 +387,8 @@ private struct PageRow: View {
                 rendered.draw(in: CGRect(origin: .zero, size: target))
             }
             failed = false
+        } catch is CancellationError {
+            return
         } catch {
             // 描画失敗時はスピナーを回し続けず警告アイコンを表示する
             failed = true

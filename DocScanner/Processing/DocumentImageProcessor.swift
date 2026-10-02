@@ -35,26 +35,40 @@ struct DocumentImageProcessor {
         .workingColorSpace: CGColorSpace(name: CGColorSpace.sRGB)!
     ])
 
-    /// プロセッサを初期化する。
-    /// - 入力: なし
-    /// - 出力: 初期化済み DocumentImageProcessor
-    /// - 処理: CIContext を生成する
-    init() {}
+    private let enhancer: DocResEnhancer
+
+    init(enhancer: DocResEnhancer = .shared) { self.enhancer = enhancer }
 
     /// 指定フィルタを画像へ適用する。
     /// - 入力: filter … 適用する PageFilter、image … 入力画像（向きは内部で正規化する）
     /// - 出力: フィルタ適用後の UIImage。ピクセルサイズは入力と同一
     /// - 処理: 向き正規化 → CIImage 化 → フィルタ適用 → CGImage レンダリング
     func apply(_ filter: PageFilter, to image: UIImage) throws -> UIImage {
+        try Task.checkCancellation()
         let normalized = try normalizedCGImage(of: image)
         var ci = CIImage(cgImage: normalized)
+        let learned: CGImage?
+        if filter == .original {
+            learned = nil
+        } else {
+            do {
+                learned = try enhancer.flattened(normalized)
+            } catch let error as CancellationError {
+                throw error
+            } catch let error as DocResModelLoadingError {
+                throw error
+            } catch {
+                learned = nil
+            }
+            try Task.checkCancellation()
+        }
 
         switch filter {
         case .original:
             break
         case .enhanced:
             // 陰影除去で平坦化 → レベル補正 → 彩度 +15% → 輝度シャープ化
-            let flat = try ShadingCorrector.flattened(ci)
+            let flat = try learned.map { CIImage(cgImage: $0) } ?? ShadingCorrector.flattened(ci)
             var output = try ShadingCorrector.levels(flat, black: 0.12, white: 0.92, gamma: 1.3)
             guard let saturated = CIFilter(name: "CIColorControls", parameters: [
                 kCIInputImageKey: output,
@@ -73,7 +87,7 @@ struct DocumentImageProcessor {
             ci = sharpened
         case .grayscale:
             // 陰影除去で平坦化 → グレースケール → レベル補正
-            let flat = try ShadingCorrector.flattened(ci)
+            let flat = try learned.map { CIImage(cgImage: $0) } ?? ShadingCorrector.flattened(ci)
             let gray = try ShadingCorrector.grayscale(flat)
             ci = try ShadingCorrector.levels(gray, black: 0.1, white: 0.92, gamma: 1.2)
         case .blackAndWhite:
@@ -81,7 +95,7 @@ struct DocumentImageProcessor {
             // グローバルランプの min 合成でアンチエイリアス付き 2 値化。
             // ハードなグローバル閾値だと細線・薄い線が消えるため、
             // g/local 比で文字を拾い、大きな黒領域のくり抜きはグローバル側で防ぐ
-            let flat = try ShadingCorrector.flattened(ci)
+            let flat = try learned.map { CIImage(cgImage: $0) } ?? ShadingCorrector.flattened(ci)
             let gray = try ShadingCorrector.grayscale(flat)
             let extent = ci.extent
             let radius = 0.008 * max(extent.width, extent.height)
