@@ -19,6 +19,8 @@ The application smooths the prediction and input (Gaussian σ=3), divides them t
 
 Missing models, prediction errors, non-finite/out-of-range output, excessive gain clipping (10% of a channel), small inputs, extreme aspect ratios, and low contrast use the existing shading correction. On physical iOS devices, less than 2.2 GB of available **process** memory also selects the fallback, before model loading or inference. This conservative budget is based on the Mac probe and needs device profiling; it is not an OOM guarantee. One lock serializes inference; only the last successful image is cached. The model loads lazily. Camera detection, shutter boundaries, and UVDoc geometry are unchanged.
 
+List thumbnails downscale the source to a 224 px long edge before rotation and conventional filtering. Their dimensions therefore stay below the DocRes minimum and never load the model. Preview and save tasks propagate cancellation to their detached workers; canceled work is discarded without an alert. A production model-load failure is terminal for the app session and asks the user to close and reopen KDocScanner rather than retrying. Deliberately unavailable models, insufficient memory, unsupported inputs, and ordinary prediction/output failures retain the existing rule-based fallback.
+
 ## Reproduce
 
 Use separate environments for checkpoint extraction and conversion. `weights_only=True` is required; do not fall back to unrestricted pickle loading. Torch 1.13 cannot safely decode the optimizer metadata in the original checkpoint, so extract the tensors using Torch 2.2.2 first:

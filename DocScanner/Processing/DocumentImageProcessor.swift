@@ -44,9 +44,24 @@ struct DocumentImageProcessor {
     /// - 出力: フィルタ適用後の UIImage。ピクセルサイズは入力と同一
     /// - 処理: 向き正規化 → CIImage 化 → フィルタ適用 → CGImage レンダリング
     func apply(_ filter: PageFilter, to image: UIImage) throws -> UIImage {
+        try Task.checkCancellation()
         let normalized = try normalizedCGImage(of: image)
         var ci = CIImage(cgImage: normalized)
-        let learned = filter == .original ? nil : try? enhancer.flattened(normalized)
+        let learned: CGImage?
+        if filter == .original {
+            learned = nil
+        } else {
+            do {
+                learned = try enhancer.flattened(normalized)
+            } catch let error as CancellationError {
+                throw error
+            } catch let error as DocResModelLoadingError {
+                throw error
+            } catch {
+                learned = nil
+            }
+            try Task.checkCancellation()
+        }
 
         switch filter {
         case .original:

@@ -3,18 +3,32 @@ import CoreML
 import Foundation
 import os
 
+/// DocRes failed to load and requires an app restart before retrying.
+enum DocResModelLoadingError: LocalizedError {
+    case restartRequired
+
+    var errorDescription: String? {
+        "The image enhancement model could not be loaded. Please close and reopen KDocScanner."
+    }
+}
+
 final class DocResEnhancer {
     static let shared = DocResEnhancer()
     static let side = 512
     private let lock = NSLock()
     private var model: MLModel?
     private var modelLoader: (() throws -> MLModel)?
+    private var modelLoadError: DocResModelLoadingError?
     private var cachedSource: CGImage?
     private var cachedResult: CGImage?
 
     private init() { modelLoader = Self.loadModel }
 
     init(model: MLModel?) { self.model = model }
+
+    init(modelLoader: @escaping () throws -> MLModel) {
+        self.modelLoader = modelLoader
+    }
 
     static func loadModel() throws -> MLModel {
         guard let url = Bundle(for: DocResEnhancer.self).url(forResource: "DocResAppearance", withExtension: "mlmodelc") else {
@@ -26,17 +40,29 @@ final class DocResEnhancer {
     }
 
     func flattened(_ image: CGImage) throws -> CGImage? {
+        try Task.checkCancellation()
         guard min(image.width, image.height) >= 256,
               Double(min(image.width, image.height)) / Double(max(image.width, image.height)) >= 0.2 else { return nil }
+        try Task.checkCancellation()
         lock.lock()
         defer { lock.unlock() }
+        try Task.checkCancellation()
         if cachedSource === image { return cachedResult }
+        if let modelLoadError {
+            throw modelLoadError
+        }
         #if os(iOS) && !targetEnvironment(simulator)
         guard os_proc_available_memory() >= 2_200_000_000 else { return nil }
         #endif
         if let loader = modelLoader {
             modelLoader = nil
-            model = try? loader()
+            do {
+                model = try loader()
+            } catch {
+                let loadError = DocResModelLoadingError.restartRequired
+                modelLoadError = loadError
+                throw loadError
+            }
         }
         guard let model else { return nil }
         let bitmap = try PageBitmap(image, background: CGColor(gray: 1, alpha: 1))
@@ -44,7 +70,9 @@ final class DocResEnhancer {
         guard DocResPrompt.hasContrast(small) else { return nil }
         let input = try DocResPrompt.input(bitmap: bitmap, small: small)
         let features = try MLDictionaryFeatureProvider(dictionary: ["image": MLFeatureValue(multiArray: input)])
+        try Task.checkCancellation()
         let prediction = try model.prediction(from: features)
+        try Task.checkCancellation()
         guard let array = prediction.featureValue(for: "restored")?.multiArrayValue,
               let gain = Self.gain(input: small, prediction: array) else { return nil }
         let result = try Self.render(bitmap, gain: gain)

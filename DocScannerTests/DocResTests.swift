@@ -1,4 +1,5 @@
 import CoreML
+import Foundation
 import XCTest
 @testable import DocScanner
 
@@ -36,6 +37,84 @@ final class DocResTests: XCTestCase {
             let result = try processor.apply(filter, to: image)
             XCTAssertEqual(result.size, image.size)
         }
+    }
+
+    func testThumbnailDownscalesBeforeFilteringAndModelLoading() throws {
+        var loadCount = 0
+        let enhancer = DocResEnhancer(modelLoader: {
+            loadCount += 1
+            throw DocResModelLoadingError.restartRequired
+        })
+        let processor = DocumentImageProcessor(enhancer: enhancer)
+        let page = ScannedPage(
+            baseImage: TestImageFactory.solid(.red, size: CGSize(width: 4000, height: 3000)),
+            filter: .grayscale,
+            quarterTurns: 1
+        )
+
+        let thumbnail = try page.thumbnailImage(using: processor)
+        XCTAssertEqual(TestImageFactory.pixelSize(of: thumbnail), CGSize(width: 168, height: 224))
+        XCTAssertEqual(loadCount, 0)
+        let color = try XCTUnwrap(TestImageFactory.pixelColor(
+            of: thumbnail, x: Int(thumbnail.size.width / 2), y: Int(thumbnail.size.height / 2)))
+        var red: CGFloat = 0
+        var green: CGFloat = 0
+        var blue: CGFloat = 0
+        var alpha: CGFloat = 0
+        XCTAssertTrue(color.getRed(&red, green: &green, blue: &blue, alpha: &alpha))
+        XCTAssertEqual(red, green, accuracy: 2.0 / 255)
+        XCTAssertEqual(green, blue, accuracy: 2.0 / 255)
+    }
+
+    func testModelLoadFailureRequiresRestartAndDoesNotRetry() throws {
+        var loadCount = 0
+        let enhancer = DocResEnhancer(modelLoader: {
+            loadCount += 1
+            throw ImageProcessingError.invalidImage
+        })
+        let processor = DocumentImageProcessor(enhancer: enhancer)
+        let image = document()
+
+        for _ in 0..<2 {
+            XCTAssertThrowsError(try processor.apply(.enhanced, to: image)) { error in
+                XCTAssertTrue(error is DocResModelLoadingError)
+                XCTAssertEqual(error.localizedDescription,
+                               DocResModelLoadingError.restartRequired.localizedDescription)
+            }
+        }
+        XCTAssertEqual(loadCount, 1)
+
+        let original = try processor.apply(.original, to: image)
+        XCTAssertEqual(try PageBitmap(XCTUnwrap(original.cgImage)).data,
+                       try PageBitmap(XCTUnwrap(image.cgImage)).data)
+    }
+
+    func testCancelledProcessorCallSkipsEnhancer() async throws {
+        var loadCount = 0
+        let enhancer = DocResEnhancer(modelLoader: {
+            loadCount += 1
+            throw DocResModelLoadingError.restartRequired
+        })
+        let processor = DocumentImageProcessor(enhancer: enhancer)
+        let image = document()
+        let entered = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        let task = Task {
+            entered.signal()
+            release.wait()
+            return try processor.apply(.enhanced, to: image)
+        }
+
+        XCTAssertEqual(entered.wait(timeout: .now() + 1), .success)
+        task.cancel()
+        release.signal()
+        do {
+            _ = try await task.value
+            XCTFail("Cancelled processing should throw")
+        } catch {
+            XCTAssertTrue(error is CancellationError)
+        }
+        XCTAssertEqual(loadCount, 0)
     }
 
     func testUnsafePredictionsAreRejected() throws {

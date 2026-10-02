@@ -46,4 +46,14 @@ struct ScannedPage: Identifiable, Hashable {
         let rotated = try processor.rotate(baseImage, quarterTurns: quarterTurns)
         return try processor.apply(filter, to: rotated)
     }
+
+    /// サムネイル用に縮小してから回転とフィルタを適用した画像を返す。
+    /// - 入力: processor … 画像処理エンジン（既定は新規インスタンス）
+    /// - 出力: 長辺 224 px 以下の回転・フィルタ適用後 UIImage
+    /// - 処理: 元画像を先に縮小し、続けて回転とフィルタを適用する
+    func thumbnailImage(using processor: DocumentImageProcessor = DocumentImageProcessor()) throws -> UIImage {
+        let downscaled = try processor.downscaled(baseImage, maxPixelDimension: 224)
+        let rotated = try processor.rotate(downscaled, quarterTurns: quarterTurns)
+        return try processor.apply(filter, to: rotated)
+    }
 }

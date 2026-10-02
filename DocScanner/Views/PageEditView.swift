@@ -123,13 +123,22 @@ struct PageEditView: View {
     private func renderPage() async {
         let key = renderKey
         guard let snapshot = draft.page(id: pageID) else { return }
+        let worker = Task.detached {
+            try Task.checkCancellation()
+            return try snapshot.renderedImage()
+        }
         do {
-            let image = try await Task.detached {
-                try snapshot.renderedImage()
-            }.value
+            let image = try await withTaskCancellationHandler(operation: {
+                try await worker.value
+            }, onCancel: {
+                worker.cancel()
+            })
+            try Task.checkCancellation()
             if renderKey == key {
                 rendered = image
             }
+        } catch is CancellationError {
+            return
         } catch {
             errorMessage = error.localizedDescription
             showError = true
