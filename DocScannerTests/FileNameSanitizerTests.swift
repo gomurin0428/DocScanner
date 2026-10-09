@@ -41,13 +41,21 @@ final class FileNameSanitizerTests: XCTestCase {
         }
     }
 
-    /// ".pdf" のみの入力でエラーが送出されることを検証する。
+    /// 先頭ピリオド付き拡張子だけの入力を隠し名として拒否する。
     /// - 入力: なし
     /// - 出力: なし
     /// - 処理: 拡張子除去後に空となる入力で FileNameError.empty を期待する
     func testExtensionOnlyThrows() {
         XCTAssertThrowsError(try FileNameSanitizer.sanitize(".pdf")) { error in
-            XCTAssertEqual(error as? FileNameError, .empty)
+            XCTAssertEqual(error as? FileNameError, .hiddenName)
+        }
+    }
+
+    func testLeadingDotNamesAreRejected() {
+        for name in [".memo", "..", " .PDF ", " .memo "] {
+            XCTAssertThrowsError(try FileNameSanitizer.sanitize(name), name) { error in
+                XCTAssertEqual(error as? FileNameError, .hiddenName)
+            }
         }
     }
 

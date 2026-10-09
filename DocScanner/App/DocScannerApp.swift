@@ -15,7 +15,7 @@ struct DocScannerApp: App {
     ///   ストアなしで起動してエラー画面を表示する
     init() {
         do {
-            store = try DocumentStore()
+            store = try DocumentStore(loadExisting: false)
             storeError = nil
         } catch {
             store = nil

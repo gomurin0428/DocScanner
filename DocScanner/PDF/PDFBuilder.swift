@@ -1,99 +1,121 @@
+import CoreGraphics
 import PDFKit
 import UIKit
 
-/// PDF 生成中に発生するエラー。
 enum PDFBuilderError: LocalizedError {
-    /// ページとなる画像が 0 件だった。
     case noPages
-    /// 画像の JPEG 再エンコードに失敗した。
     case jpegEncodingFailed
+    case contextCreationFailed
 
-    /// エラーの英語説明文を返す。
     var errorDescription: String? {
         switch self {
-        case .noPages:
-            return "There are no pages to export."
-        case .jpegEncodingFailed:
-            return "A page image could not be encoded as JPEG."
+        case .noPages: return "There are no pages to export."
+        case .jpegEncodingFailed: return "A page image could not be encoded as JPEG."
+        case .contextCreationFailed: return "The PDF output could not be created."
         }
     }
 }
 
-/// ページ画像群から PDF を生成するビルダー。
 struct PDFBuilder {
+    private static let pageMargin: CGFloat = 18
+    private static let pointsPerPixel: CGFloat = 72.0 / 300.0
 
-    /// 用紙マージン（pt）。
-    private let pageMargin: CGFloat = 18
-
-    /// ビルダーを初期化する。
-    /// - 入力: なし
-    /// - 出力: 初期化済み PDFBuilder
-    /// - 処理: 定数のみのため何もしない
     init() {}
 
-    /// 画像配列から PDF データを生成する。
-    /// - 入力: images … ページ順の画像配列、pageSize … 用紙サイズ、jpegQuality … JPEG 圧縮率（既定 0.8）
-    /// - 出力: 生成された PDF の Data
-    /// - 処理: UIGraphicsPDFRenderer で 1 画像 1 ページを描画する。
-    ///   A4/Letter はマージン内に aspect-fit で中央配置、fitImage は画像サイズをそのままページにする。
-    ///   ファイルサイズ削減のため各画像は JPEG へ再エンコードしてから描画する。
-    /// - Throws: images が空なら PDFBuilderError.noPages
-    func makePDF(from images: [UIImage], pageSize: PDFPageSize, jpegQuality: CGFloat = 0.8) throws -> Data {
-        guard !images.isEmpty else {
-            throw PDFBuilderError.noPages
-        }
-
-        // iOS 26 では一部サイズで beginPage(withBounds:) のページ境界が mediaBox に
-        // 反映されずレンダラ初期値が残るため、先頭ページの実サイズで初期化する
-        // pdfData クロージャは throw できないため、JPEG 再エンコードを先に済ませる。
-        // エンコード・デコードに失敗した場合は元画像を描くのではなくエラーにする
-        var encoded: [UIImage] = []
-        for image in images {
-            guard let jpeg = image.jpegData(compressionQuality: jpegQuality),
-                  let jpegImage = UIImage(data: jpeg) else {
-                throw PDFBuilderError.jpegEncodingFailed
+    static func writePDF(
+        pageCount: Int,
+        to url: URL,
+        pageSize: PDFPageSize,
+        jpegQuality: CGFloat = 0.8,
+        imageForPage: (Int) throws -> UIImage,
+        progress: (Int) -> Void
+    ) throws {
+        guard pageCount > 0 else { throw PDFBuilderError.noPages }
+        try? FileManager.default.removeItem(at: url)
+        var context: CGContext?
+        do {
+            guard let createdContext = CGContext(url as CFURL, mediaBox: nil, nil) else {
+                throw PDFBuilderError.contextCreationFailed
             }
-            encoded.append(jpegImage)
-        }
-
-        let renderer = UIGraphicsPDFRenderer(bounds: pageBounds(for: encoded[0], pageSize: pageSize))
-        let data = renderer.pdfData { context in
-            for image in encoded {
-                let bounds = pageBounds(for: image, pageSize: pageSize)
-                context.beginPage(withBounds: bounds, pageInfo: [:])
-                // JPEG 再エンコードにより PDF 内の画像サイズを抑える
-                image.draw(in: contentRect(for: image, in: bounds, pageSize: pageSize))
+            context = createdContext
+            for index in 0..<pageCount {
+                try autoreleasepool {
+                    try Task.checkCancellation()
+                    let image = try imageForPage(index)
+                    try Task.checkCancellation()
+                    let upright = uprightImage(image)
+                    try Task.checkCancellation()
+                    guard let jpegData = upright.jpegData(compressionQuality: jpegQuality),
+                          let encoded = UIImage(data: jpegData),
+                          let cgImage = encoded.cgImage else {
+                        throw PDFBuilderError.jpegEncodingFailed
+                    }
+                    try Task.checkCancellation()
+                    let imageSize = CGSize(width: CGFloat(cgImage.width) * pointsPerPixel,
+                                           height: CGFloat(cgImage.height) * pointsPerPixel)
+                    let bounds = pageBounds(for: imageSize, pageSize: pageSize)
+                    var mediaBox = bounds
+                    context?.beginPage(mediaBox: &mediaBox)
+                    context?.saveGState()
+                    context?.draw(cgImage, in: contentRect(for: imageSize, in: bounds,
+                                                            pageSize: pageSize))
+                    context?.restoreGState()
+                    context?.endPage()
+                    try Task.checkCancellation()
+                }
+                progress(index + 1)
             }
+            context?.closePDF()
+            context = nil
+        } catch {
+            context?.closePDF()
+            context = nil
+            try? FileManager.default.removeItem(at: url)
+            throw error
         }
-        return data
     }
 
-    /// ページ境界を計算する。
-    /// - 入力: image … ページ画像、pageSize … 用紙サイズ指定
-    /// - 出力: ページの CGRect（原点 0）
-    /// - 処理: 固定サイズはそのまま、fitImage は画像の pt サイズをページサイズにする
-    private func pageBounds(for image: UIImage, pageSize: PDFPageSize) -> CGRect {
-        if let fixed = pageSize.fixedSize {
-            return CGRect(origin: .zero, size: fixed)
-        }
-        return CGRect(origin: .zero, size: image.size)
+    func makePDF(from images: [UIImage], pageSize: PDFPageSize,
+                 jpegQuality: CGFloat = 0.8) throws -> Data {
+        guard !images.isEmpty else { throw PDFBuilderError.noPages }
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("DocScanner-\(UUID().uuidString).pdf")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try Self.writePDF(pageCount: images.count, to: url, pageSize: pageSize,
+                          jpegQuality: jpegQuality,
+                          imageForPage: { images[$0] }, progress: { _ in })
+        return try Data(contentsOf: url)
     }
 
-    /// ページ内の画像描画領域を計算する。
-    /// - 入力: image … ページ画像、bounds … ページ境界
-    /// - 出力: 画像を描画する CGRect
-    /// - 処理: fitImage のみ全領域、それ以外はマージン内へ aspect-fit で中央配置
-    private func contentRect(for image: UIImage, in bounds: CGRect, pageSize: PDFPageSize) -> CGRect {
-        if pageSize == .fitImage {
-            return bounds
+    private static func pageBounds(for imageSize: CGSize, pageSize: PDFPageSize) -> CGRect {
+        CGRect(origin: .zero, size: pageSize.fixedSize ?? imageSize)
+    }
+
+    private static func uprightImage(_ image: UIImage) -> UIImage {
+        guard image.imageOrientation != .up, let cgImage = image.cgImage else { return image }
+        let swapsDimensions = image.imageOrientation == .left ||
+            image.imageOrientation == .leftMirrored ||
+            image.imageOrientation == .right ||
+            image.imageOrientation == .rightMirrored
+        let scale = image.scale
+        let size = CGSize(width: CGFloat(swapsDimensions ? cgImage.height : cgImage.width) / scale,
+                          height: CGFloat(swapsDimensions ? cgImage.width : cgImage.height) / scale)
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = scale
+        return UIGraphicsImageRenderer(size: size, format: format).image { _ in
+            image.draw(in: CGRect(origin: .zero, size: size))
         }
+    }
+
+    private static func contentRect(for imageSize: CGSize, in bounds: CGRect,
+                                    pageSize: PDFPageSize) -> CGRect {
+        guard pageSize != .fitImage else { return bounds }
         let available = bounds.insetBy(dx: pageMargin, dy: pageMargin)
-        let scale = min(available.width / image.size.width, available.height / image.size.height)
-        let drawSize = CGSize(width: image.size.width * scale, height: image.size.height * scale)
-        let origin = CGPoint(
-            x: available.minX + (available.width - drawSize.width) / 2,
-            y: available.minY + (available.height - drawSize.height) / 2
-        )
-        return CGRect(origin: origin, size: drawSize)
+        let scale = min(available.width / imageSize.width,
+                        available.height / imageSize.height)
+        let size = CGSize(width: imageSize.width * scale, height: imageSize.height * scale)
+        return CGRect(x: available.minX + (available.width - size.width) / 2,
+                      y: available.minY + (available.height - size.height) / 2,
+                      width: size.width, height: size.height)
     }
 }

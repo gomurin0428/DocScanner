@@ -6,21 +6,68 @@ import os
 /// DocRes failed to load and requires an app restart before retrying.
 enum DocResModelLoadingError: LocalizedError {
     case restartRequired
+    case failed(underlying: Error)
+    case missingResource
+
+    var underlyingError: Error? {
+        if case .failed(let underlying) = self { return underlying }
+        return nil
+    }
 
     var errorDescription: String? {
-        "The image enhancement model could not be loaded. Please close and reopen KDocScanner."
+        switch self {
+        case .missingResource:
+            return "The DocScanner image enhancement model is missing. Repair, reinstall, or update the app."
+        case .restartRequired, .failed:
+            return "The image enhancement model could not be loaded. Please close and reopen DocScanner."
+        }
+    }
+}
+
+enum DocResProcessingError: LocalizedError {
+    case invalidModelOutput
+    case predictionFailed(Error)
+    case insufficientMemory(UInt64)
+    case renderFailed(Error)
+
+    var underlyingError: Error? {
+        if case .predictionFailed(let error) = self { return error }
+        if case .renderFailed(let error) = self { return error }
+        return nil
+    }
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidModelOutput:
+            return "The DocScanner image enhancement model returned invalid output."
+        case .predictionFailed:
+            return "The DocScanner image enhancement model could not process this image."
+        case .insufficientMemory:
+            return "DocScanner does not have enough memory to enhance this image. Close other apps or reopen DocScanner, or choose Original."
+        case .renderFailed:
+            return "The DocScanner image enhancement result could not be rendered."
+        }
     }
 }
 
 final class DocResEnhancer {
+    private struct GainCacheEntry {
+        let source: CGImage
+        let gain: [Float]
+    }
+
     static let shared = DocResEnhancer()
     static let side = 512
+    private static let maxGainCacheEntries = 8
     private let lock = NSLock()
     private var model: MLModel?
     private var modelLoader: (() throws -> MLModel)?
+    private var inputBuilder: ((PageBitmap, [UInt8]) throws -> MLMultiArray)?
+    private var predictionOverride: ((MLMultiArray) throws -> MLMultiArray)?
     private var modelLoadError: DocResModelLoadingError?
     private var cachedSource: CGImage?
     private var cachedResult: CGImage?
+    private var gainCache: [GainCacheEntry] = []
 
     private init() { modelLoader = Self.loadModel }
 
@@ -30,9 +77,17 @@ final class DocResEnhancer {
         self.modelLoader = modelLoader
     }
 
+    init(
+        prediction: @escaping (MLMultiArray) throws -> MLMultiArray,
+        inputBuilder: ((PageBitmap, [UInt8]) throws -> MLMultiArray)? = nil
+    ) {
+        predictionOverride = prediction
+        self.inputBuilder = inputBuilder
+    }
+
     static func loadModel() throws -> MLModel {
         guard let url = Bundle(for: DocResEnhancer.self).url(forResource: "DocResAppearance", withExtension: "mlmodelc") else {
-            throw DocumentDetectionError.invalidImage
+            throw DocResModelLoadingError.missingResource
         }
         let configuration = MLModelConfiguration()
         configuration.computeUnits = .cpuOnly
@@ -42,40 +97,101 @@ final class DocResEnhancer {
     func flattened(_ image: CGImage) throws -> CGImage? {
         try Task.checkCancellation()
         guard min(image.width, image.height) >= 256,
-              Double(min(image.width, image.height)) / Double(max(image.width, image.height)) >= 0.2 else { return nil }
-        try Task.checkCancellation()
+              Double(min(image.width, image.height)) / Double(max(image.width, image.height)) >= 0.2 else {
+            AppDiagnostics.selection("DocRes skipped: small image or extreme aspect ratio")
+            return nil
+        }
         lock.lock()
         defer { lock.unlock() }
         try Task.checkCancellation()
-        if cachedSource === image { return cachedResult }
-        if let modelLoadError {
-            throw modelLoadError
+        if let modelLoadError { throw modelLoadError }
+        if cachedSource === image {
+            return cachedResult
+        }
+        if let index = gainCache.firstIndex(where: { $0.source === image }) {
+            let entry = gainCache.remove(at: index)
+            gainCache.insert(entry, at: 0)
+            let bitmap = try PageBitmap(image, background: CGColor(gray: 1, alpha: 1))
+            let result = try Self.render(bitmap, gain: entry.gain)
+            cachedSource = image
+            cachedResult = result
+            return result
+        }
+        let bitmap = try PageBitmap(image, background: CGColor(gray: 1, alpha: 1))
+        let small = DocResPrompt.resized(bitmap, side: Self.side)
+        guard DocResPrompt.hasContrast(small) else {
+            AppDiagnostics.selection("DocRes skipped: low contrast image")
+            return nil
         }
         #if os(iOS) && !targetEnvironment(simulator)
-        guard os_proc_available_memory() >= 2_200_000_000 else { return nil }
+        let available = os_proc_available_memory()
+        guard available >= 2_200_000_000 else {
+            let error = DocResProcessingError.insufficientMemory(UInt64(available))
+            AppDiagnostics.error("DocRes enhancement skipped for insufficient memory", error: error)
+            throw error
+        }
         #endif
         if let loader = modelLoader {
             modelLoader = nil
             do {
                 model = try loader()
             } catch {
-                let loadError = DocResModelLoadingError.restartRequired
+                let loadError: DocResModelLoadingError
+                if let typed = error as? DocResModelLoadingError {
+                    loadError = typed
+                } else {
+                    loadError = .failed(underlying: error)
+                }
                 modelLoadError = loadError
+                AppDiagnostics.error("DocRes model loading", error: loadError)
                 throw loadError
             }
         }
-        guard let model else { return nil }
-        let bitmap = try PageBitmap(image, background: CGColor(gray: 1, alpha: 1))
-        let small = DocResPrompt.resized(bitmap, side: Self.side)
-        guard DocResPrompt.hasContrast(small) else { return nil }
-        let input = try DocResPrompt.input(bitmap: bitmap, small: small)
-        let features = try MLDictionaryFeatureProvider(dictionary: ["image": MLFeatureValue(multiArray: input)])
         try Task.checkCancellation()
-        let prediction = try model.prediction(from: features)
+        guard model != nil || predictionOverride != nil else { return nil }
+        let input: MLMultiArray
+        if let inputBuilder {
+            input = try inputBuilder(bitmap, small)
+        } else {
+            input = try DocResPrompt.input(bitmap: bitmap, small: small)
+        }
         try Task.checkCancellation()
-        guard let array = prediction.featureValue(for: "restored")?.multiArrayValue,
-              let gain = Self.gain(input: small, prediction: array) else { return nil }
-        let result = try Self.render(bitmap, gain: gain)
+        let array: MLMultiArray
+        do {
+            if let predictionOverride {
+                array = try predictionOverride(input)
+            } else {
+                let features = try MLDictionaryFeatureProvider(dictionary: ["image": MLFeatureValue(multiArray: input)])
+                let prediction = try model!.prediction(from: features)
+                guard let output = prediction.featureValue(for: "restored")?.multiArrayValue else {
+                    throw DocResProcessingError.invalidModelOutput
+                }
+                array = output
+            }
+        } catch {
+            let predictionError = DocResProcessingError.predictionFailed(error)
+            AppDiagnostics.error("DocRes prediction", error: predictionError)
+            throw predictionError
+        }
+        guard let gain = Self.gain(input: small, prediction: array) else {
+            let error = DocResProcessingError.invalidModelOutput
+            AppDiagnostics.error("DocRes model output", error: error)
+            throw error
+        }
+        let entry = GainCacheEntry(source: image, gain: gain)
+        gainCache.insert(entry, at: 0)
+        if gainCache.count > Self.maxGainCacheEntries {
+            gainCache.removeLast()
+        }
+        try Task.checkCancellation()
+        let result: CGImage
+        do {
+            result = try Self.render(bitmap, gain: gain)
+        } catch {
+            let renderError = DocResProcessingError.renderFailed(error)
+            AppDiagnostics.error("DocRes rendering", error: error)
+            throw renderError
+        }
         cachedSource = image
         cachedResult = result
         return result
@@ -143,7 +259,7 @@ final class DocResEnhancer {
     static func render(_ bitmap: PageBitmap, gain: [Float]) throws -> CGImage {
         guard gain.count == side * side * 3,
               gain.allSatisfy({ $0.isFinite && $0 >= 0.75 && $0 <= 4 }) else {
-            throw DocumentDetectionError.invalidImage
+            throw DocResProcessingError.invalidModelOutput
         }
         var pixels = bitmap.data
         for y in 0..<bitmap.height {
@@ -169,7 +285,7 @@ final class DocResEnhancer {
                                   space: CGColorSpace(name: CGColorSpace.sRGB)!,
                                   bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
                                   provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent) else {
-            throw DocumentDetectionError.renderFailed
+            throw DocResProcessingError.renderFailed(DocumentDetectionError.renderFailed)
         }
         return image
     }

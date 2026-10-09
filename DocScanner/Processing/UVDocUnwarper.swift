@@ -3,19 +3,62 @@ import CoreImage
 import CoreML
 import Foundation
 
+enum UVDocModelLoadingError: LocalizedError {
+    case restartRequired(underlying: Error)
+    case missingResource
+
+    var underlyingError: Error? {
+        if case .restartRequired(let error) = self { return error }
+        return nil
+    }
+
+    var errorDescription: String? {
+        switch self {
+        case .missingResource:
+            return "The DocScanner document geometry model is missing. Repair, reinstall, or update the app."
+        case .restartRequired:
+            return "The DocScanner document geometry model could not be loaded. Please close and reopen DocScanner."
+        }
+    }
+}
+
+enum UVDocProcessingError: LocalizedError {
+    case invalidModelOutput
+    case predictionFailed(Error)
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidModelOutput:
+            return "The DocScanner document geometry model returned invalid output."
+        case .predictionFailed:
+            return "The DocScanner document geometry model could not process this image."
+        }
+    }
+}
+
 final class UVDocUnwarper {
-    static let shared = UVDocUnwarper()
-    private let model: MLModel?
+    static let shared = UVDocUnwarper(production: true)
+    private var model: MLModel?
+    private var modelLoader: (() throws -> MLModel)?
+    private var modelLoadError: UVDocModelLoadingError?
     private let lock = NSLock()
-    private let context = CIContext()
+    private let context = ImageRendering.context
 
     init(model: MLModel? = nil) {
-        self.model = model ?? (try? Self.loadModel())
+        self.model = model
+    }
+
+    init(modelLoader: @escaping () throws -> MLModel) {
+        self.modelLoader = modelLoader
+    }
+
+    private init(production: Bool) {
+        if production { modelLoader = Self.loadModel }
     }
 
     static func loadModel() throws -> MLModel {
         guard let url = Bundle(for: UVDocUnwarper.self).url(forResource: "UVDoc", withExtension: "mlmodelc") else {
-            throw DocumentDetectionError.invalidImage
+            throw UVDocModelLoadingError.missingResource
         }
         let configuration = MLModelConfiguration()
         #if targetEnvironment(simulator) || os(macOS)
@@ -27,15 +70,25 @@ final class UVDocUnwarper {
     }
 
     func unwarp(_ image: CGImage, boundary: DocumentBoundary) throws -> CGImage? {
-        guard boundary.isValid, model != nil else { return nil }
+        guard boundary.isValid else {
+            throw DocumentDetectionError.invalidImage
+        }
         let xs = boundary.outline.map(\.x), ys = boundary.outline.map(\.y)
         let bounds = CGRect(x: xs.min()! * Double(image.width), y: (1 - ys.max()!) * Double(image.height),
                             width: (xs.max()! - xs.min()!) * Double(image.width),
                             height: (ys.max()! - ys.min()!) * Double(image.height)).integral
             .intersection(CGRect(x: 0, y: 0, width: image.width, height: image.height))
-        guard min(bounds.width, bounds.height) >= 64,
-              min(bounds.width, bounds.height) / max(bounds.width, bounds.height) >= 0.35,
-              var crop = image.cropping(to: bounds) else { return nil }
+        guard min(bounds.width, bounds.height) >= 64 else {
+            AppDiagnostics.selection("UVDoc skipped: small document crop")
+            return nil
+        }
+        guard min(bounds.width, bounds.height) / max(bounds.width, bounds.height) >= 0.35 else {
+            AppDiagnostics.selection("UVDoc skipped: extreme document aspect ratio")
+            return nil
+        }
+        guard var crop = image.cropping(to: bounds) else {
+            throw DocumentDetectionError.correctionFailed
+        }
         var croppedBoundary = boundary.map { point in
             CGPoint(x: (point.x * Double(image.width) - bounds.minX) / bounds.width,
                     y: 1 - ((1 - point.y) * Double(image.height) - bounds.minY) / bounds.height)
@@ -46,8 +99,22 @@ final class UVDocUnwarper {
             croppedBoundary = Self.rotatedRight(croppedBoundary)
         }
         let input = try Self.input(for: crop)
-        guard Self.hasContrast(input), let raw = try predict(input),
-              let grid = raw.constrained(to: croppedBoundary) else { return nil }
+        guard Self.hasContrast(input) else {
+            AppDiagnostics.selection("UVDoc skipped: low contrast document crop")
+            return nil
+        }
+        try ensureModel()
+        guard model != nil else { return nil }
+        guard let raw = try predict(input) else {
+            let error = UVDocProcessingError.invalidModelOutput
+            AppDiagnostics.error("UVDoc model output", error: error)
+            throw error
+        }
+        guard let grid = raw.constrained(to: croppedBoundary) else {
+            let error = UVDocProcessingError.invalidModelOutput
+            AppDiagnostics.error("UVDoc model output", error: error)
+            throw error
+        }
         let corners = croppedBoundary.corners.map {
             PagePoint(x: $0.x * Double(crop.width), y: $0.y * Double(crop.height))
         }
@@ -63,9 +130,20 @@ final class UVDocUnwarper {
         let features = try MLDictionaryFeatureProvider(dictionary: ["image": MLFeatureValue(multiArray: input)])
         lock.lock()
         defer { lock.unlock() }
-        let result = try model.prediction(from: features)
+        let result: MLFeatureProvider
+        do {
+            result = try model.prediction(from: features)
+        } catch {
+            let predictionError = UVDocProcessingError.predictionFailed(error)
+            AppDiagnostics.error("UVDoc prediction", error: predictionError)
+            throw predictionError
+        }
         guard let array = result.featureValue(for: "grid")?.multiArrayValue,
-              array.shape.map(\.intValue) == [1, 2, 45, 31], array.dataType == .float32 else { return nil }
+              array.shape.map(\.intValue) == [1, 2, 45, 31], array.dataType == .float32 else {
+            let error = UVDocProcessingError.invalidModelOutput
+            AppDiagnostics.error("UVDoc model output", error: error)
+            throw error
+        }
         let strides = array.strides.map(\.intValue)
         let values = array.dataPointer.assumingMemoryBound(to: Float.self)
         let points = (0..<45).flatMap { row in
@@ -75,6 +153,28 @@ final class UVDocUnwarper {
             }
         }
         return UVDocGrid(width: 31, height: 45, points: points)
+    }
+
+    private func ensureModel() throws {
+        lock.lock()
+        defer { lock.unlock() }
+        if let modelLoadError { throw modelLoadError }
+        if model != nil { return }
+        guard let loader = modelLoader else { return }
+        modelLoader = nil
+        do {
+            model = try loader()
+        } catch {
+            let loadError: UVDocModelLoadingError
+            if let typed = error as? UVDocModelLoadingError {
+                loadError = typed
+            } else {
+                loadError = .restartRequired(underlying: error)
+            }
+            modelLoadError = loadError
+            AppDiagnostics.error("UVDoc model loading", error: loadError)
+            throw loadError
+        }
     }
 
     static func input(for image: CGImage) throws -> MLMultiArray {

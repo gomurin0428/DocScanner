@@ -41,19 +41,18 @@ struct ScannedPage: Identifiable, Hashable {
     /// 現在の編集状態（回転 + フィルタ）を適用した最終画像を返す。
     /// - 入力: processor … 画像処理エンジン（既定は新規インスタンス）
     /// - 出力: 回転・フィルタ適用後の UIImage
-    /// - 処理: まず quarterTurns で回転し、続けて filter を適用する
+    /// - 処理: 元画像へフィルタを適用し、最後に quarterTurns で回転する
     func renderedImage(using processor: DocumentImageProcessor = DocumentImageProcessor()) throws -> UIImage {
-        let rotated = try processor.rotate(baseImage, quarterTurns: quarterTurns)
-        return try processor.apply(filter, to: rotated)
+        let filtered = try processor.apply(filter, to: baseImage)
+        return try processor.rotate(filtered, quarterTurns: quarterTurns)
     }
 
     /// サムネイル用に縮小してから回転とフィルタを適用した画像を返す。
     /// - 入力: processor … 画像処理エンジン（既定は新規インスタンス）
     /// - 出力: 長辺 224 px 以下の回転・フィルタ適用後 UIImage
-    /// - 処理: 元画像を先に縮小し、続けて回転とフィルタを適用する
+    /// - 処理: renderedImage と同じ全解像度の結果を作り、その結果を縮小する
     func thumbnailImage(using processor: DocumentImageProcessor = DocumentImageProcessor()) throws -> UIImage {
-        let downscaled = try processor.downscaled(baseImage, maxPixelDimension: 224)
-        let rotated = try processor.rotate(downscaled, quarterTurns: quarterTurns)
-        return try processor.apply(filter, to: rotated)
+        let rendered = try renderedImage(using: processor)
+        return try processor.downscaled(rendered, maxPixelDimension: 224)
     }
 }

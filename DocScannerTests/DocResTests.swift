@@ -39,13 +39,8 @@ final class DocResTests: XCTestCase {
         }
     }
 
-    func testThumbnailDownscalesBeforeFilteringAndModelLoading() throws {
-        var loadCount = 0
-        let enhancer = DocResEnhancer(modelLoader: {
-            loadCount += 1
-            throw DocResModelLoadingError.restartRequired
-        })
-        let processor = DocumentImageProcessor(enhancer: enhancer)
+    func testThumbnailMatchesDownscaledFinalFilteredResult() throws {
+        let processor = DocumentImageProcessor(enhancer: DocResEnhancer(model: nil))
         let page = ScannedPage(
             baseImage: TestImageFactory.solid(.red, size: CGSize(width: 4000, height: 3000)),
             filter: .grayscale,
@@ -54,7 +49,9 @@ final class DocResTests: XCTestCase {
 
         let thumbnail = try page.thumbnailImage(using: processor)
         XCTAssertEqual(TestImageFactory.pixelSize(of: thumbnail), CGSize(width: 168, height: 224))
-        XCTAssertEqual(loadCount, 0)
+        let expected = try processor.downscaled(page.renderedImage(using: processor), maxPixelDimension: 224)
+        XCTAssertEqual(try PageBitmap(XCTUnwrap(thumbnail.cgImage)).data,
+                       try PageBitmap(XCTUnwrap(expected.cgImage)).data)
         let color = try XCTUnwrap(TestImageFactory.pixelColor(
             of: thumbnail, x: Int(thumbnail.size.width / 2), y: Int(thumbnail.size.height / 2)))
         var red: CGFloat = 0
@@ -117,6 +114,67 @@ final class DocResTests: XCTestCase {
         XCTAssertEqual(loadCount, 0)
     }
 
+    func testCancelledPredictionCachesGainForNextRequest() async throws {
+        executionTimeAllowance = 30
+        let entered = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        var predictionCount = 0
+        var inputBuildCount = 0
+        let enhancer = DocResEnhancer(prediction: { input in
+            predictionCount += 1
+            entered.signal()
+            release.wait()
+            let output = try MLMultiArray(shape: [1, 3, 512, 512], dataType: .float32)
+            let inputStrides = input.strides.map(\.intValue)
+            let outputStrides = output.strides.map(\.intValue)
+            for channel in 0..<3 {
+                for y in 0..<512 {
+                    for x in 0..<512 {
+                        let inputIndex = channel * inputStrides[1] + y * inputStrides[2] + x * inputStrides[3]
+                        let outputIndex = channel * outputStrides[1] + y * outputStrides[2] + x * outputStrides[3]
+                        output[outputIndex] = input[inputIndex]
+                    }
+                }
+            }
+            return output
+        }, inputBuilder: { _, small in
+            inputBuildCount += 1
+            let input = try MLMultiArray(shape: [1, 6, 512, 512], dataType: .float32)
+            let strides = input.strides.map(\.intValue)
+            for channel in 0..<3 {
+                for y in 0..<512 {
+                    for x in 0..<512 {
+                        let pixelIndex = (y * 512 + x) * 3 + channel
+                        let inputIndex = channel * strides[1] + y * strides[2] + x * strides[3]
+                        input[inputIndex] = NSNumber(value: Float(small[pixelIndex]) / 255)
+                    }
+                }
+            }
+            return input
+        })
+        let image = try XCTUnwrap(TestImageFactory.gradient(
+            size: CGSize(width: 256, height: 256)).cgImage)
+        let cancelled = Task.detached(priority: .userInitiated) { try enhancer.flattened(image) }
+        XCTAssertEqual(entered.wait(timeout: .now() + 15), .success)
+        cancelled.cancel()
+        release.signal()
+
+        do {
+            _ = try await cancelled.value
+            XCTFail("Cancelled prediction should not render a result")
+        } catch {
+            XCTAssertTrue(error is CancellationError)
+        }
+        XCTAssertNotNil(try enhancer.flattened(image))
+        let source = UIImage(cgImage: image)
+        let processor = DocumentImageProcessor(enhancer: enhancer)
+        _ = try processor.apply(.enhanced, to: source)
+        _ = try ScannedPage(baseImage: source, filter: .enhanced, quarterTurns: 1)
+            .renderedImage(using: processor)
+        XCTAssertEqual(predictionCount, 1)
+        XCTAssertEqual(inputBuildCount, 1)
+    }
+
     func testUnsafePredictionsAreRejected() throws {
         let size = DocResEnhancer.side
         let input = [UInt8](repeating: 200, count: size * size * 3)
@@ -154,7 +212,13 @@ final class DocResTests: XCTestCase {
 
     func testPromptMorphologyMatchesIndependentWindowCalculation() {
         let side = 13
-        let pixels = (0..<(side * side)).map { UInt8(($0 * 67 + $0 / side * 23) % 256) }
+        var pixels: [UInt8] = []
+        pixels.reserveCapacity(side * side)
+        for index in 0..<(side * side) {
+            let row = index / side
+            let weightedValue = index * 67 + row * 23
+            pixels.append(UInt8(weightedValue % 256))
+        }
         let maximum = DocResPrompt.maximum(pixels, side: side, radius: 3)
         let median = DocResPrompt.median(pixels, side: side, radius: 5)
         for y in 0..<side {

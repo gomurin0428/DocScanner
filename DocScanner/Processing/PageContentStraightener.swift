@@ -4,7 +4,7 @@ import Vision
 
 /// 輪郭補正後の紙面を文字列の並びから補正する。文字が不足する画像はそのまま返す。
 struct PageContentStraightener {
-    private let context = CIContext()
+    private let context = ImageRendering.context
 
     func straighten(_ image: CGImage) throws -> CGImage {
         let ci = CIImage(cgImage: image)
@@ -12,9 +12,22 @@ struct PageContentStraightener {
         let small = ci.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
         for rotated in [false, true] {
             let analysis = rotated ? small.oriented(.right) : small
-            guard let cg = context.createCGImage(analysis, from: analysis.extent),
-                  let lines = try? textLines(in: cg),
-                  let model = PageDewarpModel.fit(lines: lines) else { continue }
+            guard let cg = context.createCGImage(analysis, from: analysis.extent) else {
+                let error = DocumentDetectionError.renderFailed
+                AppDiagnostics.error("Page content analysis rendering", error: error)
+                throw error
+            }
+            let lines: [[PagePoint]]
+            do {
+                lines = try textLines(in: cg)
+            } catch {
+                AppDiagnostics.error("Page content text detection", error: error)
+                throw error
+            }
+            guard let model = PageDewarpModel.fit(lines: lines) else {
+                AppDiagnostics.selection("Page content straightening skipped: insufficient text")
+                continue
+            }
             return try render(image, model: model, rotated: rotated)
         }
         return image
@@ -28,8 +41,10 @@ struct PageContentStraightener {
             guard let characters = observation.characterBoxes, characters.count >= 8 else { return nil }
             return characters.map { character in
                 let corners = [character.topLeft, character.topRight, character.bottomRight, character.bottomLeft]
+                let ySum: CGFloat = corners.reduce(CGFloat.zero) { $0 + $1.y }
+                let meanY: CGFloat = ySum / CGFloat(4)
                 return PagePoint(x: corners.map(\.x).reduce(0, +) / 4,
-                                 y: 1 - corners.map(\.y).reduce(0, +) / 4)
+                                 y: Double(CGFloat(1) - meanY))
             }
         }
     }

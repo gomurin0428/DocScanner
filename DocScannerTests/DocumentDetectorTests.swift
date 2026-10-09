@@ -6,14 +6,36 @@ import Vision
 final class DocumentDetectorTests: XCTestCase {
 
     /// 対象検出器。
-    private let detector = DocumentDetector()
+    private let detector = DocumentDetector(unwarper: UVDocUnwarper(model: nil))
 
-    /// 画面内で小さく写った紙を補正できることを検証する。
-    /// - 入力: 短辺が画像短辺の 14% の紙
-    /// - 出力: なし
-    /// - 処理: 検出後の寸法が紙領域と一致するか確認する
-    func testDetectsSmallDocument() throws {
+    func testDetectsSmallDocumentWithoutLoadingModel() throws {
         try assertDetectedPaper(CGRect(x: 430, y: 600, width: 140, height: 200))
+    }
+
+    func testModelLoadFailureIsCachedAndPropagatedWithoutFallback() throws {
+        let underlying = NSError(domain: "UVDocTests", code: 7)
+        var loadCount = 0
+        let unwarper = UVDocUnwarper(modelLoader: {
+            loadCount += 1
+            throw underlying
+        })
+        let detector = DocumentDetector(unwarper: unwarper)
+        let image = TestImageFactory.gradient(size: CGSize(width: 512, height: 768))
+        let boundary = DocumentBoundary(corners: [
+            CGPoint(x: 0.1, y: 0.9), CGPoint(x: 0.9, y: 0.9),
+            CGPoint(x: 0.9, y: 0.1), CGPoint(x: 0.1, y: 0.1)
+        ])
+        for _ in 0..<2 {
+            XCTAssertThrowsError(try detector.correct(image, boundary: boundary)) { error in
+                guard let loadingError = error as? UVDocModelLoadingError else {
+                    XCTFail("Expected UVDoc loading error, got \(error)")
+                    return
+                }
+                XCTAssertEqual((loadingError.underlyingError as NSError?)?.domain, underlying.domain)
+                XCTAssertEqual((loadingError.underlyingError as NSError?)?.code, underlying.code)
+            }
+        }
+        XCTAssertEqual(loadCount, 1)
     }
 
     /// 縦横比 0.18 のレシートを補正できることを検証する。

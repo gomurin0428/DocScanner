@@ -9,7 +9,7 @@ enum DocumentDetectionError: LocalizedError, Equatable {
     /// 入力画像を解析可能な形式へ変換できなかった。
     case invalidImage
     /// Vision リクエストの実行に失敗した。
-    case visionFailed(String)
+    case visionFailed(Error)
     /// 台形補正フィルタの出力が得られなかった。
     case correctionFailed
     /// 補正後画像のレンダリングに失敗した。
@@ -21,6 +21,24 @@ enum DocumentDetectionError: LocalizedError, Equatable {
     /// ホモグラフィ方程式が特異で解けなかった。
     case singularHomography
 
+    static func == (lhs: DocumentDetectionError, rhs: DocumentDetectionError) -> Bool {
+        switch (lhs, rhs) {
+        case (.noDocumentFound, .noDocumentFound),
+             (.invalidImage, .invalidImage),
+             (.correctionFailed, .correctionFailed),
+             (.renderFailed, .renderFailed),
+             (.bitmapContextFailed, .bitmapContextFailed),
+             (.singularHomography, .singularHomography):
+            return true
+        case (.visionFailed(let left), .visionFailed(let right)):
+            return left.localizedDescription == right.localizedDescription
+        case (.unexpectedMaskFormat(let left), .unexpectedMaskFormat(let right)):
+            return left == right
+        default:
+            return false
+        }
+    }
+
     /// エラーの英語説明文を返す。
     var errorDescription: String? {
         switch self {
@@ -28,8 +46,8 @@ enum DocumentDetectionError: LocalizedError, Equatable {
             return "No document edges were detected."
         case .invalidImage:
             return "The image could not be read."
-        case .visionFailed(let message):
-            return "Document detection failed: \(message)"
+        case .visionFailed(let underlying):
+            return "Document detection failed: \(underlying.localizedDescription)"
         case .correctionFailed:
             return "The detected document could not be perspective-corrected."
         case .renderFailed:
@@ -48,13 +66,18 @@ enum DocumentDetectionError: LocalizedError, Equatable {
 struct DocumentDetector {
 
     /// CI レンダリング用の共有コンテキスト。
-    private let context = CIContext()
+    private let context = ImageRendering.context
+    private let unwarper: UVDocUnwarper
+
+    init(unwarper: UVDocUnwarper = .shared) {
+        self.unwarper = unwarper
+    }
 
     /// 撮影時に固定した輪郭だけを補正する。Vision による対象の再選択は行わない。
     /// - 入力: 撮影画像と正規化輪郭、出力: 同じ輪郭を矩形にした画像
     func correct(_ image: UIImage, boundary: DocumentBoundary) throws -> UIImage {
         let cg = try normalizedCGImage(of: image)
-        if let output = try? UVDocUnwarper.shared.unwarp(cg, boundary: boundary) {
+        if let output = try unwarper.unwarp(cg, boundary: boundary) {
             return UIImage(cgImage: output, scale: image.scale, orientation: .up)
         }
         let flattened = try PageFlattener().flatten(cg, boundary: boundary)
@@ -65,12 +88,6 @@ struct DocumentDetector {
     /// セグメンテーション結果を採用する最低信頼度。
     /// 無地画像は 0〜0.55、実書類は 0.99 程度のため 0.8 で弾く。
     private static let segConfidenceThreshold: VNConfidence = 0.8
-
-    /// 検出器を初期化する。
-    /// - 入力: なし
-    /// - 出力: 初期化済み DocumentDetector
-    /// - 処理: CIContext を生成する
-    init() {}
 
     /// 画像内の書類を検出して台形補正済み画像を返す。
     /// - 入力: image … 書類を含む入力画像
@@ -88,14 +105,16 @@ struct DocumentDetector {
         do {
             try handler.perform([request])
         } catch {
-            throw DocumentDetectionError.visionFailed(error.localizedDescription)
+            AppDiagnostics.error("Rectangle detection", error: error)
+            throw DocumentDetectionError.visionFailed(error)
         }
         let rectangles = request.results ?? []
         let segRequest = VNDetectDocumentSegmentationRequest()
         do {
             try handler.perform([segRequest])
         } catch {
-            throw DocumentDetectionError.visionFailed(error.localizedDescription)
+            AppDiagnostics.error("Document segmentation", error: error)
+            throw DocumentDetectionError.visionFailed(error)
         }
         guard let rectangle = DocumentRectangleDetector.liveDocument(
             in: rectangles, document: segRequest.results?.first,
@@ -128,7 +147,7 @@ struct DocumentDetector {
                 toTopLeft(observation.bottomRight),
                 toTopLeft(observation.bottomLeft)
             ], mask: mask)
-            if let output = try? UVDocUnwarper.shared.unwarp(cg, boundary: boundary) {
+            if let output = try unwarper.unwarp(cg, boundary: boundary) {
                 return UIImage(cgImage: output, scale: image.scale, orientation: .up)
             }
             let flattened = try PageFlattener().flatten(cg, boundary: boundary)
@@ -172,7 +191,7 @@ struct DocumentDetector {
         let boundary = DocumentBoundary(corners: [rectangle.topLeft, rectangle.topRight,
                                                    rectangle.bottomRight, rectangle.bottomLeft])
         if let original = context.createCGImage(ciImage, from: ciImage.extent),
-           let output = try? UVDocUnwarper.shared.unwarp(original, boundary: boundary) {
+           let output = try unwarper.unwarp(original, boundary: boundary) {
             return UIImage(cgImage: output, scale: scale, orientation: .up)
         }
 

@@ -53,7 +53,7 @@ final class PDFBuilderTests: XCTestCase {
         XCTAssertEqual(bounds.height, 792, accuracy: 1, "bounds=\(bounds)")
     }
 
-    /// fitImage 指定時にページ境界が画像の pt サイズと一致することを検証する。
+    /// fitImage は画像のピクセル寸法を 300 DPI で pt に変換することを検証する。
     /// - 入力: なし
     /// - 出力: なし
     /// - 処理: 1 ページ目の mediaBox を画像サイズと比較する
@@ -62,8 +62,8 @@ final class PDFBuilderTests: XCTestCase {
         let data = try PDFBuilder().makePDF(from: [image], pageSize: .fitImage)
         let page = try XCTUnwrap(PDFDocument(data: data)?.page(at: 0))
         let bounds = page.bounds(for: .mediaBox)
-        XCTAssertEqual(bounds.width, 320, accuracy: 1)
-        XCTAssertEqual(bounds.height, 240, accuracy: 1)
+        XCTAssertEqual(bounds.width, 320 * 72.0 / 300.0, accuracy: 1)
+        XCTAssertEqual(bounds.height, 240 * 72.0 / 300.0, accuracy: 1)
     }
 
     /// A4/Letter 寸法と画像が一致しても固定用紙のマージンが適用されることを検証する。
@@ -91,8 +91,92 @@ final class PDFBuilderTests: XCTestCase {
         let image = TestImageFactory.solid(.black, size: CGSize(width: 320, height: 240))
         let data = try PDFBuilder().makePDF(from: [image], pageSize: .fitImage)
         let page = try XCTUnwrap(PDFDocument(data: data)?.page(at: 0))
-        let rendered = page.thumbnail(of: CGSize(width: 320, height: 240), for: .mediaBox)
+        let rendered = page.thumbnail(of: page.bounds(for: .mediaBox).size, for: .mediaBox)
         XCTAssertLessThan(try luminance(of: rendered, x: 1, y: 1), 0.1)
+    }
+
+    func testFitImageUsesUprightOrientationAndPixelDimensions() throws {
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let up = UIGraphicsImageRenderer(size: CGSize(width: 80, height: 120), format: format).image { context in
+            UIColor.black.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 80, height: 60))
+            UIColor.white.setFill()
+            context.fill(CGRect(x: 0, y: 60, width: 80, height: 60))
+        }
+        let rawRight = UIGraphicsImageRenderer(size: CGSize(width: 120, height: 80), format: format).image { context in
+            UIColor.black.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 60, height: 80))
+            UIColor.white.setFill()
+            context.fill(CGRect(x: 60, y: 0, width: 60, height: 80))
+        }
+        let right = UIImage(cgImage: try XCTUnwrap(rawRight.cgImage), scale: 1, orientation: .right)
+        let pages = [up, right]
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("orientation-\(UUID()).pdf")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try PDFBuilder.writePDF(pageCount: pages.count, to: url, pageSize: .fitImage,
+                                imageForPage: { pages[$0] }, progress: { _ in })
+        let document = try XCTUnwrap(PDFDocument(url: url))
+        XCTAssertEqual(document.pageCount, 2)
+        let bounds = try XCTUnwrap(document.page(at: 1)).bounds(for: .mediaBox)
+        XCTAssertEqual(bounds.width, 80 * 72.0 / 300.0, accuracy: 1)
+        XCTAssertEqual(bounds.height, 120 * 72.0 / 300.0, accuracy: 1)
+        for index in pages.indices {
+            let page = try XCTUnwrap(document.page(at: index))
+            let rendered = page.thumbnail(of: CGSize(width: 200, height: 300), for: .mediaBox)
+            XCTAssertLessThan(try luminance(of: rendered, x: 100, y: 30), 0.15, "page \(index) top")
+            XCTAssertGreaterThan(try luminance(of: rendered, x: 100, y: 270), 0.85, "page \(index) bottom")
+        }
+    }
+
+    func testStreamingProviderIsLazyAndRemovesPartialFileOnFailure() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("DocScanner-stream-\(UUID().uuidString).pdf")
+        defer { try? FileManager.default.removeItem(at: url) }
+        var requested: [Int] = []
+        var progressed: [Int] = []
+
+        XCTAssertThrowsError(try PDFBuilder.writePDF(
+            pageCount: 4,
+            to: url,
+            pageSize: .letter,
+            imageForPage: { index in
+                requested.append(index)
+                if index == 2 { throw DocumentStoreError.invalidPDF }
+                return TestImageFactory.solid(.white, size: CGSize(width: 80, height: 120))
+            },
+            progress: { progressed.append($0) }
+        ))
+
+        XCTAssertEqual(requested, [0, 1, 2])
+        XCTAssertEqual(progressed, [1, 2])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+    }
+
+    func testStreamingCancellationRemovesPartialFile() async throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("DocScanner-cancel-\(UUID().uuidString).pdf")
+        let enteredProvider = DispatchSemaphore(value: 0)
+        let releaseProvider = DispatchSemaphore(value: 0)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let writer = Task.detached {
+            try PDFBuilder.writePDF(pageCount: 2, to: url, pageSize: .a4, imageForPage: { _ in
+                enteredProvider.signal()
+                releaseProvider.wait()
+                return TestImageFactory.solid(.white, size: CGSize(width: 80, height: 120))
+            }, progress: { _ in })
+        }
+        XCTAssertEqual(enteredProvider.wait(timeout: .now() + 5), .success)
+        writer.cancel()
+        releaseProvider.signal()
+
+        do {
+            try await writer.value
+            XCTFail("Cancelled PDF generation should throw")
+        } catch {
+            XCTAssertTrue(error is CancellationError)
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
     }
 
     /// 空配列で noPages エラーが送出されることを検証する。
