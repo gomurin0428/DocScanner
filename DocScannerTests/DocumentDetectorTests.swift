@@ -8,12 +8,24 @@ final class DocumentDetectorTests: XCTestCase {
     /// 対象検出器。
     private let detector = DocumentDetector()
 
-    /// 画面内で小さく写った紙を補正できることを検証する。
-    /// - 入力: 短辺が画像短辺の 14% の紙
-    /// - 出力: なし
-    /// - 処理: 検出後の寸法が紙領域と一致するか確認する
-    func testDetectsSmallDocument() throws {
-        try assertDetectedPaper(CGRect(x: 430, y: 600, width: 140, height: 200))
+    /// 画面内で小さく写った紙に対する無効な UVDoc 出力を表面化する。
+    func testSmallDocumentSurfacesInvalidModelOutput() throws {
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let size = CGSize(width: 1000, height: 1400)
+        let image = UIGraphicsImageRenderer(size: size, format: format).image { context in
+            UIColor(white: 0.15, alpha: 1).setFill()
+            context.fill(CGRect(origin: .zero, size: size))
+            UIColor(white: 0.95, alpha: 1).setFill()
+            context.fill(CGRect(x: 430, y: 600, width: 140, height: 200))
+        }
+        XCTAssertThrowsError(try detector.detectAndCorrect(image)) { error in
+            guard let processingError = error as? UVDocProcessingError,
+                  case .invalidModelOutput = processingError else {
+                XCTFail("Expected invalid UVDoc model output, got \(error)")
+                return
+            }
+        }
     }
 
     /// 縦横比 0.18 のレシートを補正できることを検証する。

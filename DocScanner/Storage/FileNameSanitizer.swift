@@ -1,15 +1,18 @@
 import Foundation
 
 /// ファイル名のサニタイズに失敗した際のエラー。
-enum FileNameError: LocalizedError {
+enum FileNameError: LocalizedError, Equatable {
     /// サニタイズ後のファイル名が空になった。
     case empty
+    case hiddenName
 
     /// エラーの英語説明文を返す。
     var errorDescription: String? {
         switch self {
         case .empty:
             return "The file name is empty."
+        case .hiddenName:
+            return "The file name cannot begin with a period. Choose a visible name for the document."
         }
     }
 }
@@ -27,6 +30,9 @@ enum FileNameSanitizer {
     /// - Throws: 結果が空文字なら FileNameError.empty
     static func sanitize(_ raw: String) throws -> String {
         var name = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.hasPrefix(".") else {
+            throw FileNameError.hiddenName
+        }
         if name.lowercased().hasSuffix(".pdf") {
             name = String(name.dropLast(4)).trimmingCharacters(in: .whitespacesAndNewlines)
         }

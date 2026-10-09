@@ -1,3 +1,4 @@
+import AVFoundation
 import XCTest
 @testable import DocScanner
 
@@ -54,5 +55,24 @@ final class CameraControllerTests: XCTestCase {
         XCTAssertTrue(state.canFinish)
         XCTAssertEqual(state.captures.count, 1)
         XCTAssertTrue(state.captures[0] === priorImage)
+    }
+
+    func testPhotoDimensionsChooseLargestResolutionWithinTwelveMegapixels() {
+        let selected = CameraController.choosePhotoDimensions([
+            CMVideoDimensions(width: 1920, height: 1080),
+            CMVideoDimensions(width: 4000, height: 3000),
+            CMVideoDimensions(width: 8000, height: 6000)
+        ])
+        XCTAssertEqual(selected?.width, 4000)
+        XCTAssertEqual(selected?.height, 3000)
+    }
+
+    func testPhotoDimensionsFallBackToSmallestSupportedResolution() {
+        let selected = CameraController.choosePhotoDimensions([
+            CMVideoDimensions(width: 8000, height: 6000),
+            CMVideoDimensions(width: 6000, height: 4000)
+        ])
+        XCTAssertEqual(selected?.width, 6000)
+        XCTAssertEqual(selected?.height, 4000)
     }
 }

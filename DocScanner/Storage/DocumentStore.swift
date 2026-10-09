@@ -11,6 +11,8 @@ enum DocumentStoreError: LocalizedError, Equatable {
     case savedDocumentNotFound(String)
     /// リネーム後に一覧からリネーム先ファイルを特定できなかった。
     case renamedDocumentNotFound(String)
+    case directoryAccessFailed(String)
+    case invalidPDF
 
     /// エラーの英語説明文を返す。
     var errorDescription: String? {
@@ -23,12 +25,16 @@ enum DocumentStoreError: LocalizedError, Equatable {
             return "The saved file '\(fileName)' could not be found in the store."
         case .renamedDocumentNotFound(let fileName):
             return "The renamed file '\(fileName)' could not be found in the store."
+        case .directoryAccessFailed(let message):
+            return "DocScanner could not access the scan directory: \(message)"
+        case .invalidPDF:
+            return "The PDF could not be validated before saving."
         }
     }
 }
 
 /// 保存済み PDF 1 件の情報。
-struct SavedDocument: Identifiable, Hashable {
+struct SavedDocument: Identifiable, Hashable, Sendable {
     /// ファイル URL。Identifiable の id としても使用する。
     let url: URL
     /// 拡張子を除いたファイル名。
@@ -39,9 +45,13 @@ struct SavedDocument: Identifiable, Hashable {
     let fileSize: Int64
     /// PDF のページ数。
     let pageCount: Int
+    /// 読み込み不能な個別ファイルの理由。nil は通常の保存済み PDF。
+    let issue: String?
 
     /// Identifiable 準拠用の id。URL をそのまま使う。
     var id: URL { url }
+
+    var isReadable: Bool { issue == nil && pageCount > 0 }
 }
 
 /// Documents/Scans 配下の PDF を管理するストア。
@@ -53,51 +63,89 @@ final class DocumentStore {
 
     /// 保存済みドキュメント一覧（新しい順）。
     private(set) var documents: [SavedDocument] = []
+    private(set) var isLoaded = false
 
     /// ストアを初期化する。
     /// - 入力: directory … 保存先ディレクトリ。nil なら Documents/Scans を使用
     /// - 出力: 初期化済み DocumentStore
     /// - 処理: ディレクトリを作成し、既存ファイルを読み込む
     /// - Throws: ディレクトリ作成・列挙・属性取得・PDF 読込の失敗時に各エラー
-    init(directory: URL? = nil) throws {
+    init(directory: URL? = nil, loadExisting: Bool = true) throws {
         if let directory {
             self.directory = directory
         } else {
             let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             self.directory = docs.appendingPathComponent("Scans", isDirectory: true)
         }
-        try FileManager.default.createDirectory(at: self.directory, withIntermediateDirectories: true)
-        try reload()
+        if loadExisting {
+            try FileManager.default.createDirectory(at: self.directory, withIntermediateDirectories: true)
+            try reload()
+        }
     }
 
     /// ディレクトリを走査して documents を再構築する。
     /// - 入力: なし
     /// - 出力: なし（documents を更新する）
     /// - 処理: *.pdf を列挙し、作成日・サイズ・ページ数を取得して新しい順に並べる。
-    ///   属性欠損や読み込めない PDF は暗黙スキップせずエラーにする
-    /// - Throws: 列挙失敗時 CocoaError、属性欠損時 missingFileAttributes、
-    ///   PDF 読込失敗時 unreadableDocument
+    ///   属性欠損や読み込めない PDF は個別の issue エントリとして保持する。
+    /// - Throws: ディレクトリ列挙自体に失敗した場合
     func reload() throws {
-        let files = try FileManager.default.contentsOfDirectory(
+        documents = try Self.readDocuments(in: directory)
+        isLoaded = true
+    }
+
+    func reloadAsync() async throws {
+        let scanDirectory = directory
+        let snapshot = try await Task.detached(priority: .userInitiated) {
+            try Self.readDocuments(in: scanDirectory)
+        }.value
+        documents = snapshot
+        isLoaded = true
+    }
+
+    private static func readDocuments(in directory: URL) throws -> [SavedDocument] {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let files: [URL]
+        do {
+            files = try FileManager.default.contentsOfDirectory(
             at: directory,
             includingPropertiesForKeys: [.creationDateKey, .fileSizeKey],
-            options: [.skipsHiddenFiles]
-        )
-        documents = try files
+            options: []
+            )
+        } catch {
+            AppDiagnostics.error("Scan directory enumeration", error: error)
+            throw DocumentStoreError.directoryAccessFailed(error.localizedDescription)
+        }
+        return files
             .filter { $0.pathExtension.lowercased() == "pdf" }
             .map { url in
-                let values = try url.resourceValues(forKeys: [.creationDateKey, .fileSizeKey])
-                guard let createdAt = values.creationDate, let fileSize = values.fileSize else {
-                    throw DocumentStoreError.missingFileAttributes(url.lastPathComponent)
+                let values: URLResourceValues
+                do {
+                    values = try url.resourceValues(forKeys: [.creationDateKey, .fileSizeKey])
+                } catch {
+                    let issue = DocumentStoreError.missingFileAttributes(url.lastPathComponent)
+                    AppDiagnostics.error("Scan document attributes", error: error)
+                    return SavedDocument(url: url, createdAt: Date.distantPast, fileSize: 0,
+                                         pageCount: 0, issue: issue.localizedDescription)
                 }
-                guard let pageCount = PDFDocument(url: url)?.pageCount else {
-                    throw DocumentStoreError.unreadableDocument(url.lastPathComponent)
+                guard let createdAt = values.creationDate, let fileSize = values.fileSize else {
+                    let issue = DocumentStoreError.missingFileAttributes(url.lastPathComponent)
+                    AppDiagnostics.error("Scan document attributes", error: issue)
+                    return SavedDocument(url: url, createdAt: Date.distantPast, fileSize: 0,
+                                         pageCount: 0, issue: issue.localizedDescription)
+                }
+                guard let pdf = PDFDocument(url: url), !pdf.isLocked, pdf.pageCount > 0 else {
+                    let issue = DocumentStoreError.unreadableDocument(url.lastPathComponent)
+                    AppDiagnostics.error("Scan document parsing", error: issue)
+                    return SavedDocument(url: url, createdAt: createdAt, fileSize: Int64(fileSize),
+                                         pageCount: 0, issue: issue.localizedDescription)
                 }
                 return SavedDocument(
                     url: url,
                     createdAt: createdAt,
                     fileSize: Int64(fileSize),
-                    pageCount: pageCount
+                    pageCount: pdf.pageCount,
+                    issue: nil
                 )
             }
             .sorted { $0.createdAt > $1.createdAt }
@@ -111,17 +159,69 @@ final class DocumentStore {
     @discardableResult
     func save(pdfData: Data, name rawName: String) throws -> SavedDocument {
         let base = try FileNameSanitizer.sanitize(rawName)
-        let url = uniqueURL(for: base)
-        try pdfData.write(to: url, options: .atomic)
-        try reload()
-        // 列挙結果の URL は symlink 解決後のパスになり得る（実機の /private/var 等）
-        // ため URL 等価ではなくファイル名で照合する
-        guard let saved = documents.first(where: {
-            $0.url.lastPathComponent == url.lastPathComponent
-        }) else {
-            throw DocumentStoreError.savedDocumentNotFound(url.lastPathComponent)
+        guard let pdf = PDFDocument(data: pdfData), pdf.pageCount > 0 else {
+            throw DocumentStoreError.invalidPDF
         }
-        return saved
+        let url = uniqueURL(for: base)
+        let temporary = directory.appendingPathComponent(".\(UUID().uuidString).pdf")
+        do {
+            try pdfData.write(to: temporary, options: .atomic)
+            guard PDFDocument(url: temporary)?.pageCount == pdf.pageCount else {
+                throw DocumentStoreError.invalidPDF
+            }
+            try FileManager.default.moveItem(at: temporary, to: url)
+        } catch {
+            try? FileManager.default.removeItem(at: temporary)
+            throw error
+        }
+        do {
+            let saved = try metadata(for: url, pageCount: pdf.pageCount)
+            documents.append(saved)
+            documents.sort { $0.createdAt > $1.createdAt }
+            return saved
+        } catch {
+            try? FileManager.default.removeItem(at: url)
+            throw error
+        }
+    }
+
+    @discardableResult
+    func save(pdfURL source: URL, name rawName: String) throws -> SavedDocument {
+        let pageCount = try Self.validatedPageCount(at: source)
+        return try commitValidatedPDF(at: source, name: rawName, pageCount: pageCount)
+    }
+
+    static func validatedPageCount(at source: URL) async throws -> Int {
+        try await Task.detached(priority: .userInitiated) {
+            try Self.validatedPageCount(at: source)
+        }.value
+    }
+
+    func temporaryPDFURL() -> URL {
+        directory.appendingPathComponent(".pending-\(UUID().uuidString).pdf")
+    }
+
+    @discardableResult
+    func commitValidatedPDF(at source: URL, name rawName: String, pageCount: Int) throws -> SavedDocument {
+        let base = try FileNameSanitizer.sanitize(rawName)
+        let url = uniqueURL(for: base)
+        try FileManager.default.moveItem(at: source, to: url)
+        do {
+            let saved = try metadata(for: url, pageCount: pageCount)
+            documents.append(saved)
+            documents.sort { $0.createdAt > $1.createdAt }
+            return saved
+        } catch {
+            try? FileManager.default.moveItem(at: url, to: source)
+            throw error
+        }
+    }
+
+    private static func validatedPageCount(at source: URL) throws -> Int {
+        guard let pdf = PDFDocument(url: source), pdf.pageCount > 0 else {
+            throw DocumentStoreError.invalidPDF
+        }
+        return pdf.pageCount
     }
 
     /// 保存済みドキュメントを削除する。
@@ -131,7 +231,7 @@ final class DocumentStore {
     /// - Throws: 削除失敗時に CocoaError
     func delete(_ document: SavedDocument) throws {
         try FileManager.default.removeItem(at: document.url)
-        try reload()
+        documents.removeAll { $0.url.lastPathComponent == document.url.lastPathComponent }
     }
 
     /// 一覧の選択オフセットに対応するドキュメントを削除する。
@@ -142,8 +242,10 @@ final class DocumentStore {
     func delete(at offsets: IndexSet) throws {
         let targets = offsets.map { documents[$0] }
         for document in targets {
-            try delete(document)
+            try FileManager.default.removeItem(at: document.url)
         }
+        let names = Set(targets.map { $0.url.lastPathComponent })
+        documents.removeAll { names.contains($0.url.lastPathComponent) }
     }
 
     /// 保存済みドキュメントの名前を変更する。
@@ -159,14 +261,22 @@ final class DocumentStore {
             return document
         }
         try FileManager.default.moveItem(at: document.url, to: url)
-        try reload()
-        // save と同様、URL 等価ではなくファイル名で照合する
-        guard let renamed = documents.first(where: {
-            $0.url.lastPathComponent == url.lastPathComponent
-        }) else {
-            throw DocumentStoreError.renamedDocumentNotFound(url.lastPathComponent)
-        }
+        let renamed = SavedDocument(url: url, createdAt: document.createdAt,
+                                    fileSize: document.fileSize, pageCount: document.pageCount,
+                                    issue: document.issue)
+        documents.removeAll { $0.url.lastPathComponent == document.url.lastPathComponent }
+        documents.append(renamed)
+        documents.sort { $0.createdAt > $1.createdAt }
         return renamed
+    }
+
+    private func metadata(for url: URL, pageCount: Int) throws -> SavedDocument {
+        let values = try url.resourceValues(forKeys: [.creationDateKey, .fileSizeKey])
+        guard let createdAt = values.creationDate, let fileSize = values.fileSize else {
+            throw DocumentStoreError.missingFileAttributes(url.lastPathComponent)
+        }
+        return SavedDocument(url: url, createdAt: createdAt, fileSize: Int64(fileSize),
+                             pageCount: pageCount, issue: nil)
     }
 
     /// 重複しないファイル URL を決定する。

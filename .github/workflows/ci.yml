@@ -1,0 +1,35 @@
+name: iOS CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Check whitespace and Python syntax
+        run: |
+          git diff --check HEAD^ HEAD
+          python3 -m py_compile Tools/UVDoc/convert.py
+      - name: Build and test
+        env:
+          DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+        run: |
+          UDID="$(xcrun simctl list devices available -j | python3 -c 'import json,sys; devices=json.load(sys.stdin)["devices"]; matches=[d["udid"] for runtime,entries in devices.items() if "iOS-26" in runtime for d in entries if d.get("isAvailable") and d["name"].startswith("iPhone")]; print(matches[0] if matches else "")')"
+          if [ -z "$UDID" ]; then
+            echo "No available iOS 26 iPhone simulator found" >&2
+            exit 1
+          fi
+          xcodebuild -project DocScanner.xcodeproj -scheme DocScanner \
+            -configuration Release -destination 'generic/platform=iOS' \
+            CODE_SIGNING_ALLOWED=NO build
+          xcodebuild -project DocScanner.xcodeproj -scheme DocScanner \
+            -destination "platform=iOS Simulator,id=$UDID" \
+            -parallel-testing-enabled NO CODE_SIGNING_ALLOWED=NO test

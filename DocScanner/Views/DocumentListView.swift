@@ -31,6 +31,9 @@ struct DocumentListView: View {
     @State private var renameText = ""
     /// エラー発生時のアラート表示フラグ。
     @State private var showError = false
+    @State private var storeLoadError: String?
+    @State private var deleteTarget: SavedDocument?
+    @State private var showDeleteConfirmation = false
 
     /// 一覧画面の本体を返す。
     /// - 入力: なし
@@ -39,7 +42,17 @@ struct DocumentListView: View {
     var body: some View {
         NavigationStack {
             Group {
-                if store.documents.isEmpty {
+                if !store.isLoaded {
+                    ContentUnavailableView {
+                        Label("Storage Unavailable", systemImage: "externaldrive.badge.exclamationmark")
+                    } description: {
+                        Text(storeLoadError ?? "Loading saved documents…")
+                    } actions: {
+                        Button("Retry", systemImage: "arrow.clockwise") {
+                            Task { await loadStore() }
+                        }
+                    }
+                } else if store.documents.isEmpty {
                     ContentUnavailableView(
                         "No Scanned Documents",
                         systemImage: "doc.text.viewfinder",
@@ -113,12 +126,22 @@ struct DocumentListView: View {
                 Button("Rename") { performRename() }
                 Button("Cancel", role: .cancel) { renameTarget = nil }
             }
+            .confirmationDialog("Delete document?", isPresented: $showDeleteConfirmation,
+                                presenting: deleteTarget) { document in
+                Button("Delete", role: .destructive) { delete(document) }
+                Button("Cancel", role: .cancel) { deleteTarget = nil }
+            } message: { document in
+                Text("Delete \(document.name)? This cannot be undone.")
+            }
             .overlay {
                 if isProcessing {
                     ProgressView("Processing…")
                         .padding(24)
                         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
                 }
+            }
+            .task {
+                if !store.isLoaded { await loadStore() }
             }
         }
     }
@@ -139,38 +162,72 @@ struct DocumentListView: View {
     /// - 出力: 行・スワイプ削除・コンテキストメニュー付きの List
     /// - 処理: store.documents を描画し、タップで PDFPreviewView へ遷移する
     private var documentList: some View {
-        List {
-            ForEach(store.documents) { document in
-                NavigationLink {
-                    PDFPreviewView(document: document)
-                } label: {
-                    DocumentRow(document: document)
-                }
-                .contextMenu {
-                    Button {
-                        renameText = document.name
-                        renameTarget = document
-                    } label: {
-                        Label("Rename", systemImage: "pencil")
+        let readable = store.documents.filter(\.isReadable)
+        let unreadable = store.documents.filter { !$0.isReadable }
+        return List {
+            if !readable.isEmpty {
+                Section("Documents") {
+                    ForEach(readable) { document in
+                        NavigationLink {
+                            PDFPreviewView(document: document)
+                        } label: {
+                            DocumentRow(document: document)
+                        }
+                        .contextMenu {
+                            Button {
+                                renameText = document.name
+                                renameTarget = document
+                            } label: {
+                                Label("Rename", systemImage: "pencil")
+                            }
+                            ShareLink(item: document.url) {
+                                Label("Share", systemImage: "square.and.arrow.up")
+                            }
+                            Button(role: .destructive) {
+                                requestDelete(document)
+                            } label: {
+                                Label("Delete", systemImage: "trash")
+                            }
+                        }
                     }
-                    ShareLink(item: document.url) {
-                        Label("Share", systemImage: "square.and.arrow.up")
-                    }
-                    Button(role: .destructive) {
-                        delete(document)
-                    } label: {
-                        Label("Delete", systemImage: "trash")
+                    .onDelete { offsets in
+                        for index in offsets {
+                            requestDelete(readable[index])
+                        }
                     }
                 }
             }
-            .onDelete { offsets in
-                do {
-                    try store.delete(at: offsets)
-                } catch {
-                    present(error)
+            if !unreadable.isEmpty {
+                Section("Unreadable Documents") {
+                    ForEach(unreadable) { document in
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(document.name).font(.headline)
+                            Text(document.issue ?? "This PDF could not be read.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .accessibilityLabel("Error: \(document.issue ?? "This PDF could not be read.")")
+                            HStack {
+                                ShareLink(item: document.url) {
+                                    Label("Share", systemImage: "square.and.arrow.up")
+                                }
+                                Button {
+                                    renameText = document.name
+                                    renameTarget = document
+                                } label: {
+                                    Label("Rename", systemImage: "pencil")
+                                }
+                                Button(role: .destructive) {
+                                    requestDelete(document)
+                                } label: {
+                                    Label("Delete", systemImage: "trash")
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
+        .refreshable { await loadStore() }
     }
 
     /// PhotosPicker の選択アイテムを読み込み、書類検出を実行する。
@@ -253,9 +310,15 @@ struct DocumentListView: View {
     private func delete(_ document: SavedDocument) {
         do {
             try store.delete(document)
+            deleteTarget = nil
         } catch {
             present(error)
         }
+    }
+
+    private func requestDelete(_ document: SavedDocument) {
+        deleteTarget = document
+        showDeleteConfirmation = true
     }
 
     /// リネームを実行する。
@@ -279,6 +342,16 @@ struct DocumentListView: View {
     private func present(_ error: Error) {
         errorMessage = error.localizedDescription
         showError = true
+    }
+
+    private func loadStore() async {
+        storeLoadError = nil
+        do {
+            try await store.reloadAsync()
+        } catch {
+            storeLoadError = error.localizedDescription
+            present(error)
+        }
     }
 }
 
@@ -314,7 +387,7 @@ private struct DocumentRow: View {
                 Text(metaText).font(.caption).foregroundStyle(.secondary)
             }
         }
-        .task { await loadThumbnail() }
+        .task(id: document.url) { await loadThumbnail() }
     }
 
     /// メタ情報文字列（日時・ページ数・サイズ）を返す。
@@ -335,10 +408,25 @@ private struct DocumentRow: View {
     /// - 処理: PDFKit で 1 ページ目を 88x112 に描画する
     private func loadThumbnail() async {
         let url = document.url
-        let image = await Task.detached { () -> UIImage? in
+        thumbnail = nil
+        let worker = Task.detached(priority: .background) { () -> UIImage? in
+            try Task.checkCancellation()
             guard let page = PDFDocument(url: url)?.page(at: 0) else { return nil }
             return page.thumbnail(of: CGSize(width: 88, height: 112), for: .mediaBox)
-        }.value
-        thumbnail = image
+        }
+        do {
+            let image = try await withTaskCancellationHandler(operation: {
+                try await worker.value
+            }, onCancel: {
+                worker.cancel()
+            })
+            try Task.checkCancellation()
+            guard document.url == url else { return }
+            thumbnail = image
+        } catch is CancellationError {
+            return
+        } catch {
+            AppDiagnostics.error("Saved document thumbnail", error: error)
+        }
     }
 }

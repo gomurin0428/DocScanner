@@ -1,4 +1,5 @@
 import XCTest
+import PDFKit
 @testable import DocScanner
 
 /// DocumentStore の保存・一覧・リネーム・削除のテスト。
@@ -127,16 +128,75 @@ final class DocumentStoreTests: XCTestCase {
         XCTAssertEqual(store.documents.first?.name, "External")
     }
 
-    /// PDF として読めない *.pdf ファイルがあると reload が unreadableDocument を投げることを検証する。
-    /// - 入力: なし
-    /// - 出力: なし
-    /// - 処理: 拡張子 pdf のゴミファイルを書き込み reload して DocumentStoreError.unreadableDocument を期待する
-    func testGarbagePDFFileThrowsUnreadable() throws {
+    /// 読めない PDF は全体の reload を失敗させず issue entry として保持する。
+    func testGarbagePDFIsPreservedAsUnreadableIssue() throws {
         let url = tempDir.appendingPathComponent("broken.pdf")
         try Data("not a pdf".utf8).write(to: url)
-        XCTAssertThrowsError(try store.reload()) { error in
-            XCTAssertEqual(error as? DocumentStoreError, .unreadableDocument("broken.pdf"))
+        try store.reload()
+        let issue = try XCTUnwrap(store.documents.first)
+        XCTAssertEqual(issue.url, url)
+        XCTAssertEqual(issue.pageCount, 0)
+        XCTAssertEqual(issue.issue, DocumentStoreError.unreadableDocument("broken.pdf").localizedDescription)
+    }
+
+    func testLockedPDFIsPreservedAsUnreadableIssue() throws {
+        let url = tempDir.appendingPathComponent("locked.pdf")
+        let pdf = try XCTUnwrap(PDFDocument(data: makePDFData()))
+        XCTAssertTrue(pdf.write(to: url, withOptions: [
+            .ownerPasswordOption: "owner",
+            .userPasswordOption: "user"
+        ]))
+        XCTAssertTrue(try XCTUnwrap(PDFDocument(url: url)).isLocked)
+
+        try store.reload()
+
+        let issue = try XCTUnwrap(store.documents.first)
+        XCTAssertEqual(issue.url, url)
+        XCTAssertEqual(issue.pageCount, 0)
+        XCTAssertEqual(issue.issue, DocumentStoreError.unreadableDocument("locked.pdf").localizedDescription)
+    }
+
+    func testHiddenPDFIsEnumeratedAndCanBeRenamed() throws {
+        let hidden = tempDir.appendingPathComponent(".memo.pdf")
+        try makePDFData().write(to: hidden)
+        try store.reload()
+
+        let entry = try XCTUnwrap(store.documents.first)
+        XCTAssertEqual(entry.url.lastPathComponent, ".memo.pdf")
+        XCTAssertTrue(entry.isReadable)
+
+        let renamed = try store.rename(entry, to: "Visible")
+        XCTAssertEqual(renamed.url.lastPathComponent, "Visible.pdf")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: hidden.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: renamed.url.path))
+    }
+
+    func testLeadingDotSaveAndRenameRejectWithoutChangingFiles() throws {
+        let saved = try store.save(pdfData: makePDFData(), name: "Report")
+        let original = try Data(contentsOf: saved.url)
+
+        XCTAssertThrowsError(try store.rename(saved, to: ".memo")) { error in
+            XCTAssertEqual(error as? FileNameError, .hiddenName)
         }
+        XCTAssertThrowsError(try store.save(pdfData: makePDFData(), name: ".memo")) { error in
+            XCTAssertEqual(error as? FileNameError, .hiddenName)
+        }
+
+        XCTAssertEqual(try Data(contentsOf: saved.url), original)
+        XCTAssertEqual(store.documents.map(\.url.lastPathComponent), ["Report.pdf"])
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: tempDir.path), ["Report.pdf"])
+    }
+
+    func testReloadAsyncPublishesScannedSnapshot() async throws {
+        let external = tempDir.appendingPathComponent("External.pdf")
+        try makePDFData().write(to: external)
+        let unloaded = try DocumentStore(directory: tempDir, loadExisting: false)
+        XCTAssertFalse(unloaded.isLoaded)
+
+        try await unloaded.reloadAsync()
+
+        XCTAssertTrue(unloaded.isLoaded)
+        XCTAssertEqual(unloaded.documents.map(\.name), ["External"])
     }
 
     /// シンボリックリンク経由のディレクトリでも保存・リネームが機能することを検証する。

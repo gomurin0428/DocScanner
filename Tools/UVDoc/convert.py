@@ -27,7 +27,7 @@ def main():
         raise ValueError("Unexpected UVDoc checkpoint")
     torch.set_num_threads(4)
     network = UVDocnet(num_filter=32, kernel_size=5)
-    network.load_state_dict(torch.load(args.checkpoint, map_location="cpu")["model_state"])
+    network.load_state_dict(torch.load(args.checkpoint, map_location="cpu", weights_only=True)["model_state"])
     network.eval()
     wrapper = GridOnly(network).eval()
     example = torch.zeros(1, 3, 712, 488)

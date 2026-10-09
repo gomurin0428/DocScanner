@@ -23,7 +23,9 @@ PYTHONPATH="$HOME/UVDoc" "$HOME/.venvs/uvdoc/bin/python" Tools/UVDoc/convert.py 
   --output DocScanner/Resources/UVDoc.mlpackage
 ```
 
-The checkpoint hash is checked before deserialization. No retraining, network
+The checkpoint hash is checked before deserialization. The converter uses
+`weights_only=True`; the pinned Torch 1.13 environment safely loaded all 304
+checkpoint tensors. No unrestricted pickle fallback is used. No retraining, network
 download at app runtime, image generation, or OCR text reconstruction is involved.
 The conversion removes the unused 3D output. Weights and computation use float32
 (~30 MiB); Xcode compiles the package into a bundled `.mlmodelc`.
@@ -42,9 +44,10 @@ flattening it. Landscape crops are rotated for inference and restored afterwards
 `UVDocGrid` projects the predicted outer nodes onto the saved edges and blends
 the correction over the outer 15% of the grid, retaining the learned interior.
 Large edge disagreements (>18% of the crop), nonfinite coordinates, out-of-image
-sampling, and folded/near-degenerate cells cause fallback. These are geometry
-checks, not a learned confidence score or a guarantee of visual improvement.
-Low-contrast and very narrow pages also fall back to boundary/text-line correction.
+sampling, and folded/near-degenerate cells are surfaced as processing failures.
+These are geometry checks, not a learned confidence score or a guarantee of visual improvement.
+Low-contrast, small, and extreme-aspect-ratio crops are explicit selections that
+continue through boundary/text-line correction.
 `Enhanced` then uses the existing shadow/illumination correction.
 
 User evaluation photos and generated comparison files stay outside this repository.

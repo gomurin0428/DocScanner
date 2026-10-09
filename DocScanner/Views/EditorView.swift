@@ -20,6 +20,16 @@ struct EditorView: View {
     @State private var pageSize: PDFPageSize = .a4
     /// PDF 生成・保存中フラグ。
     @State private var isSaving = false
+    @State private var saveTask: Task<Void, Never>?
+    @State private var importTask: Task<Void, Never>?
+    @State private var saveProgress = 0
+    @State private var saveTotal = 0
+    @State private var saveCommitted = false
+    @State private var isCommittingSave = false
+    @State private var initialPageSignature: String
+    @State private var initialFileName: String
+    @State private var initialPageSize: String
+    @State private var showDiscardConfirmation = false
     /// 追加ページ取り込み中フラグ。
     @State private var isImporting = false
     /// 保存済み PDF のプレビュー遷移先ドキュメント。
@@ -50,8 +60,12 @@ struct EditorView: View {
     /// - 出力: 初期化済み EditorView
     /// - 処理: ページを保持し、ファイル名に日時ベースの既定名を設定する
     init(pages: [ScannedPage]) {
+        let defaultName = FileNameSanitizer.defaultName(for: Date())
         _draft = State(initialValue: DocumentDraft(pages: pages))
-        _fileName = State(initialValue: FileNameSanitizer.defaultName(for: Date()))
+        _fileName = State(initialValue: defaultName)
+        _initialPageSignature = State(initialValue: Self.pageSignature(pages))
+        _initialFileName = State(initialValue: defaultName)
+        _initialPageSize = State(initialValue: PDFPageSize.a4.displayName)
     }
 
     /// 編集画面の本体を返す。
@@ -62,18 +76,7 @@ struct EditorView: View {
         List {
             Section {
                 ForEach(draft.pages) { page in
-                    // item ベース遷移: editingPageID をセットして navigationDestination(item:) で遷移する
-                    Button { editingPageID = page.id } label: {
-                        HStack {
-                            PageRow(draft: draft, pageID: page.id,
-                                    number: (draft.pages.firstIndex { $0.id == page.id } ?? 0) + 1)
-                            Spacer()
-                            Image(systemName: "chevron.right")
-                                .foregroundStyle(.tertiary)
-                        }
-                        .foregroundStyle(.primary)
-                        .contentShape(Rectangle())
-                    }
+                    pageListRow(page)
                 }
                 .onMove { source, destination in
                     draft.move(fromOffsets: source, toOffset: destination)
@@ -93,11 +96,17 @@ struct EditorView: View {
                 }
             }
         }
+        .disabled(isSaving || isImporting)
         .navigationTitle("New Document")
+        .navigationBarBackButtonHidden(true)
         .navigationDestination(item: $editingPageID) { id in
             PageEditView(draft: draft, pageID: id)
         }
         .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button("Back") { requestBack() }
+                    .disabled(isSaving || isImporting)
+            }
             ToolbarItemGroup(placement: .topBarTrailing) {
                 Menu {
                     Button { showCameraOrAlert() } label: {
@@ -109,9 +118,11 @@ struct EditorView: View {
                 } label: {
                     Label("Add Pages", systemImage: "plus")
                 }
+                .disabled(isSaving || isImporting)
                 Button { showFilterSheet = true } label: {
                     Label("Filter All", systemImage: "camera.filters")
                 }
+                .disabled(isSaving || isImporting)
             }
         }
         .safeAreaInset(edge: .bottom) {
@@ -125,7 +136,7 @@ struct EditorView: View {
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
-            .disabled(draft.pages.isEmpty || isSaving)
+            .disabled(draft.pages.isEmpty || isSaving || isImporting)
             .padding(.horizontal)
         }
         .confirmationDialog("Apply Filter to All Pages", isPresented: $showFilterSheet) {
@@ -133,6 +144,12 @@ struct EditorView: View {
                 Button(filter.displayName) { applyFilterToAll(filter) }
             }
             Button("Cancel", role: .cancel) {}
+        }
+        .confirmationDialog("Discard unsaved document?", isPresented: $showDiscardConfirmation) {
+            Button("Discard", role: .destructive) { dismiss() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Your pages and edits will be lost.")
         }
         .navigationDestination(item: $savedDocument) { document in
             PDFPreviewView(document: document)
@@ -166,10 +183,39 @@ struct EditorView: View {
         }
         .overlay {
             if isSaving || isImporting {
-                ProgressView(isSaving ? "Saving PDF…" : "Processing…")
+                VStack {
+                    ProgressView(isSaving ? "Saving PDF…" : "Processing…")
+                    if isSaving {
+                        Text("Page \(saveProgress) of \(saveTotal)")
+                        if isCommittingSave {
+                            Text("Finishing save…")
+                        } else {
+                            Button("Cancel") { saveTask?.cancel() }
+                        }
+                    }
+                }
                     .padding(24)
                     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
             }
+        }
+        .onDisappear {
+            if !saveCommitted { saveTask?.cancel() }
+            importTask?.cancel()
+        }
+    }
+
+    private func pageListRow(_ page: ScannedPage) -> some View {
+        Button { editingPageID = page.id } label: {
+            HStack {
+                PageRow(draft: draft, pageID: page.id,
+                        number: (draft.pages.firstIndex { $0.id == page.id } ?? 0) + 1,
+                        active: !isSaving && !isImporting && editingPageID == nil)
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .foregroundStyle(.tertiary)
+            }
+            .foregroundStyle(.primary)
+            .contentShape(Rectangle())
         }
     }
 
@@ -200,10 +246,13 @@ struct EditorView: View {
     /// - 処理: バックグラウンドで画像ロード → 各画像に検出を試行する
     private func importItems(_ items: [PhotosPickerItem]) {
         isImporting = true
-        Task.detached {
+        importTask = Task.detached {
             do {
                 let images = try await PageImporter.loadImages(from: items)
+                try Task.checkCancellation()
                 await MainActor.run { handleImages(images) }
+            } catch is CancellationError {
+                await MainActor.run { isImporting = false }
             } catch {
                 await MainActor.run {
                     isImporting = false
@@ -225,11 +274,14 @@ struct EditorView: View {
     /// 写真と固定輪郭付き撮影を処理し、入力順で下書きへ追加する。
     private func handleSources(_ sources: [PageSource]) {
         isImporting = true
-        Task.detached {
+        importTask = Task.detached {
             do {
+                try Task.checkCancellation()
                 let result = try PageImporter().makePages(from: sources)
+                try Task.checkCancellation()
                 await MainActor.run {
                     isImporting = false
+                    importTask = nil
                     if result.undetectedImages.isEmpty {
                         draft.append(result.pages(includingUndetected: false))
                     } else {
@@ -240,7 +292,8 @@ struct EditorView: View {
             } catch {
                 await MainActor.run {
                     isImporting = false
-                    self.present(error)
+                    importTask = nil
+                    if !(error is CancellationError) { self.present(error) }
                 }
             }
         }
@@ -269,32 +322,76 @@ struct EditorView: View {
     /// - 出力: なし（savedDocument を更新して遷移する）
     /// - 処理: バックグラウンドで全ページをレンダリング → PDF 生成 → ストア保存
     private func save() {
+        guard !isSaving, !isImporting else { return }
+        let name: String
+        do {
+            name = try FileNameSanitizer.sanitize(fileName)
+        } catch {
+            present(error)
+            return
+        }
         isSaving = true
+        isCommittingSave = false
+        saveCommitted = false
         let snapshot = draft.pages
-        let name = fileName
         let size = pageSize
-        Task.detached {
+        saveProgress = 0
+        saveTotal = snapshot.count
+        let output = store.temporaryPDFURL()
+        saveTask = Task.detached(priority: .userInitiated) {
             do {
                 let processor = DocumentImageProcessor()
-                var images: [UIImage] = []
-                for page in snapshot {
-                    images.append(try page.renderedImage(using: processor))
-                }
-                let data = try PDFBuilder().makePDF(from: images, pageSize: size)
-                let saved = try await MainActor.run { () -> SavedDocument in
-                    try store.save(pdfData: data, name: name)
+                try PDFBuilder.writePDF(pageCount: snapshot.count, to: output,
+                                        pageSize: size, imageForPage: { index in
+                                            try snapshot[index].renderedImage(using: processor)
+                                        }, progress: { completed in
+                                            Task { @MainActor in saveProgress = completed }
+                                        })
+                try Task.checkCancellation()
+                let pageCount = try await DocumentStore.validatedPageCount(at: output)
+                try Task.checkCancellation()
+                let saved = try await MainActor.run {
+                    try Task.checkCancellation()
+                    isCommittingSave = true
+                    return try store.commitValidatedPDF(at: output, name: name, pageCount: pageCount)
                 }
                 await MainActor.run {
                     isSaving = false
+                    saveCommitted = true
+                    initialPageSignature = Self.pageSignature(snapshot)
+                    initialFileName = fileName
+                    initialPageSize = size.displayName
+                    saveTask = nil
                     savedDocument = saved
                 }
             } catch {
                 await MainActor.run {
                     isSaving = false
-                    self.present(error)
+                    isCommittingSave = false
+                    saveTask = nil
+                    try? FileManager.default.removeItem(at: output)
+                    if !(error is CancellationError) { self.present(error) }
                 }
             }
         }
+    }
+
+    private var hasUnsavedChanges: Bool {
+        Self.pageSignature(draft.pages) != initialPageSignature ||
+            fileName != initialFileName || pageSize.displayName != initialPageSize
+    }
+
+    private func requestBack() {
+        if hasUnsavedChanges {
+            showDiscardConfirmation = true
+        } else {
+            dismiss()
+        }
+    }
+
+    private static func pageSignature(_ pages: [ScannedPage]) -> String {
+        pages.map { "\($0.id.uuidString):\($0.filter.rawValue):\($0.quarterTurns)" }
+            .joined(separator: "|")
     }
 
     /// エラーをアラート表示する。
@@ -316,25 +413,24 @@ private struct PageRow: View {
     let pageID: UUID
     /// 表示用ページ番号。
     let number: Int
+    let active: Bool
     /// サムネイル画像。
     @State private var thumbnail: UIImage?
-    /// サムネイル生成失敗フラグ。
-    @State private var failed = false
+    @State private var errorMessage: String?
 
     /// 行の本体を返す。
     /// - 入力: なし
     /// - 出力: サムネイル + ラベルの HStack
-    /// - 処理: バックグラウンドでレンダリングして縮小表示する。失敗時は警告アイコンを表示
+    /// - 処理: バックグラウンドでレンダリングして縮小表示する。失敗時は理由を表示
     var body: some View {
         HStack(spacing: 12) {
             Group {
                 if let thumbnail {
                     Image(uiImage: thumbnail).resizable().scaledToFit()
-                } else if failed {
+                } else if errorMessage != nil {
                     Image(systemName: "exclamationmark.triangle")
-                        .resizable()
-                        .scaledToFit()
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.orange)
+                        .accessibilityLabel("Page preview failed: \(errorMessage ?? "")")
                 } else {
                     ProgressView()
                 }
@@ -344,9 +440,16 @@ private struct PageRow: View {
                 Text("Page \(number)").font(.headline)
                 Text(draft.page(id: pageID)?.filter.displayName ?? "-")
                     .font(.caption).foregroundStyle(.secondary)
+                if let errorMessage {
+                    Text("Preview unavailable: \(errorMessage)")
+                        .font(.caption2)
+                        .foregroundStyle(.red)
+                        .lineLimit(2)
+                        .accessibilityLabel("Page preview error: \(errorMessage). Open this page to view the full error.")
+                }
             }
         }
-        .task(id: thumbnailKey) { await loadThumbnail() }
+        .task(id: "\(thumbnailKey)-\(active)") { await loadThumbnail() }
     }
 
     /// サムネイル再生成トリガーとなるキーを返す。
@@ -364,8 +467,15 @@ private struct PageRow: View {
     /// - 処理: フィルタ適用後の画像を 88x112 以内へ縮小する
     private func loadThumbnail() async {
         let key = thumbnailKey
+        guard active else {
+            thumbnail = nil
+            errorMessage = nil
+            return
+        }
         guard let snapshot = draft.page(id: pageID) else { return }
-        let worker = Task.detached {
+        thumbnail = nil
+        errorMessage = nil
+        let worker = Task.detached(priority: .background) {
             try Task.checkCancellation()
             return try snapshot.thumbnailImage()
         }
@@ -386,12 +496,12 @@ private struct PageRow: View {
             thumbnail = UIGraphicsImageRenderer(size: target).image { _ in
                 rendered.draw(in: CGRect(origin: .zero, size: target))
             }
-            failed = false
+            errorMessage = nil
         } catch is CancellationError {
             return
         } catch {
-            // 描画失敗時はスピナーを回し続けず警告アイコンを表示する
-            failed = true
+            AppDiagnostics.error("Page thumbnail rendering", error: error)
+            errorMessage = error.localizedDescription
         }
     }
 }

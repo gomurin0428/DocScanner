@@ -122,8 +122,9 @@ struct PageEditView: View {
     ///   完了時の renderKey が開始時と同じときだけ rendered を更新する
     private func renderPage() async {
         let key = renderKey
+        rendered = nil
         guard let snapshot = draft.page(id: pageID) else { return }
-        let worker = Task.detached {
+        let worker = Task.detached(priority: .userInitiated) {
             try Task.checkCancellation()
             return try snapshot.renderedImage()
         }

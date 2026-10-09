@@ -111,7 +111,9 @@ final class CameraController: NSObject {
     private var rectangleTracker = DocumentRectangleTracker()
     @ObservationIgnored
     private var trackedBoundary: DocumentBoundary?
-    private let analysisContext = CIContext()
+    private let analysisContext = ImageRendering.context
+    private var selectedPhotoDimensions: CMVideoDimensions?
+    private var detectionFailureGeneration: UInt64?
 
     /// コントローラを初期化する。
     /// - 入力: なし
@@ -141,6 +143,7 @@ final class CameraController: NSObject {
         detectedBoundary = nil
         metadataBoundary = nil
         error = nil
+        detectionFailureGeneration = nil
         return generation
     }
 
@@ -236,7 +239,11 @@ final class CameraController: NSObject {
                connection.isVideoRotationAngleSupported(90) {
                 connection.videoRotationAngle = 90
             }
-            self.photoOutput.capturePhoto(with: AVCapturePhotoSettings(), delegate: delegate)
+            let settings = AVCapturePhotoSettings()
+            if let dimensions = self.selectedPhotoDimensions {
+                settings.maxPhotoDimensions = dimensions
+            }
+            self.photoOutput.capturePhoto(with: settings, delegate: delegate)
         }
     }
 
@@ -274,8 +281,8 @@ final class CameraController: NSObject {
         captureSession.addOutput(photoOutput)
         captureSession.addOutput(videoOutput)
 
-        if let maxDims = device.activeFormat.supportedMaxPhotoDimensions
-            .max(by: { $0.width * $0.height < $1.width * $1.height }) {
+        if let maxDims = Self.choosePhotoDimensions(device.activeFormat.supportedMaxPhotoDimensions) {
+            selectedPhotoDimensions = maxDims
             photoOutput.maxPhotoDimensions = maxDims
         }
         photoOutput.maxPhotoQualityPrioritization = .quality
@@ -291,6 +298,17 @@ final class CameraController: NSObject {
         }
         videoOutput.connection(with: .video)?.preferredVideoStabilizationMode = .off
         isConfiguredOnQueue = true
+    }
+
+    static func choosePhotoDimensions(_ supported: [CMVideoDimensions],
+                                      pixelCap: Int64 = 13_000_000) -> CMVideoDimensions? {
+        guard !supported.isEmpty else { return nil }
+        let fitting = supported.filter { Int64($0.width) * Int64($0.height) <= pixelCap }
+        return (fitting.isEmpty ? supported : fitting).min {
+            let lhs = Int64($0.width) * Int64($0.height)
+            let rhs = Int64($1.width) * Int64($1.height)
+            return fitting.isEmpty ? lhs < rhs : lhs > rhs
+        }
     }
 
     /// セッション向きを同期的に保存する。
@@ -373,12 +391,25 @@ extension CameraController: AVCaptureVideoDataOutputSampleBufferDelegate {
         let documentRequest = VNDetectDocumentSegmentationRequest()
         let handler = VNImageRequestHandler(cvPixelBuffer: buffer, orientation: orientation)
         let candidate: VNRectangleObservation?
-        if (try? handler.perform([request, documentRequest])) != nil {
+        do {
+            try handler.perform([request, documentRequest])
             candidate = DocumentRectangleDetector.liveDocument(
                 in: request.results ?? [], document: documentRequest.results?.first,
                 size: orientedSize)
-        } else {
+        } catch {
+            AppDiagnostics.error("Camera live document detection", error: error)
             candidate = nil
+            Task { @MainActor in
+                guard self.lifecycle.isActive(generation) else { return }
+                self.detectedQuad = nil
+                self.detectedBoundary = nil
+                self.metadataBoundary = nil
+                if self.detectionFailureGeneration != generation {
+                    self.detectionFailureGeneration = generation
+                    self.error = .detectionFailed(error.localizedDescription)
+                }
+            }
+            return
         }
         let quad = rectangleTracker.update(candidate, at: time)
         var detectionError: CameraError?
@@ -431,7 +462,15 @@ extension CameraController: AVCaptureVideoDataOutputSampleBufferDelegate {
             self.detectedBoundary = boundary
             self.metadataBoundary = metadata
             self.frameSize = orientedSize
-            if let detectionError, self.error == nil { self.error = detectionError }
+            if let detectionError {
+                AppDiagnostics.error("Camera boundary tracing", error: detectionError)
+                if self.detectionFailureGeneration != generation {
+                    self.detectionFailureGeneration = generation
+                    self.error = detectionError
+                }
+            } else {
+                self.detectionFailureGeneration = nil
+            }
         }
     }
 }

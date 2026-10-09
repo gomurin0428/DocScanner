@@ -31,9 +31,7 @@ struct DocumentImageProcessor {
     /// workingColorSpace を sRGB に固定する（デフォルトのリニア光だと除算・
     /// 閾値処理の定数がずれ、2値化にノイズ斑点が出る）。
     /// CGColorSpace.sRGB 生成は失敗しない定義名のため force unwrap する。
-    private let context = CIContext(options: [
-        .workingColorSpace: CGColorSpace(name: CGColorSpace.sRGB)!
-    ])
+    private let context = ImageRendering.context
 
     private let enhancer: DocResEnhancer
 
@@ -55,10 +53,9 @@ struct DocumentImageProcessor {
                 learned = try enhancer.flattened(normalized)
             } catch let error as CancellationError {
                 throw error
-            } catch let error as DocResModelLoadingError {
-                throw error
             } catch {
-                learned = nil
+                AppDiagnostics.error("DocRes enhancement", error: error)
+                throw error
             }
             try Task.checkCancellation()
         }
