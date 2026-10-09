@@ -41,8 +41,10 @@ struct PageContentStraightener {
             guard let characters = observation.characterBoxes, characters.count >= 8 else { return nil }
             return characters.map { character in
                 let corners = [character.topLeft, character.topRight, character.bottomRight, character.bottomLeft]
+                let ySum: CGFloat = corners.reduce(CGFloat.zero) { $0 + $1.y }
+                let meanY: CGFloat = ySum / CGFloat(4)
                 return PagePoint(x: corners.map(\.x).reduce(0, +) / 4,
-                                 y: 1 - corners.map(\.y).reduce(0, +) / 4)
+                                 y: Double(CGFloat(1) - meanY))
             }
         }
     }
