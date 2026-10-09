@@ -24,8 +24,7 @@ PYTHONPATH="$HOME/UVDoc" "$HOME/.venvs/uvdoc/bin/python" Tools/UVDoc/convert.py 
 ```
 
 The checkpoint hash is checked before deserialization. The converter uses
-`weights_only=True`; the pinned Torch 1.13 environment safely loaded all 304
-checkpoint tensors. No unrestricted pickle fallback is used. No retraining, network
+`weights_only=True`. No unrestricted pickle fallback is used. No retraining, network
 download at app runtime, image generation, or OCR text reconstruction is involved.
 The conversion removes the unused 3D output. Weights and computation use float32
 (~30 MiB); Xcode compiles the package into a bundled `.mlmodelc`.

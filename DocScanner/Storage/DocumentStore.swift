@@ -230,7 +230,7 @@ final class DocumentStore {
     @discardableResult
     func commitValidatedPDF(at source: URL, name rawName: String, pageCount: Int) throws -> SavedDocument {
         let base = try FileNameSanitizer.sanitize(rawName)
-        guard let pdf = PDFDocument(url: source), !pdf.isLocked, pdf.pageCount == pageCount else {
+        guard pageCount > 0 else {
             throw DocumentStoreError.invalidPDF
         }
         let url = uniqueURL(for: base)
