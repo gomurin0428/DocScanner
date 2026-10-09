@@ -143,37 +143,34 @@ final class DocumentStore {
         }
         return files
             .filter { $0.pathExtension.lowercased() == "pdf" }
-            .map { url in
-                let values: URLResourceValues
-                do {
-                    values = try url.resourceValues(forKeys: [.creationDateKey, .fileSizeKey])
-                } catch {
-                    let issue = DocumentStoreError.missingFileAttributes(url.lastPathComponent)
-                    AppDiagnostics.error("Scan document attributes", error: error)
-                    return SavedDocument(url: url, createdAt: Date.distantPast, fileSize: 0,
-                                         pageCount: 0, issue: issue.localizedDescription)
-                }
-                guard let createdAt = values.creationDate, let fileSize = values.fileSize else {
-                    let issue = DocumentStoreError.missingFileAttributes(url.lastPathComponent)
-                    AppDiagnostics.error("Scan document attributes", error: issue)
-                    return SavedDocument(url: url, createdAt: Date.distantPast, fileSize: 0,
-                                         pageCount: 0, issue: issue.localizedDescription)
-                }
-                guard let pdf = PDFDocument(url: url), !pdf.isLocked, pdf.pageCount > 0 else {
-                    let issue = DocumentStoreError.unreadableDocument(url.lastPathComponent)
-                    AppDiagnostics.error("Scan document parsing", error: issue)
-                    return SavedDocument(url: url, createdAt: createdAt, fileSize: Int64(fileSize),
-                                         pageCount: 0, issue: issue.localizedDescription)
-                }
-                return SavedDocument(
-                    url: url,
-                    createdAt: createdAt,
-                    fileSize: Int64(fileSize),
-                    pageCount: pdf.pageCount,
-                    issue: nil
-                )
-            }
+            .map { readDocument(at: $0) }
             .sorted { $0.createdAt > $1.createdAt }
+    }
+
+    private static func readDocument(at url: URL) -> SavedDocument {
+        let values: URLResourceValues
+        do {
+            values = try url.resourceValues(forKeys: [.creationDateKey, .fileSizeKey])
+        } catch {
+            let issue = DocumentStoreError.missingFileAttributes(url.lastPathComponent)
+            AppDiagnostics.error("Scan document attributes", error: error)
+            return SavedDocument(url: url, createdAt: Date.distantPast, fileSize: 0,
+                                 pageCount: 0, issue: issue.localizedDescription)
+        }
+        guard let createdAt = values.creationDate, let fileSize = values.fileSize else {
+            let issue = DocumentStoreError.missingFileAttributes(url.lastPathComponent)
+            AppDiagnostics.error("Scan document attributes", error: issue)
+            return SavedDocument(url: url, createdAt: Date.distantPast, fileSize: 0,
+                                 pageCount: 0, issue: issue.localizedDescription)
+        }
+        guard let pdf = PDFDocument(url: url), !pdf.isLocked, pdf.pageCount > 0 else {
+            let issue = DocumentStoreError.unreadableDocument(url.lastPathComponent)
+            AppDiagnostics.error("Scan document parsing", error: issue)
+            return SavedDocument(url: url, createdAt: createdAt, fileSize: Int64(fileSize),
+                                 pageCount: 0, issue: issue.localizedDescription)
+        }
+        return SavedDocument(url: url, createdAt: createdAt, fileSize: Int64(fileSize),
+                             pageCount: pdf.pageCount, issue: nil)
     }
 
     /// PDF データをユニーク名で保存する。
@@ -272,12 +269,9 @@ final class DocumentStore {
     /// - Throws: 削除失敗時に CocoaError
     func delete(at offsets: IndexSet) throws {
         let targets = offsets.map { documents[$0] }
-        if !targets.isEmpty { invalidateReloads() }
         for document in targets {
-            try FileManager.default.removeItem(at: document.url)
+            try delete(document)
         }
-        let names = Set(targets.map { $0.url.lastPathComponent })
-        documents.removeAll { names.contains($0.url.lastPathComponent) }
     }
 
     /// 保存済みドキュメントの名前を変更する。
@@ -294,9 +288,10 @@ final class DocumentStore {
         }
         try FileManager.default.moveItem(at: document.url, to: url)
         invalidateReloads()
-        let renamed = SavedDocument(url: url, createdAt: document.createdAt,
-                                    fileSize: document.fileSize, pageCount: document.pageCount,
-                                    issue: document.issue)
+        let renamed = document.issue == nil
+            ? SavedDocument(url: url, createdAt: document.createdAt,
+                            fileSize: document.fileSize, pageCount: document.pageCount, issue: nil)
+            : Self.readDocument(at: url)
         documents.removeAll { $0.url.lastPathComponent == document.url.lastPathComponent }
         documents.append(renamed)
         documents.sort { $0.createdAt > $1.createdAt }

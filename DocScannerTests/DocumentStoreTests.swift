@@ -128,6 +128,50 @@ final class DocumentStoreTests: XCTestCase {
         XCTAssertEqual(store.documents.first?.name, "External")
     }
 
+    func testDeleteAtOffsetsPublishesSuccessfulDeletionBeforeLaterFailure() throws {
+        _ = try store.save(pdfData: makePDFData(), name: "First")
+        _ = try store.save(pdfData: makePDFData(), name: "Second")
+        let initial = store.documents
+        try FileManager.default.removeItem(at: initial[1].url)
+
+        XCTAssertThrowsError(try store.delete(at: IndexSet([0, 1])))
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: initial[0].url.path))
+        XCTAssertEqual(store.documents.map(\.url.lastPathComponent),
+                       [initial[1].url.lastPathComponent])
+    }
+
+    func testUnreadableRenameUsesNewFileNameInIssue() throws {
+        let url = tempDir.appendingPathComponent("broken.pdf")
+        try Data("not a pdf".utf8).write(to: url)
+        try store.reload()
+        let entry = try XCTUnwrap(store.documents.first)
+
+        let renamed = try store.rename(entry, to: "rescued")
+
+        XCTAssertEqual(renamed.issue,
+                       DocumentStoreError.unreadableDocument("rescued.pdf").localizedDescription)
+        XCTAssertEqual(store.documents.first, renamed)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: renamed.url.path))
+    }
+
+    func testUnreadableRenameReevaluatesRepairedPDF() throws {
+        let url = tempDir.appendingPathComponent("broken.pdf")
+        try Data("not a pdf".utf8).write(to: url)
+        try store.reload()
+        let entry = try XCTUnwrap(store.documents.first)
+        let repaired = try makePDFData()
+        try repaired.write(to: url)
+
+        let renamed = try store.rename(entry, to: "repaired")
+
+        XCTAssertNil(renamed.issue)
+        XCTAssertEqual(renamed.pageCount, 1)
+        XCTAssertEqual(renamed.fileSize, Int64(repaired.count))
+        XCTAssertEqual(store.documents.first, renamed)
+    }
+
     /// 読めない PDF は全体の reload を失敗させず issue entry として保持する。
     func testGarbagePDFIsPreservedAsUnreadableIssue() throws {
         let url = tempDir.appendingPathComponent("broken.pdf")

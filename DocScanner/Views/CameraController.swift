@@ -213,6 +213,7 @@ final class CameraController: NSObject {
               let generation = lifecycle.currentGeneration,
               photoState.beginCapture() else { return }
         error = nil
+        detectionFailureGeneration = nil
         let delegate = CameraPhotoCaptureDelegate(boundary: boundary) { [weak self] delegate, image, boundary, captureError in
             Task { @MainActor in
                 self?.completeCapture(delegate: delegate, image: image,
