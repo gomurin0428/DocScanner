@@ -212,7 +212,13 @@ final class DocResTests: XCTestCase {
 
     func testPromptMorphologyMatchesIndependentWindowCalculation() {
         let side = 13
-        let pixels = (0..<(side * side)).map { UInt8(($0 * 67 + $0 / side * 23) % 256) }
+        var pixels: [UInt8] = []
+        pixels.reserveCapacity(side * side)
+        for index in 0..<(side * side) {
+            let row = index / side
+            let weightedValue = index * 67 + row * 23
+            pixels.append(UInt8(weightedValue % 256))
+        }
         let maximum = DocResPrompt.maximum(pixels, side: side, radius: 3)
         let median = DocResPrompt.median(pixels, side: side, radius: 5)
         for y in 0..<side {
