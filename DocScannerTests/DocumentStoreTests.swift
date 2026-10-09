@@ -246,4 +246,27 @@ final class DocumentStoreTests: XCTestCase {
         XCTAssertEqual(store.documents.count, 2)
         XCTAssertGreaterThanOrEqual(store.documents[0].createdAt, store.documents[1].createdAt)
     }
+
+    func testStaleAsyncReloadCannotOverwriteRename() async throws {
+        let saved = try store.save(pdfData: makePDFData(), name: "Before")
+        let staleSnapshot = [saved]
+        let entered = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        let scanningStore = try DocumentStore(
+            directory: store.directory,
+            loadExisting: false,
+            scanner: { _ in
+                entered.signal()
+                release.wait()
+                return staleSnapshot
+            })
+        let reload = Task { try await scanningStore.reloadAsync() }
+        XCTAssertEqual(entered.wait(timeout: .now() + 5), .success)
+        let renamed = try await MainActor.run {
+            try scanningStore.rename(saved, to: "After")
+        }
+        release.signal()
+        try await reload.value
+        XCTAssertEqual(scanningStore.documents.map(\.url.lastPathComponent), [renamed.url.lastPathComponent])
+    }
 }

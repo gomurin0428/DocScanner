@@ -98,27 +98,35 @@ final class PDFBuilderTests: XCTestCase {
     func testFitImageUsesUprightOrientationAndPixelDimensions() throws {
         let format = UIGraphicsImageRendererFormat.default()
         format.scale = 1
-        let raw = UIGraphicsImageRenderer(size: CGSize(width: 120, height: 80), format: format).image { context in
-            UIColor.red.setFill()
+        let up = UIGraphicsImageRenderer(size: CGSize(width: 80, height: 120), format: format).image { context in
+            UIColor.black.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 80, height: 60))
+            UIColor.white.setFill()
+            context.fill(CGRect(x: 0, y: 60, width: 80, height: 60))
+        }
+        let rawRight = UIGraphicsImageRenderer(size: CGSize(width: 120, height: 80), format: format).image { context in
+            UIColor.black.setFill()
             context.fill(CGRect(x: 0, y: 0, width: 60, height: 80))
-            UIColor.blue.setFill()
+            UIColor.white.setFill()
             context.fill(CGRect(x: 60, y: 0, width: 60, height: 80))
         }
-        let rotated = UIImage(cgImage: try XCTUnwrap(raw.cgImage), scale: 2, orientation: .right)
-        let data = try PDFBuilder().makePDF(from: [rotated], pageSize: .fitImage)
-        let page = try XCTUnwrap(PDFDocument(data: data)?.page(at: 0))
-        let bounds = page.bounds(for: .mediaBox)
+        let right = UIImage(cgImage: try XCTUnwrap(rawRight.cgImage), scale: 1, orientation: .right)
+        let pages = [up, right]
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("orientation-\(UUID()).pdf")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try PDFBuilder.writePDF(pageCount: pages.count, to: url, pageSize: .fitImage,
+                                imageForPage: { pages[$0] }, progress: { _ in })
+        let document = try XCTUnwrap(PDFDocument(url: url))
+        XCTAssertEqual(document.pageCount, 2)
+        let bounds = try XCTUnwrap(document.page(at: 1)).bounds(for: .mediaBox)
         XCTAssertEqual(bounds.width, 80 * 72.0 / 300.0, accuracy: 1)
         XCTAssertEqual(bounds.height, 120 * 72.0 / 300.0, accuracy: 1)
-        let rendered = page.thumbnail(of: CGSize(width: 200, height: 300), for: .mediaBox)
-        let top = try XCTUnwrap(TestImageFactory.pixelColor(of: rendered, x: 100, y: 30))
-        let bottom = try XCTUnwrap(TestImageFactory.pixelColor(of: rendered, x: 100, y: 270))
-        var topRed: CGFloat = 0, topGreen: CGFloat = 0, topBlue: CGFloat = 0, topAlpha: CGFloat = 0
-        var bottomRed: CGFloat = 0, bottomGreen: CGFloat = 0, bottomBlue: CGFloat = 0, bottomAlpha: CGFloat = 0
-        top.getRed(&topRed, green: &topGreen, blue: &topBlue, alpha: &topAlpha)
-        bottom.getRed(&bottomRed, green: &bottomGreen, blue: &bottomBlue, alpha: &bottomAlpha)
-        XCTAssertGreaterThan(topRed, topBlue)
-        XCTAssertGreaterThan(bottomBlue, bottomRed)
+        for index in pages.indices {
+            let page = try XCTUnwrap(document.page(at: index))
+            let rendered = page.thumbnail(of: CGSize(width: 200, height: 300), for: .mediaBox)
+            XCTAssertLessThan(try luminance(of: rendered, x: 100, y: 30), 0.15, "page \(index) top")
+            XCTAssertGreaterThan(try luminance(of: rendered, x: 100, y: 270), 0.85, "page \(index) bottom")
+        }
     }
 
     func testStreamingProviderIsLazyAndRemovesPartialFileOnFailure() throws {

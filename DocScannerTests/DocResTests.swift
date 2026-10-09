@@ -119,6 +119,7 @@ final class DocResTests: XCTestCase {
         let entered = DispatchSemaphore(value: 0)
         let release = DispatchSemaphore(value: 0)
         var predictionCount = 0
+        var inputBuildCount = 0
         let enhancer = DocResEnhancer(prediction: { input in
             predictionCount += 1
             entered.signal()
@@ -137,6 +138,7 @@ final class DocResTests: XCTestCase {
             }
             return output
         }, inputBuilder: { _, small in
+            inputBuildCount += 1
             let input = try MLMultiArray(shape: [1, 6, 512, 512], dataType: .float32)
             let strides = input.strides.map(\.intValue)
             for channel in 0..<3 {
@@ -164,7 +166,13 @@ final class DocResTests: XCTestCase {
             XCTAssertTrue(error is CancellationError)
         }
         XCTAssertNotNil(try enhancer.flattened(image))
+        let source = UIImage(cgImage: image)
+        let processor = DocumentImageProcessor(enhancer: enhancer)
+        _ = try processor.apply(.enhanced, to: source)
+        _ = try ScannedPage(baseImage: source, filter: .enhanced, quarterTurns: 1)
+            .renderedImage(using: processor)
         XCTAssertEqual(predictionCount, 1)
+        XCTAssertEqual(inputBuildCount, 1)
     }
 
     func testUnsafePredictionsAreRejected() throws {

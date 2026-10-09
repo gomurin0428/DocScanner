@@ -101,36 +101,27 @@ final class DocResEnhancer {
             AppDiagnostics.selection("DocRes skipped: small image or extreme aspect ratio")
             return nil
         }
-        let bitmap = try PageBitmap(image, background: CGColor(gray: 1, alpha: 1))
-        let small = DocResPrompt.resized(bitmap, side: Self.side)
-        guard DocResPrompt.hasContrast(small) else {
-            AppDiagnostics.selection("DocRes skipped: low contrast image")
-            return nil
-        }
-        let input: MLMultiArray
-        if let inputBuilder {
-            input = try inputBuilder(bitmap, small)
-        } else {
-            input = try DocResPrompt.input(bitmap: bitmap, small: small)
-        }
         lock.lock()
         defer { lock.unlock() }
         try Task.checkCancellation()
         if let modelLoadError { throw modelLoadError }
         if cachedSource === image {
-            if let index = gainCache.firstIndex(where: { $0.source === image }) {
-                let entry = gainCache.remove(at: index)
-                gainCache.insert(entry, at: 0)
-            }
             return cachedResult
         }
         if let index = gainCache.firstIndex(where: { $0.source === image }) {
             let entry = gainCache.remove(at: index)
             gainCache.insert(entry, at: 0)
+            let bitmap = try PageBitmap(image, background: CGColor(gray: 1, alpha: 1))
             let result = try Self.render(bitmap, gain: entry.gain)
             cachedSource = image
             cachedResult = result
             return result
+        }
+        let bitmap = try PageBitmap(image, background: CGColor(gray: 1, alpha: 1))
+        let small = DocResPrompt.resized(bitmap, side: Self.side)
+        guard DocResPrompt.hasContrast(small) else {
+            AppDiagnostics.selection("DocRes skipped: low contrast image")
+            return nil
         }
         #if os(iOS) && !targetEnvironment(simulator)
         let available = os_proc_available_memory()
@@ -158,6 +149,13 @@ final class DocResEnhancer {
         }
         try Task.checkCancellation()
         guard model != nil || predictionOverride != nil else { return nil }
+        let input: MLMultiArray
+        if let inputBuilder {
+            input = try inputBuilder(bitmap, small)
+        } else {
+            input = try DocResPrompt.input(bitmap: bitmap, small: small)
+        }
+        try Task.checkCancellation()
         let array: MLMultiArray
         do {
             if let predictionOverride {

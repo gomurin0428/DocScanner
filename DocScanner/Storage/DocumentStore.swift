@@ -64,13 +64,25 @@ final class DocumentStore {
     /// 保存済みドキュメント一覧（新しい順）。
     private(set) var documents: [SavedDocument] = []
     private(set) var isLoaded = false
+    private var revision = 0
+    private var loadGeneration = 0
+    private let scanner: @Sendable (URL) async throws -> [SavedDocument]
 
     /// ストアを初期化する。
     /// - 入力: directory … 保存先ディレクトリ。nil なら Documents/Scans を使用
     /// - 出力: 初期化済み DocumentStore
     /// - 処理: ディレクトリを作成し、既存ファイルを読み込む
     /// - Throws: ディレクトリ作成・列挙・属性取得・PDF 読込の失敗時に各エラー
-    init(directory: URL? = nil, loadExisting: Bool = true) throws {
+    init(
+        directory: URL? = nil,
+        loadExisting: Bool = true,
+        scanner: @escaping @Sendable (URL) async throws -> [SavedDocument] = { directory in
+            try await Task.detached(priority: .userInitiated) {
+                try DocumentStore.readDocuments(in: directory)
+            }.value
+        }
+    ) throws {
+        self.scanner = scanner
         if let directory {
             self.directory = directory
         } else {
@@ -90,17 +102,30 @@ final class DocumentStore {
     ///   属性欠損や読み込めない PDF は個別の issue エントリとして保持する。
     /// - Throws: ディレクトリ列挙自体に失敗した場合
     func reload() throws {
-        documents = try Self.readDocuments(in: directory)
+        let snapshot = try Self.readDocuments(in: directory)
+        loadGeneration &+= 1
+        documents = snapshot
         isLoaded = true
     }
 
+    @MainActor
     func reloadAsync() async throws {
+        loadGeneration &+= 1
+        let generation = loadGeneration
+        let startingRevision = revision
         let scanDirectory = directory
+        let scan = scanner
         let snapshot = try await Task.detached(priority: .userInitiated) {
-            try Self.readDocuments(in: scanDirectory)
+            try await scan(scanDirectory)
         }.value
+        guard generation == loadGeneration, startingRevision == revision else { return }
         documents = snapshot
         isLoaded = true
+    }
+
+    private func invalidateReloads() {
+        revision &+= 1
+        loadGeneration &+= 1
     }
 
     private static func readDocuments(in directory: URL) throws -> [SavedDocument] {
@@ -159,7 +184,7 @@ final class DocumentStore {
     @discardableResult
     func save(pdfData: Data, name rawName: String) throws -> SavedDocument {
         let base = try FileNameSanitizer.sanitize(rawName)
-        guard let pdf = PDFDocument(data: pdfData), pdf.pageCount > 0 else {
+        guard let pdf = PDFDocument(data: pdfData), !pdf.isLocked, pdf.pageCount > 0 else {
             throw DocumentStoreError.invalidPDF
         }
         let url = uniqueURL(for: base)
@@ -176,6 +201,7 @@ final class DocumentStore {
         }
         do {
             let saved = try metadata(for: url, pageCount: pdf.pageCount)
+            invalidateReloads()
             documents.append(saved)
             documents.sort { $0.createdAt > $1.createdAt }
             return saved
@@ -204,10 +230,14 @@ final class DocumentStore {
     @discardableResult
     func commitValidatedPDF(at source: URL, name rawName: String, pageCount: Int) throws -> SavedDocument {
         let base = try FileNameSanitizer.sanitize(rawName)
+        guard let pdf = PDFDocument(url: source), !pdf.isLocked, pdf.pageCount == pageCount else {
+            throw DocumentStoreError.invalidPDF
+        }
         let url = uniqueURL(for: base)
         try FileManager.default.moveItem(at: source, to: url)
         do {
             let saved = try metadata(for: url, pageCount: pageCount)
+            invalidateReloads()
             documents.append(saved)
             documents.sort { $0.createdAt > $1.createdAt }
             return saved
@@ -218,7 +248,7 @@ final class DocumentStore {
     }
 
     private static func validatedPageCount(at source: URL) throws -> Int {
-        guard let pdf = PDFDocument(url: source), pdf.pageCount > 0 else {
+        guard let pdf = PDFDocument(url: source), !pdf.isLocked, pdf.pageCount > 0 else {
             throw DocumentStoreError.invalidPDF
         }
         return pdf.pageCount
@@ -231,6 +261,7 @@ final class DocumentStore {
     /// - Throws: 削除失敗時に CocoaError
     func delete(_ document: SavedDocument) throws {
         try FileManager.default.removeItem(at: document.url)
+        invalidateReloads()
         documents.removeAll { $0.url.lastPathComponent == document.url.lastPathComponent }
     }
 
@@ -241,6 +272,7 @@ final class DocumentStore {
     /// - Throws: 削除失敗時に CocoaError
     func delete(at offsets: IndexSet) throws {
         let targets = offsets.map { documents[$0] }
+        if !targets.isEmpty { invalidateReloads() }
         for document in targets {
             try FileManager.default.removeItem(at: document.url)
         }
@@ -261,6 +293,7 @@ final class DocumentStore {
             return document
         }
         try FileManager.default.moveItem(at: document.url, to: url)
+        invalidateReloads()
         let renamed = SavedDocument(url: url, createdAt: document.createdAt,
                                     fileSize: document.fileSize, pageCount: document.pageCount,
                                     issue: document.issue)

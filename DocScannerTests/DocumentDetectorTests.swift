@@ -6,26 +6,36 @@ import Vision
 final class DocumentDetectorTests: XCTestCase {
 
     /// 対象検出器。
-    private let detector = DocumentDetector()
+    private let detector = DocumentDetector(unwarper: UVDocUnwarper(model: nil))
 
-    /// 画面内で小さく写った紙に対する無効な UVDoc 出力を表面化する。
-    func testSmallDocumentSurfacesInvalidModelOutput() throws {
-        let format = UIGraphicsImageRendererFormat.default()
-        format.scale = 1
-        let size = CGSize(width: 1000, height: 1400)
-        let image = UIGraphicsImageRenderer(size: size, format: format).image { context in
-            UIColor(white: 0.15, alpha: 1).setFill()
-            context.fill(CGRect(origin: .zero, size: size))
-            UIColor(white: 0.95, alpha: 1).setFill()
-            context.fill(CGRect(x: 430, y: 600, width: 140, height: 200))
-        }
-        XCTAssertThrowsError(try detector.detectAndCorrect(image)) { error in
-            guard let processingError = error as? UVDocProcessingError,
-                  case .invalidModelOutput = processingError else {
-                XCTFail("Expected invalid UVDoc model output, got \(error)")
-                return
+    func testDetectsSmallDocumentWithoutLoadingModel() throws {
+        try assertDetectedPaper(CGRect(x: 430, y: 600, width: 140, height: 200))
+    }
+
+    func testModelLoadFailureIsCachedAndPropagatedWithoutFallback() throws {
+        let underlying = NSError(domain: "UVDocTests", code: 7)
+        var loadCount = 0
+        let unwarper = UVDocUnwarper(modelLoader: {
+            loadCount += 1
+            throw underlying
+        })
+        let detector = DocumentDetector(unwarper: unwarper)
+        let image = TestImageFactory.gradient(size: CGSize(width: 512, height: 768))
+        let boundary = DocumentBoundary(corners: [
+            CGPoint(x: 0.1, y: 0.9), CGPoint(x: 0.9, y: 0.9),
+            CGPoint(x: 0.9, y: 0.1), CGPoint(x: 0.1, y: 0.1)
+        ])
+        for _ in 0..<2 {
+            XCTAssertThrowsError(try detector.correct(image, boundary: boundary)) { error in
+                guard let loadingError = error as? UVDocModelLoadingError else {
+                    XCTFail("Expected UVDoc loading error, got \(error)")
+                    return
+                }
+                XCTAssertEqual((loadingError.underlyingError as NSError?)?.domain, underlying.domain)
+                XCTAssertEqual((loadingError.underlyingError as NSError?)?.code, underlying.code)
             }
         }
+        XCTAssertEqual(loadCount, 1)
     }
 
     /// 縦横比 0.18 のレシートを補正できることを検証する。

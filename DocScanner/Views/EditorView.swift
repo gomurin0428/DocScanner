@@ -26,6 +26,7 @@ struct EditorView: View {
     @State private var saveTotal = 0
     @State private var saveCommitted = false
     @State private var isCommittingSave = false
+    @State private var isCancellingSave = false
     @State private var initialPageSignature: String
     @State private var initialFileName: String
     @State private var initialPageSize: String
@@ -63,7 +64,7 @@ struct EditorView: View {
         let defaultName = FileNameSanitizer.defaultName(for: Date())
         _draft = State(initialValue: DocumentDraft(pages: pages))
         _fileName = State(initialValue: defaultName)
-        _initialPageSignature = State(initialValue: Self.pageSignature(pages))
+        _initialPageSignature = State(initialValue: Self.pageSignature([]))
         _initialFileName = State(initialValue: defaultName)
         _initialPageSize = State(initialValue: PDFPageSize.a4.displayName)
     }
@@ -187,10 +188,16 @@ struct EditorView: View {
                     ProgressView(isSaving ? "Saving PDF…" : "Processing…")
                     if isSaving {
                         Text("Page \(saveProgress) of \(saveTotal)")
-                        if isCommittingSave {
+                        if isCancellingSave {
+                            Text("Canceling… finishing current processing")
+                        } else if isCommittingSave {
                             Text("Finishing save…")
                         } else {
-                            Button("Cancel") { saveTask?.cancel() }
+                            Button("Cancel") {
+                                isCancellingSave = true
+                                saveTask?.cancel()
+                            }
+                            .disabled(isCancellingSave)
                         }
                     }
                 }
@@ -209,7 +216,8 @@ struct EditorView: View {
             HStack {
                 PageRow(draft: draft, pageID: page.id,
                         number: (draft.pages.firstIndex { $0.id == page.id } ?? 0) + 1,
-                        active: !isSaving && !isImporting && editingPageID == nil)
+                        active: !isSaving && !isImporting && editingPageID == nil &&
+                            savedDocument == nil && !showCamera && !showPicker)
                 Spacer()
                 Image(systemName: "chevron.right")
                     .foregroundStyle(.tertiary)
@@ -332,6 +340,7 @@ struct EditorView: View {
         }
         isSaving = true
         isCommittingSave = false
+        isCancellingSave = false
         saveCommitted = false
         let snapshot = draft.pages
         let size = pageSize
@@ -358,6 +367,7 @@ struct EditorView: View {
                 await MainActor.run {
                     isSaving = false
                     saveCommitted = true
+                    isCancellingSave = false
                     initialPageSignature = Self.pageSignature(snapshot)
                     initialFileName = fileName
                     initialPageSize = size.displayName
@@ -368,6 +378,7 @@ struct EditorView: View {
                 await MainActor.run {
                     isSaving = false
                     isCommittingSave = false
+                    isCancellingSave = false
                     saveTask = nil
                     try? FileManager.default.removeItem(at: output)
                     if !(error is CancellationError) { self.present(error) }
@@ -377,8 +388,13 @@ struct EditorView: View {
     }
 
     private var hasUnsavedChanges: Bool {
-        Self.pageSignature(draft.pages) != initialPageSignature ||
-            fileName != initialFileName || pageSize.displayName != initialPageSize
+        SavedDraftComparison.needsDiscard(
+            currentPageSignature: Self.pageSignature(draft.pages),
+            savedPageSignature: initialPageSignature,
+            currentFileName: fileName,
+            savedFileName: initialFileName,
+            currentPageSize: pageSize.displayName,
+            savedPageSize: initialPageSize)
     }
 
     private func requestBack() {
@@ -399,6 +415,8 @@ struct EditorView: View {
     /// - 出力: なし
     /// - 処理: localizedDescription をアラートへ渡す
     private func present(_ error: Error) {
+        guard !(error is CancellationError) else { return }
+        AppDiagnostics.error("Editor error presentation", error: error)
         errorMessage = error.localizedDescription
         showError = true
     }

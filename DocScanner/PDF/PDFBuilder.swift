@@ -57,8 +57,6 @@ struct PDFBuilder {
                     var mediaBox = bounds
                     context?.beginPage(mediaBox: &mediaBox)
                     context?.saveGState()
-                    context?.translateBy(x: 0, y: bounds.height)
-                    context?.scaleBy(x: 1, y: -1)
                     context?.draw(cgImage, in: contentRect(for: imageSize, in: bounds,
                                                             pageSize: pageSize))
                     context?.restoreGState()

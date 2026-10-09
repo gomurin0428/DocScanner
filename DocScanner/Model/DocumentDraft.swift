@@ -1,5 +1,20 @@
 import Foundation
 
+enum SavedDraftComparison {
+    static func needsDiscard(
+        currentPageSignature: String,
+        savedPageSignature: String,
+        currentFileName: String,
+        savedFileName: String,
+        currentPageSize: String,
+        savedPageSize: String
+    ) -> Bool {
+        currentPageSignature != savedPageSignature ||
+            currentFileName != savedFileName ||
+            currentPageSize != savedPageSize
+    }
+}
+
 /// 編集中ドキュメントのページ集合を保持する下書きモデル。
 /// @Observable のため参照を共有する全ビューが pages の変更を購読できる。
 @Observable final class DocumentDraft {

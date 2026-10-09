@@ -106,4 +106,19 @@ final class DocumentDraftTests: XCTestCase {
         XCTAssertEqual(draft.page(id: page.id)?.filter, .original)
         XCTAssertEqual(draft.page(id: page.id)?.quarterTurns, 0)
     }
+
+    func testSavedDraftComparisonRequiresDiscardForNewAndChangedDrafts() {
+        XCTAssertTrue(SavedDraftComparison.needsDiscard(
+            currentPageSignature: "page-a", savedPageSignature: "",
+            currentFileName: "Scan", savedFileName: "Scan",
+            currentPageSize: "A4", savedPageSize: "A4"))
+        XCTAssertFalse(SavedDraftComparison.needsDiscard(
+            currentPageSignature: "page-a", savedPageSignature: "page-a",
+            currentFileName: "Scan", savedFileName: "Scan",
+            currentPageSize: "A4", savedPageSize: "A4"))
+        XCTAssertTrue(SavedDraftComparison.needsDiscard(
+            currentPageSignature: "page-a:rotated", savedPageSignature: "page-a",
+            currentFileName: "Scan", savedFileName: "Scan",
+            currentPageSize: "A4", savedPageSize: "A4"))
+    }
 }

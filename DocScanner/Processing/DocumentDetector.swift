@@ -67,12 +67,17 @@ struct DocumentDetector {
 
     /// CI レンダリング用の共有コンテキスト。
     private let context = ImageRendering.context
+    private let unwarper: UVDocUnwarper
+
+    init(unwarper: UVDocUnwarper = .shared) {
+        self.unwarper = unwarper
+    }
 
     /// 撮影時に固定した輪郭だけを補正する。Vision による対象の再選択は行わない。
     /// - 入力: 撮影画像と正規化輪郭、出力: 同じ輪郭を矩形にした画像
     func correct(_ image: UIImage, boundary: DocumentBoundary) throws -> UIImage {
         let cg = try normalizedCGImage(of: image)
-        if let output = try UVDocUnwarper.shared.unwarp(cg, boundary: boundary) {
+        if let output = try unwarper.unwarp(cg, boundary: boundary) {
             return UIImage(cgImage: output, scale: image.scale, orientation: .up)
         }
         let flattened = try PageFlattener().flatten(cg, boundary: boundary)
@@ -83,12 +88,6 @@ struct DocumentDetector {
     /// セグメンテーション結果を採用する最低信頼度。
     /// 無地画像は 0〜0.55、実書類は 0.99 程度のため 0.8 で弾く。
     private static let segConfidenceThreshold: VNConfidence = 0.8
-
-    /// 検出器を初期化する。
-    /// - 入力: なし
-    /// - 出力: 初期化済み DocumentDetector
-    /// - 処理: CIContext を生成する
-    init() {}
 
     /// 画像内の書類を検出して台形補正済み画像を返す。
     /// - 入力: image … 書類を含む入力画像
@@ -148,7 +147,7 @@ struct DocumentDetector {
                 toTopLeft(observation.bottomRight),
                 toTopLeft(observation.bottomLeft)
             ], mask: mask)
-            if let output = try UVDocUnwarper.shared.unwarp(cg, boundary: boundary) {
+            if let output = try unwarper.unwarp(cg, boundary: boundary) {
                 return UIImage(cgImage: output, scale: image.scale, orientation: .up)
             }
             let flattened = try PageFlattener().flatten(cg, boundary: boundary)
@@ -192,7 +191,7 @@ struct DocumentDetector {
         let boundary = DocumentBoundary(corners: [rectangle.topLeft, rectangle.topRight,
                                                    rectangle.bottomRight, rectangle.bottomLeft])
         if let original = context.createCGImage(ciImage, from: ciImage.extent),
-           let output = try UVDocUnwarper.shared.unwarp(original, boundary: boundary) {
+           let output = try unwarper.unwarp(original, boundary: boundary) {
             return UIImage(cgImage: output, scale: scale, orientation: .up)
         }
 

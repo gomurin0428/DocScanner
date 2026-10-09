@@ -32,6 +32,7 @@ struct DocumentListView: View {
     /// エラー発生時のアラート表示フラグ。
     @State private var showError = false
     @State private var storeLoadError: String?
+    @State private var isLoadingStore = false
     @State private var deleteTarget: SavedDocument?
     @State private var showDeleteConfirmation = false
 
@@ -43,14 +44,19 @@ struct DocumentListView: View {
         NavigationStack {
             Group {
                 if !store.isLoaded {
-                    ContentUnavailableView {
-                        Label("Storage Unavailable", systemImage: "externaldrive.badge.exclamationmark")
-                    } description: {
-                        Text(storeLoadError ?? "Loading saved documents…")
-                    } actions: {
-                        Button("Retry", systemImage: "arrow.clockwise") {
-                            Task { await loadStore() }
+                    if let storeLoadError {
+                        ContentUnavailableView {
+                            Label("Storage Unavailable", systemImage: "externaldrive.badge.exclamationmark")
+                        } description: {
+                            Text(storeLoadError)
+                        } actions: {
+                            Button("Retry", systemImage: "arrow.clockwise") {
+                                Task { await loadStore() }
+                            }
+                            .disabled(isLoadingStore)
                         }
+                    } else {
+                        ContentUnavailableView("Loading Saved Documents", systemImage: "doc.text")
                     }
                 } else if store.documents.isEmpty {
                     ContentUnavailableView(
@@ -68,6 +74,7 @@ struct DocumentListView: View {
                 // safeAreaInset でフル幅ボタンを直接配置する
                 HStack(spacing: 12) {
                     Button {
+                        guard store.isLoaded else { return }
                         guard CameraController.isAvailable() else {
                             errorMessage = "The camera is not available on this device."
                             showError = true
@@ -80,14 +87,16 @@ struct DocumentListView: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.large)
+                    .disabled(!store.isLoaded || isLoadingStore)
                     Button {
-                        showPicker = true
+                        if store.isLoaded { showPicker = true }
                     } label: {
                         Label("Import", systemImage: "photo.on.rectangle")
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.large)
+                    .disabled(!store.isLoaded || isLoadingStore)
                 }
                 .padding(.horizontal)
             }
@@ -340,11 +349,16 @@ struct DocumentListView: View {
     /// - 出力: なし
     /// - 処理: localizedDescription をアラートへ渡す
     private func present(_ error: Error) {
+        guard !(error is CancellationError) else { return }
+        AppDiagnostics.error("Document list error presentation", error: error)
         errorMessage = error.localizedDescription
         showError = true
     }
 
     private func loadStore() async {
+        guard !isLoadingStore else { return }
+        isLoadingStore = true
+        defer { isLoadingStore = false }
         storeLoadError = nil
         do {
             try await store.reloadAsync()

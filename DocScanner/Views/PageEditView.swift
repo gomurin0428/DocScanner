@@ -141,6 +141,7 @@ struct PageEditView: View {
         } catch is CancellationError {
             return
         } catch {
+            AppDiagnostics.error("Page editor error presentation", error: error)
             errorMessage = error.localizedDescription
             showError = true
         }
