@@ -83,6 +83,38 @@ final class CameraCaptureTests: XCTestCase {
         XCTAssertEqual(refined.corners, background.corners)
     }
 
+    func testLocalRefinementPreservesFaintPaperEdgeBesideStrongPrintedBorder() throws {
+        let size = CGSize(width: 2000, height: 2400)
+        let paper = CGRect(x: 200, y: 200, width: 1600, height: 2000)
+        let boundary = DocumentBoundary(corners: [CGPoint(x: 0.1, y: 1 - 200 / 2400.0),
+                                                  CGPoint(x: 0.9, y: 1 - 200 / 2400.0),
+                                                  CGPoint(x: 0.9, y: 1 - 2200 / 2400.0),
+                                                  CGPoint(x: 0.1, y: 1 - 2200 / 2400.0)])
+        for thickness in [4.0, 32.0] {
+            let format = UIGraphicsImageRendererFormat.default()
+            format.scale = 1
+            let image = UIGraphicsImageRenderer(size: size, format: format).image { context in
+                UIColor(white: 230 / 255.0, alpha: 1).setFill()
+                context.fill(CGRect(origin: .zero, size: size))
+                UIColor(white: 240 / 255.0, alpha: 1).setFill()
+                context.fill(paper)
+                context.cgContext.setStrokeColor(UIColor.black.cgColor)
+                context.cgContext.setLineWidth(thickness)
+                context.cgContext.stroke(paper.insetBy(dx: 30, dy: 30))
+            }
+            let refined = try PageFlattener().refineBoundary(try XCTUnwrap(image.cgImage), boundary: boundary)
+            XCTAssertTrue(refined.isValid)
+            for edge in [refined.top, refined.right, refined.bottom, refined.left] {
+                for point in edge {
+                    let x = point.x * size.width, y = (1 - point.y) * size.height
+                    let distance = min(abs(x - paper.minX), abs(x - paper.maxX),
+                                       abs(y - paper.minY), abs(y - paper.maxY))
+                    XCTAssertLessThanOrEqual(distance, 3, "Printed border must remain inside the page")
+                }
+            }
+        }
+    }
+
     /// 撮影ごとの輪郭を保持し、失敗した撮影を混ぜずに入力順を維持する。
     func testPhotoStateKeepsEachCaptureBoundaryAndSkipsFailure() throws {
         var state = CameraPhotoState()

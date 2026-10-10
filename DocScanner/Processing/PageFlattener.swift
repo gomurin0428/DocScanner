@@ -295,6 +295,7 @@ struct PageFlattener {
         let w = Double(image.width), h = Double(image.height)
         let range = min(w, h) * 0.03
         let step = max(1, range / 60), gap = max(1, min(w, h) * 0.001)
+        let center = pixels(boundary.corners).reduce(PagePoint(x: 0, y: 0), +) * 0.25
         func pixels(_ points: [CGPoint]) -> [PagePoint] {
             points.map { PagePoint(x: $0.x * w, y: (1 - $0.y) * h) }
         }
@@ -307,30 +308,48 @@ struct PageFlattener {
                 let p = PageGeometry.sample(edge, at: t)
                 let tangent = PageGeometry.sample(edge, at: min(1, t + 0.02)) -
                     PageGeometry.sample(edge, at: max(0, t - 0.02))
-                let normal = PagePoint(x: -tangent.y, y: tangent.x) * (1 / max(tangent.length, 1e-6))
-                var offset = 0.0, best = 12.0
+                var normal = PagePoint(x: -tangent.y, y: tangent.x) * (1 / max(tangent.length, 1e-6))
+                let toCenter = center - p
+                if normal.x * toCenter.x + normal.y * toCenter.y < 0 { normal = normal * -1 }
+                var offset = 0.0, distance = Double.infinity
                 if i > 0, i < count - 1 {
-                    let start = p - normal * (range + gap), end = p + normal * (range + gap)
+                    let reach = range + gap * 6
+                    let start = p - normal * reach, end = p + normal * reach
                     let bounds = CGRect(x: min(start.x, end.x) - 1, y: min(start.y, end.y) - 1,
                                         width: abs(end.x - start.x) + 3, height: abs(end.y - start.y) + 3)
                         .integral.intersection(CGRect(x: 0, y: 0, width: w, height: h))
                     guard let crop = image.cropping(to: bounds) else { throw DocumentDetectionError.renderFailed }
                     let bitmap = try PageBitmap(crop)
+                    func luminance(_ d: Double) -> Double? {
+                        let q = p + normal * d
+                        guard q.x >= 0, q.x < w, q.y >= 0, q.y < h else { return nil }
+                        return bitmap.luminance(atX: q.x - bounds.minX, y: q.y - bounds.minY)
+                    }
+                    func band(_ d: Double, direction: Double) -> Double? {
+                        let values = (2...6).compactMap { luminance(d + direction * Double($0) * gap) }.sorted()
+                        guard values.count == 5 else { return nil }
+                        return values[values.count / 2]
+                    }
+                    let outer = band(-range, direction: -1), inner = band(range, direction: 1)
                     for d in stride(from: -range, through: range, by: step) {
-                        let a = p + normal * (d - gap), b = p + normal * (d + gap)
-                        guard a.x >= 0, a.x < w, a.y >= 0, a.y < h,
-                              b.x >= 0, b.x < w, b.y >= 0, b.y < h else { continue }
-                        let gradient = abs(bitmap.luminance(atX: a.x - bounds.minX, y: a.y - bounds.minY) -
-                                           bitmap.luminance(atX: b.x - bounds.minX, y: b.y - bounds.minY))
-                        let score = gradient - 4 * abs(d) / max(range, 1)
-                        if score > best { best = score; offset = d }
+                        guard let outer, let inner, abs(inner - outer) >= 6,
+                              let a = luminance(d - gap), let b = luminance(d + gap),
+                              let outside = band(d, direction: -1), let inside = band(d, direction: 1) else { continue }
+                        let sign = inner > outer ? 1.0 : -1.0
+                        let tolerance = max(8, abs(inner - outer) * 0.25)
+                        guard (b - a) * sign >= 6, (inside - outside) * sign >= 6,
+                              abs(outside - outer) <= tolerance, abs(inside - inner) <= tolerance else { continue }
+                        if abs(d) < distance { distance = abs(d); offset = d }
                     }
                 }
                 samples.append(p)
                 normals.append(normal)
                 offsets.append(offset)
             }
-            let median = offsets.dropFirst().dropLast().sorted()[((count - 2) / 2)]
+            let interior = Array(offsets.dropFirst().dropLast())
+            let median = interior.sorted()[interior.count / 2]
+            guard interior.filter({ abs($0 - median) <= gap * 6 }).count * 3 >= interior.count * 2 else { return samples }
+            for i in 1..<(count - 1) where abs(offsets[i] - median) > gap * 6 { offsets[i] = median }
             offsets[0] = median
             offsets[count - 1] = median
             return samples.indices.map { i in

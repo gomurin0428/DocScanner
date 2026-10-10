@@ -83,7 +83,17 @@ enum PageGeometry {
             }
         }
         let outWidth = max(width, height / ratio), outHeight = outWidth * ratio
-        let scale = min(1, 4096 / max(outWidth, outHeight))
+        let flatten = try homography(from: corners, to: unit)
+        func length(_ points: [CGPoint]) -> Double {
+            arcLength(points.map {
+                let p = apply(flatten, to: PagePoint(x: $0.x * imageSize.width, y: (1 - $0.y) * imageSize.height))
+                return PagePoint(x: p.x * outWidth, y: p.y * outHeight)
+            })
+        }
+        let arcWidth = (length(boundary.top) + length(boundary.bottom)) / 2
+        let arcHeight = (length(boundary.left) + length(boundary.right)) / 2
+        let density = max(1, arcWidth / outWidth, arcHeight / outHeight)
+        let scale = min(density, 4096 / max(outWidth, outHeight))
         return CGSize(width: max(2, (outWidth * scale).rounded()),
                       height: max(2, (outHeight * scale).rounded()))
     }

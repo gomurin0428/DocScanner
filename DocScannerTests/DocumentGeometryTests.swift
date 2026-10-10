@@ -50,6 +50,23 @@ final class DocumentGeometryTests: XCTestCase {
         XCTAssertEqual(high.height / high.width, low.height / low.width, accuracy: 0.005)
     }
 
+    func testCurvedEdgesPreserveUnfoldedResolutionAspectAndOutputLimit() throws {
+        let top = [CGPoint(x: 0.1, y: 0.8), CGPoint(x: 0.3, y: 0.97),
+                   CGPoint(x: 0.5, y: 0.8), CGPoint(x: 0.7, y: 0.97), CGPoint(x: 0.9, y: 0.8)]
+        let bottom = top.map { CGPoint(x: $0.x, y: $0.y - 0.6) }
+        let boundary = DocumentBoundary(top: top, right: [top.last!, bottom.last!],
+                                        bottom: bottom, left: [top[0], bottom[0]])
+        let size = CGSize(width: 1000, height: 1000)
+        let image = try XCTUnwrap(TestImageFactory.solid(.white, size: size).cgImage)
+        let expectedArcWidth = 4 * hypot(200.0, 170.0)
+        let output = try PageFlattener().flatten(image, boundary: boundary)
+        XCTAssertGreaterThanOrEqual(Double(output.width), expectedArcWidth - 1)
+        XCTAssertEqual(Double(output.height) / Double(output.width), 0.75, accuracy: 0.002)
+        let large = try PageGeometry.outputSize(boundary: boundary, imageSize: CGSize(width: 5000, height: 5000))
+        XCTAssertEqual(large.width, 4096)
+        XCTAssertEqual(large.height / large.width, 0.75, accuracy: 0.001)
+    }
+
     func testExifEquivalentFocalLengthIsRetained() throws {
         let data = NSMutableData()
         let destination = try XCTUnwrap(CGImageDestinationCreateWithData(data, UTType.jpeg.identifier as CFString, 1, nil))
