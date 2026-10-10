@@ -345,7 +345,7 @@ final class CameraController: NSObject {
         let shouldPublish = lifecycle.isActive(generation)
         photoState.finishCapture(image: image,
                                  shouldAppend: shouldPublish && captureError == nil,
-                                 boundary: boundary)
+                                 boundary: boundary, camera: delegate.camera)
         if activePhotoDelegate === delegate {
             activePhotoDelegate = nil
         }
@@ -420,7 +420,11 @@ extension CameraController: AVCaptureVideoDataOutputSampleBufferDelegate {
             do {
                 let corners = [candidate.topLeft, candidate.topRight, candidate.bottomRight, candidate.bottomLeft]
                 let boundary: DocumentBoundary
-                if let maskBuffer = documentRequest.results?.first?.globalSegmentationMask?.pixelBuffer {
+                if let document = documentRequest.results?.first,
+                   DocumentDetector.quadsAgree(corners,
+                       [document.topLeft, document.topRight, document.bottomRight, document.bottomLeft],
+                       width: orientedSize.width, height: orientedSize.height),
+                   let maskBuffer = document.globalSegmentationMask?.pixelBuffer {
                     let ci = CIImage(cvPixelBuffer: buffer).oriented(orientation)
                     guard let cg = analysisContext.createCGImage(ci, from: ci.extent) else {
                         throw DocumentDetectionError.invalidImage

@@ -65,8 +65,6 @@ enum DocumentDetectionError: LocalizedError, Equatable {
 /// 写真画像から書類の四角形を検出し、台形補正して取り出す検出器。
 struct DocumentDetector {
 
-    /// CI レンダリング用の共有コンテキスト。
-    private let context = ImageRendering.context
     private let unwarper: UVDocUnwarper
 
     init(unwarper: UVDocUnwarper = .shared) {
@@ -75,12 +73,14 @@ struct DocumentDetector {
 
     /// 撮影時に固定した輪郭だけを補正する。Vision による対象の再選択は行わない。
     /// - 入力: 撮影画像と正規化輪郭、出力: 同じ輪郭を矩形にした画像
-    func correct(_ image: UIImage, boundary: DocumentBoundary) throws -> UIImage {
+    func correct(_ image: UIImage, boundary: DocumentBoundary, camera: DocumentCamera? = nil,
+                 refineBoundary: Bool = false) throws -> UIImage {
         let cg = try normalizedCGImage(of: image)
-        if let output = try unwarper.unwarp(cg, boundary: boundary) {
+        let boundary = refineBoundary ? try PageFlattener().refineBoundary(cg, boundary: boundary) : boundary
+        if let output = try unwarper.unwarp(cg, boundary: boundary, camera: camera) {
             return UIImage(cgImage: output, scale: image.scale, orientation: .up)
         }
-        let flattened = try PageFlattener().flatten(cg, boundary: boundary)
+        let flattened = try PageFlattener().flatten(cg, boundary: boundary, camera: camera)
         let output = try PageContentStraightener().straighten(flattened)
         return UIImage(cgImage: output, scale: image.scale, orientation: .up)
     }
@@ -92,13 +92,16 @@ struct DocumentDetector {
     /// 画像内の書類を検出して台形補正済み画像を返す。
     /// - 入力: image … 書類を含む入力画像
     /// - 出力: 検出領域を正面から見た画像に補正した UIImage
-    /// - 処理: 向き正規化 → VNDetectRectanglesRequest → CIPerspectiveCorrection → レンダリング
+    /// - 処理: 縮小画像で領域検出 → 元画像を輪郭・カメラ情報で補正
     /// - Throws: 検出失敗時 DocumentDetectionError.noDocumentFound など
-    func detectAndCorrect(_ image: UIImage) throws -> UIImage {
+    func detectAndCorrect(_ image: UIImage, camera: DocumentCamera? = nil) throws -> UIImage {
         let cg = try normalizedCGImage(of: image)
-        let ciImage = CIImage(cgImage: cg)
-        let width = CGFloat(cg.width)
-        let height = CGFloat(cg.height)
+        let analysis = try DocumentImageProcessor().downscaled(UIImage(cgImage: cg), maxPixelDimension: 1600)
+        guard let detectionImage = analysis.cgImage else { throw DocumentDetectionError.invalidImage }
+        AppDiagnostics.selection("Photo detection: \(detectionImage.width)x\(detectionImage.height), source \(cg.width)x\(cg.height)")
+        let ciImage = CIImage(cgImage: detectionImage)
+        let width = CGFloat(detectionImage.width)
+        let height = CGFloat(detectionImage.height)
         let handler = VNImageRequestHandler(ciImage: ciImage, options: [:])
 
         let request = DocumentRectangleDetector.makeRequest()
@@ -119,7 +122,7 @@ struct DocumentDetector {
         guard let rectangle = DocumentRectangleDetector.liveDocument(
             in: rectangles, document: segRequest.results?.first,
             size: CGSize(width: width, height: height))
-            ?? DocumentRectangleDetector.preferred(in: rectangles) else {
+            else {
             throw DocumentDetectionError.noDocumentFound
         }
         if let observation = segRequest.results?.first,
@@ -133,29 +136,27 @@ struct DocumentDetector {
                width: width, height: height) {
             let mask = try SegmentationMask(
                 pixelBuffer: maskBuffer.pixelBuffer,
-                imageWidth: cg.width,
-                imageHeight: cg.height
+                imageWidth: detectionImage.width,
+                imageHeight: detectionImage.height
             )
             // Vision 正規化座標（左下原点）→ 左上原点ピクセル座標
             // （フラットナとマスクは行が上から順のため反転する）
             func toTopLeft(_ p: CGPoint) -> CGPoint {
                 CGPoint(x: p.x * width, y: (1 - p.y) * height)
             }
-            let boundary = try PageFlattener().traceBoundary(cg, corners: [
-                toTopLeft(observation.topLeft),
-                toTopLeft(observation.topRight),
-                toTopLeft(observation.bottomRight),
-                toTopLeft(observation.bottomLeft)
+            let boundary = try PageFlattener().traceBoundary(detectionImage, corners: [
+                toTopLeft(observation.topLeft), toTopLeft(observation.topRight),
+                toTopLeft(observation.bottomRight), toTopLeft(observation.bottomLeft)
             ], mask: mask)
-            if let output = try unwarper.unwarp(cg, boundary: boundary) {
+            if let output = try unwarper.unwarp(cg, boundary: boundary, camera: camera) {
                 return UIImage(cgImage: output, scale: image.scale, orientation: .up)
             }
-            let flattened = try PageFlattener().flatten(cg, boundary: boundary)
+            let flattened = try PageFlattener().flatten(cg, boundary: boundary, camera: camera)
             let straightened = try PageContentStraightener().straighten(flattened)
             return UIImage(cgImage: straightened, scale: image.scale, orientation: .up)
         }
-        return try perspectiveCorrect(
-            ciImage, rectangle: rectangle, scale: image.scale)
+        return try correct(image, boundary: DocumentBoundary(corners: [rectangle.topLeft, rectangle.topRight,
+                                                                      rectangle.bottomRight, rectangle.bottomLeft]), camera: camera)
     }
 
     /// セグメンテーション四角形と矩形検出四角形が十分一致するかを判定する。
@@ -174,48 +175,6 @@ struct DocumentDetector {
             if (dx * dx + dy * dy).squareRoot() > threshold { return false }
         }
         return true
-    }
-
-    /// 四角形観測結果で CIPerspectiveCorrection を適用し UIImage へ焼き付ける。
-    /// - 入力: ciImage … 元画像、rectangle … Vision の四角形（正規化左下原点座標）、
-    ///   scale … 出力 UIImage の scale
-    /// - 出力: 台形補正済み UIImage（向き .up）
-    /// - 処理: 正規化座標をピクセル座標へ変換しフィルタ適用 → レンダリング
-    /// - Throws: フィルタ失敗 correctionFailed、レンダリング失敗 renderFailed
-    private func perspectiveCorrect(
-        _ ciImage: CIImage, rectangle: VNRectangleObservation, scale: CGFloat
-    ) throws -> UIImage {
-        let width = ciImage.extent.width
-        let height = ciImage.extent.height
-
-        let boundary = DocumentBoundary(corners: [rectangle.topLeft, rectangle.topRight,
-                                                   rectangle.bottomRight, rectangle.bottomLeft])
-        if let original = context.createCGImage(ciImage, from: ciImage.extent),
-           let output = try unwarper.unwarp(original, boundary: boundary) {
-            return UIImage(cgImage: output, scale: scale, orientation: .up)
-        }
-
-        // Vision の正規化座標（左下原点）を CIImage 座標へ変換する。
-        // CIImage も左下原点のため y の反転は不要（反転すると上下ミラー + 歪み + 背景混入になる）
-        func toImagePoint(_ p: CGPoint) -> CGPoint {
-            CGPoint(x: p.x * width, y: p.y * height)
-        }
-
-        guard let corrected = CIFilter(name: "CIPerspectiveCorrection", parameters: [
-            kCIInputImageKey: ciImage,
-            "inputTopLeft": CIVector(cgPoint: toImagePoint(rectangle.topLeft)),
-            "inputTopRight": CIVector(cgPoint: toImagePoint(rectangle.topRight)),
-            "inputBottomLeft": CIVector(cgPoint: toImagePoint(rectangle.bottomLeft)),
-            "inputBottomRight": CIVector(cgPoint: toImagePoint(rectangle.bottomRight))
-        ])?.outputImage else {
-            throw DocumentDetectionError.correctionFailed
-        }
-
-        guard let outputCG = context.createCGImage(corrected, from: corrected.extent) else {
-            throw DocumentDetectionError.renderFailed
-        }
-        let straightened = try PageContentStraightener().straighten(outputCG)
-        return UIImage(cgImage: straightened, scale: scale, orientation: .up)
     }
 
     /// UIImage の向きを正規化した CGImage を返す。

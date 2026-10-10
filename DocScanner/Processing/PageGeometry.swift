@@ -1,5 +1,6 @@
 import CoreGraphics
 import Foundation
+import simd
 
 /// 幾何計算用の Double 精度 2D 点（左上原点ピクセル座標）。
 struct PagePoint {
@@ -36,6 +37,56 @@ struct PagePoint {
 
 /// ホモグラフィ・曲線サンプリング・線形ソルバの幾何ユーティリティ。
 enum PageGeometry {
+
+    static func outputSize(boundary: DocumentBoundary, imageSize: CGSize,
+                           camera: DocumentCamera? = nil) throws -> CGSize {
+        guard boundary.isValid, imageSize.width > 0, imageSize.height > 0 else {
+            throw DocumentDetectionError.invalidImage
+        }
+        let corners = boundary.corners.map {
+            PagePoint(x: $0.x * imageSize.width, y: (1 - $0.y) * imageSize.height)
+        }
+        let width = ((corners[1] - corners[0]).length + (corners[2] - corners[3]).length) / 2
+        let height = ((corners[3] - corners[0]).length + (corners[2] - corners[1]).length) / 2
+        let unit = [PagePoint(x: 0, y: 0), PagePoint(x: 1, y: 0),
+                    PagePoint(x: 1, y: 1), PagePoint(x: 0, y: 1)]
+        let h = try homography(from: unit, to: corners)
+        var calibration = camera?.scaled(to: imageSize)
+        if calibration == nil {
+            let cx = imageSize.width / 2, cy = imageSize.height / 2
+            let product = h[6] * h[7]
+            let fSquared = -((h[0] - cx * h[6]) * (h[1] - cx * h[7]) +
+                             (h[3] - cy * h[6]) * (h[4] - cy * h[7])) / product
+            let f = sqrt(fSquared)
+            let diagonal = hypot(imageSize.width, imageSize.height)
+            if abs(product) > 1e-10, f.isFinite, f > diagonal * 0.25, f < diagonal * 10 {
+                calibration = DocumentCamera(focalX: f, focalY: f, centerX: cx, centerY: cy,
+                                             referenceSize: imageSize)
+                AppDiagnostics.selection("Document aspect ratio: focal length estimated from orthogonal edges")
+            } else {
+                AppDiagnostics.selection("Document aspect ratio: uncalibrated projection; focal length is indeterminate")
+            }
+        }
+        var ratio = height / width
+        if let calibration, calibration.focalX.isFinite, calibration.focalY.isFinite,
+           calibration.focalX > 0, calibration.focalY > 0 {
+            let u = SIMD3((h[0] - calibration.centerX * h[6]) / calibration.focalX,
+                          (h[3] - calibration.centerY * h[6]) / calibration.focalY, h[6])
+            let v = SIMD3((h[1] - calibration.centerX * h[7]) / calibration.focalX,
+                          (h[4] - calibration.centerY * h[7]) / calibration.focalY, h[7])
+            let orthogonality = abs(simd_dot(u, v)) / (simd_length(u) * simd_length(v))
+            let metricRatio = simd_length(v) / simd_length(u)
+            if metricRatio.isFinite, metricRatio > 0, orthogonality < 0.15 {
+                ratio = metricRatio
+            } else {
+                AppDiagnostics.selection("Document aspect ratio: nonplanar or inconsistent calibrated corners")
+            }
+        }
+        let outWidth = max(width, height / ratio), outHeight = outWidth * ratio
+        let scale = min(1, 4096 / max(outWidth, outHeight))
+        return CGSize(width: max(2, (outWidth * scale).rounded()),
+                      height: max(2, (outHeight * scale).rounded()))
+    }
 
     /// 部分ピボット付きガウス消去で連立方程式を解く。
     /// - 入力: matrix … 正方係数行列、rhs … 右辺ベクトル

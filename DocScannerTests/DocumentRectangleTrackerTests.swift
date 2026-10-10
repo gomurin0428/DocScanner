@@ -45,6 +45,33 @@ final class DocumentRectangleTrackerTests: XCTestCase {
     }
 
     /// 単発候補や交互に変わる矩形は表示せず、同じ紙が連続した場合だけ表示する。
+    func testRectangleAcquiresWhenSegmentationIsMissingOrInvalid() throws {
+        let size = CGSize(width: 1000, height: 1400)
+        for document in [nil, LowConfidenceDocument(boundingBox: paper.boundingBox),
+                         VNRectangleObservation(boundingBox: CGRect(x: 0, y: 0, width: 1, height: 1))] {
+            let candidate = try XCTUnwrap(DocumentRectangleDetector.liveDocument(
+                in: [other, paper], document: document, size: size))
+            XCTAssertEqual(candidate.uuid, paper.uuid)
+            var tracker = DocumentRectangleTracker()
+            XCTAssertNil(tracker.update(candidate, at: 0))
+            XCTAssertNil(tracker.update(candidate, at: 0.2))
+            XCTAssertNotNil(tracker.update(candidate, at: 0.4))
+        }
+    }
+
+    func testCompletePaperWithinOnePercentOfFrameEdgesIsAccepted() throws {
+        let size = CGSize(width: 1000, height: 1400)
+        let nearEdge = VNRectangleObservation(boundingBox: CGRect(x: 0.003, y: 0.004, width: 0.994, height: 0.992))
+        XCTAssertEqual(DocumentRectangleDetector.liveDocument(in: [], document: nearEdge, size: size)?.uuid, nearEdge.uuid)
+        XCTAssertEqual(DocumentRectangleDetector.liveDocument(in: [nearEdge], document: nil, size: size)?.uuid, nearEdge.uuid)
+        let touching = VNRectangleObservation(boundingBox: CGRect(x: 0, y: 0, width: 0.8, height: 0.9))
+        XCTAssertEqual(DocumentRectangleDetector.liveDocument(in: [], document: touching, size: size)?.uuid, touching.uuid)
+        let outside = VNRectangleObservation(boundingBox: CGRect(x: -0.01, y: 0.1, width: 0.9, height: 0.8))
+        XCTAssertNil(DocumentRectangleDetector.liveDocument(in: [outside], document: nil, size: size))
+        XCTAssertNil(DocumentRectangleDetector.liveDocument(in: [LowConfidenceDocument(boundingBox: paper.boundingBox)],
+                                                           document: nil, size: size))
+    }
+
     func testAlternatingCandidatesNeverFlash() {
         var tracker = DocumentRectangleTracker()
         for index in 0..<20 {

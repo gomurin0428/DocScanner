@@ -69,10 +69,11 @@ struct CameraPhotoState {
     }
 
     /// 撮影トランザクションを完了し、必要なら画像を追加する。
-    mutating func finishCapture(image: UIImage?, shouldAppend: Bool, boundary: DocumentBoundary? = nil) {
+    mutating func finishCapture(image: UIImage?, shouldAppend: Bool, boundary: DocumentBoundary? = nil,
+                               camera: DocumentCamera? = nil) {
         guard isCapturing else { return }
         if shouldAppend, let image {
-            sources.append(.camera(image, boundary: boundary))
+            sources.append(.camera(image, boundary: boundary, camera: camera))
         }
         isCapturing = false
     }

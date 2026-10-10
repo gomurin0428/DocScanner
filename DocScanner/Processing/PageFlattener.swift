@@ -215,7 +215,9 @@ struct PageFlattener {
                 var found = false
                 var k = -searchRange
                 while k <= searchRange {
-                    if mask.value(at: base + normal * k) >= 0.5 { off = k; found = true }
+                    let p = base + normal * k
+                    if p.x >= 0, p.x < W, p.y >= 0, p.y < H,
+                       mask.value(at: p) >= 0.5 { off = k; found = true }
                     k += 1
                 }
                 if !found { off = 0 }
@@ -282,15 +284,99 @@ struct PageFlattener {
         reconcile(&left, cTL, cBL)
 
         func normalize(_ points: [PagePoint]) -> [CGPoint] {
-            points.map { CGPoint(x: $0.x / W, y: 1 - $0.y / H) }
+            points.map { CGPoint(x: min(1, max(0, $0.x / W)), y: min(1, max(0, 1 - $0.y / H))) }
         }
         return DocumentBoundary(top: normalize(top), right: normalize(right),
                                 bottom: normalize(bottom), left: normalize(left))
     }
 
+    func refineBoundary(_ image: CGImage, boundary: DocumentBoundary) throws -> DocumentBoundary {
+        guard boundary.isValid else { throw DocumentDetectionError.invalidImage }
+        let w = Double(image.width), h = Double(image.height)
+        let range = min(w, h) * 0.03
+        let step = max(1, range / 60), gap = max(1, min(w, h) * 0.001)
+        func pixels(_ points: [CGPoint]) -> [PagePoint] {
+            points.map { PagePoint(x: $0.x * w, y: (1 - $0.y) * h) }
+        }
+        func refine(_ points: [CGPoint]) throws -> [PagePoint] {
+            let edge = pixels(points)
+            let count = max(17, edge.count)
+            var offsets = [Double](), samples = [PagePoint](), normals = [PagePoint]()
+            for i in 0..<count {
+                let t = Double(i) / Double(count - 1)
+                let p = PageGeometry.sample(edge, at: t)
+                let tangent = PageGeometry.sample(edge, at: min(1, t + 0.02)) -
+                    PageGeometry.sample(edge, at: max(0, t - 0.02))
+                let normal = PagePoint(x: -tangent.y, y: tangent.x) * (1 / max(tangent.length, 1e-6))
+                var offset = 0.0, best = 12.0
+                if i > 0, i < count - 1 {
+                    let start = p - normal * (range + gap), end = p + normal * (range + gap)
+                    let bounds = CGRect(x: min(start.x, end.x) - 1, y: min(start.y, end.y) - 1,
+                                        width: abs(end.x - start.x) + 3, height: abs(end.y - start.y) + 3)
+                        .integral.intersection(CGRect(x: 0, y: 0, width: w, height: h))
+                    guard let crop = image.cropping(to: bounds) else { throw DocumentDetectionError.renderFailed }
+                    let bitmap = try PageBitmap(crop)
+                    for d in stride(from: -range, through: range, by: step) {
+                        let a = p + normal * (d - gap), b = p + normal * (d + gap)
+                        guard a.x >= 0, a.x < w, a.y >= 0, a.y < h,
+                              b.x >= 0, b.x < w, b.y >= 0, b.y < h else { continue }
+                        let gradient = abs(bitmap.luminance(atX: a.x - bounds.minX, y: a.y - bounds.minY) -
+                                           bitmap.luminance(atX: b.x - bounds.minX, y: b.y - bounds.minY))
+                        let score = gradient - 4 * abs(d) / max(range, 1)
+                        if score > best { best = score; offset = d }
+                    }
+                }
+                samples.append(p)
+                normals.append(normal)
+                offsets.append(offset)
+            }
+            let median = offsets.dropFirst().dropLast().sorted()[((count - 2) / 2)]
+            offsets[0] = median
+            offsets[count - 1] = median
+            return samples.indices.map { i in
+                let start = max(0, i - 1), end = min(count - 1, i + 1)
+                let local = offsets[start...end].sorted()
+                let offset = i == 0 || i == count - 1 ? offsets[i] : local[local.count / 2]
+                return samples[i] + normals[i] * offset
+            }
+        }
+        var top = try refine(boundary.top), right = try refine(boundary.right)
+        var bottom = try refine(boundary.bottom), left = try refine(boundary.left)
+        func intersection(_ a: [PagePoint], _ b: [PagePoint], near p: PagePoint) -> PagePoint {
+            let u = a.last! - a[0], v = b.last! - b[0], d = b[0] - a[0]
+            let cross = u.x * v.y - u.y * v.x
+            guard abs(cross) > 1e-6 else { return p }
+            return a[0] + u * ((d.x * v.y - d.y * v.x) / cross)
+        }
+        let original = pixels(boundary.corners)
+        let corners = [intersection(top, left, near: original[0]), intersection(top, right, near: original[1]),
+                       intersection(bottom, right, near: original[2]), intersection(bottom, left, near: original[3])]
+        guard zip(corners, original).allSatisfy({ ($0 - $1).length <= range * 1.5 + 2 }) else {
+            throw DocumentDetectionError.correctionFailed
+        }
+        func reconcile(_ points: inout [PagePoint], _ start: PagePoint, _ end: PagePoint) {
+            let a = start - points[0], b = end - points[points.count - 1]
+            for i in points.indices {
+                let t = Double(i) / Double(points.count - 1)
+                points[i] = points[i] + a * (1 - t) + b * t
+            }
+        }
+        reconcile(&top, corners[0], corners[1])
+        reconcile(&right, corners[1], corners[2])
+        reconcile(&bottom, corners[3], corners[2])
+        reconcile(&left, corners[0], corners[3])
+        func normalize(_ points: [PagePoint]) -> [CGPoint] {
+            points.map { CGPoint(x: min(1, max(0, $0.x / w)), y: min(1, max(0, 1 - $0.y / h))) }
+        }
+        let result = DocumentBoundary(top: normalize(top), right: normalize(right),
+                                      bottom: normalize(bottom), left: normalize(left))
+        guard result.isValid else { throw DocumentDetectionError.correctionFailed }
+        return result
+    }
+
     /// 保存した四辺を再検出せず、そのまま矩形へ引き伸ばす。
     /// - 入力: 向き正規化済み画像と左下原点の正規化輪郭、出力: 補正画像
-    func flatten(_ image: CGImage, boundary: DocumentBoundary) throws -> CGImage {
+    func flatten(_ image: CGImage, boundary: DocumentBoundary, camera: DocumentCamera? = nil) throws -> CGImage {
         guard boundary.isValid else { throw DocumentDetectionError.invalidImage }
         let bitmap = try PageBitmap(image)
         func pixels(_ points: [CGPoint]) -> [PagePoint] {
@@ -318,9 +404,9 @@ struct PageFlattener {
         let mapLeft = left.map { PageGeometry.apply(hs, to: $0) }
         let mapRight = right.map { PageGeometry.apply(hs, to: $0) }
 
-        // 出力サイズ = 上下辺の平均弧長 × 左右辺の平均弧長
-        let outW = Int(((PageGeometry.arcLength(mapTop) + PageGeometry.arcLength(mapBottom)) / 2).rounded())
-        let outH = Int(((PageGeometry.arcLength(mapLeft) + PageGeometry.arcLength(mapRight)) / 2).rounded())
+        let size = try PageGeometry.outputSize(boundary: boundary,
+                                               imageSize: CGSize(width: image.width, height: image.height), camera: camera)
+        let outW = Int(size.width), outH = Int(size.height)
         guard outW >= 2, outH >= 2 else { throw DocumentDetectionError.invalidImage }
 
         /// Coons パッチ: 矩形空間 (u,v) → 元画像座標。

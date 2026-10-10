@@ -256,9 +256,9 @@ struct EditorView: View {
         isImporting = true
         importTask = Task.detached {
             do {
-                let images = try await PageImporter.loadImages(from: items)
+                let sources = try await PageImporter.loadSources(from: items)
                 try Task.checkCancellation()
-                await MainActor.run { handleImages(images) }
+                await MainActor.run { handleSources(sources) }
             } catch is CancellationError {
                 await MainActor.run { isImporting = false }
             } catch {
@@ -268,15 +268,6 @@ struct EditorView: View {
                 }
             }
         }
-    }
-
-    /// UIImage 配列を書類検出パイプラインへ通し結果を反映する（カメラ・写真共通）。
-    /// - 入力: images … 取り込み済み画像配列
-    /// - 出力: なし（draft または pendingImportResult を更新する）
-    /// - 処理: バックグラウンドで makePages を実行し、検出済みは draft へ追加、
-    ///   未検出は確認アラート用に保持する
-    private func handleImages(_ images: [UIImage]) {
-        handleSources(images.map { .photo($0) })
     }
 
     /// 写真と固定輪郭付き撮影を処理し、入力順で下書きへ追加する。
