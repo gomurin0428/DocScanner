@@ -8,8 +8,15 @@ final class CameraPhotoCaptureDelegate: NSObject, AVCapturePhotoCaptureDelegate 
     private var image: UIImage?
     private let metadataBoundary: DocumentBoundary?
     private var photoBoundary: DocumentBoundary?
+    private var photoCamera: DocumentCamera?
     private var processingError: CameraError?
     private let completion: (CameraPhotoCaptureDelegate, UIImage?, DocumentBoundary?, CameraError?) -> Void
+
+    var camera: DocumentCamera? {
+        lock.lock()
+        defer { lock.unlock() }
+        return photoCamera
+    }
 
     init(boundary: DocumentBoundary?, completion: @escaping (CameraPhotoCaptureDelegate, UIImage?, DocumentBoundary?, CameraError?) -> Void) {
         self.metadataBoundary = boundary
@@ -23,6 +30,7 @@ final class CameraPhotoCaptureDelegate: NSObject, AVCapturePhotoCaptureDelegate 
         var resultImage: UIImage?
         var resultError: CameraError?
         var boundary: DocumentBoundary?
+        var camera: DocumentCamera?
         if let error {
             resultImage = nil
             resultError = .captureFailed(error.localizedDescription)
@@ -30,6 +38,15 @@ final class CameraPhotoCaptureDelegate: NSObject, AVCapturePhotoCaptureDelegate 
                   let decoded = UIImage(data: data) {
             resultImage = decoded
             resultError = nil
+            if let calibration = photo.cameraCalibrationData {
+                let k = calibration.intrinsicMatrix
+                camera = DocumentCamera(focalX: Double(k[0][0]), focalY: Double(k[1][1]),
+                                        centerX: Double(k[2][0]), centerY: Double(k[2][1]),
+                                        referenceSize: calibration.intrinsicMatrixReferenceDimensions)
+                    .oriented(decoded.imageOrientation)
+            } else {
+                camera = DocumentCamera.from(data: data)?.oriented(decoded.imageOrientation)
+            }
             if let metadataBoundary, let cg = decoded.cgImage {
                 let size = CGSize(width: cg.width, height: cg.height)
                 func toPhoto(_ point: CGPoint) -> CGPoint {
@@ -54,6 +71,7 @@ final class CameraPhotoCaptureDelegate: NSObject, AVCapturePhotoCaptureDelegate 
         lock.lock()
         image = resultImage
         photoBoundary = boundary
+        photoCamera = camera
         processingError = resultError
         lock.unlock()
     }

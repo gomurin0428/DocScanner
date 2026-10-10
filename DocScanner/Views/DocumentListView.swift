@@ -248,8 +248,8 @@ struct DocumentListView: View {
         isProcessing = true
         Task.detached {
             do {
-                let images = try await PageImporter.loadImages(from: items)
-                await MainActor.run { handleImages(images) }
+                let sources = try await PageImporter.loadSources(from: items)
+                await MainActor.run { handleSources(sources) }
             } catch {
                 await MainActor.run {
                     isProcessing = false
@@ -257,14 +257,6 @@ struct DocumentListView: View {
                 }
             }
         }
-    }
-
-    /// UIImage 配列を書類検出パイプラインへ通し結果を反映する（カメラ・写真共通）。
-    /// - 入力: images … 取り込み済み画像配列
-    /// - 出力: なし（draftPages または pendingImportResult を更新する）
-    /// - 処理: バックグラウンドで makePages を実行し、順序付き結果を保持して選択を確認する
-    private func handleImages(_ images: [UIImage]) {
-        handleSources(images.map { .photo($0) })
     }
 
     /// 写真と固定輪郭付き撮影を処理し、入力順で編集画面へ渡す。

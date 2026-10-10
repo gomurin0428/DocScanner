@@ -48,16 +48,71 @@ final class CameraCaptureTests: XCTestCase {
         try assertRed(page.baseImage)
     }
 
-    /// 縮小前の正規化輪郭を保存し、3000px へ縮小しても違う範囲を選ばない。
+    /// 元画像の画素数を維持し、3000px の検出用縮小で小さい選択範囲を劣化させない。
     func testHighResolutionCapturePreservesNormalizedSelection() throws {
         let image = twoDocuments(scale: 7)
         let boundary = DocumentBoundary(corners: [CGPoint(x: 0.1, y: 0.8), CGPoint(x: 0.3, y: 0.8),
                                                   CGPoint(x: 0.3, y: 0.4), CGPoint(x: 0.1, y: 0.4)])
         let result = try PageImporter().makePages(from: [PageSource.camera(image, boundary: boundary)])
         let page = try XCTUnwrap(result.detectedPages.first)
-        XCTAssertEqual(page.baseImage.size.width, 600, accuracy: 1)
-        XCTAssertEqual(page.baseImage.size.height, 1000, accuracy: 1)
+        XCTAssertEqual(try XCTUnwrap(page.baseImage.cgImage).width, 840, accuracy: 3)
+        XCTAssertEqual(try XCTUnwrap(page.baseImage.cgImage).height, 1400, accuracy: 3)
         try assertRed(page.baseImage)
+    }
+
+    func testLocalPhotoRefinementRecoversShiftWithoutSelectingNeighbor() throws {
+        let image = twoDocuments(scale: 7)
+        let actual = DocumentBoundary(corners: [CGPoint(x: 0.1, y: 0.8), CGPoint(x: 0.3, y: 0.8),
+                                               CGPoint(x: 0.3, y: 0.4), CGPoint(x: 0.1, y: 0.4)])
+        let saved = actual.map { CGPoint(x: $0.x + 0.015, y: $0.y - 0.012) }
+        let refined = try PageFlattener().refineBoundary(try XCTUnwrap(image.cgImage), boundary: saved)
+        XCTAssertTrue(refined.isValid)
+        for (point, expected) in zip(refined.corners, actual.corners) {
+            XCTAssertEqual(point.x, expected.x, accuracy: 0.002)
+            XCTAssertEqual(point.y, expected.y, accuracy: 0.002)
+        }
+        let result = try PageImporter().makePages(from: [PageSource.camera(image, boundary: saved)])
+        try assertRed(try XCTUnwrap(result.detectedPages.first).baseImage)
+    }
+
+    func testLocalRefinementCannotReachDistantPaperAndPreservesTexturelessSelection() throws {
+        let image = twoDocuments()
+        let background = DocumentBoundary(corners: [CGPoint(x: 0.1, y: 0.98), CGPoint(x: 0.3, y: 0.98),
+                                                   CGPoint(x: 0.3, y: 0.88), CGPoint(x: 0.1, y: 0.88)])
+        let refined = try PageFlattener().refineBoundary(try XCTUnwrap(image.cgImage), boundary: background)
+        XCTAssertEqual(refined.corners, background.corners)
+    }
+
+    func testLocalRefinementPreservesFaintPaperEdgeBesideStrongPrintedBorder() throws {
+        let size = CGSize(width: 2000, height: 2400)
+        let paper = CGRect(x: 200, y: 200, width: 1600, height: 2000)
+        let boundary = DocumentBoundary(corners: [CGPoint(x: 0.1, y: 1 - 200 / 2400.0),
+                                                  CGPoint(x: 0.9, y: 1 - 200 / 2400.0),
+                                                  CGPoint(x: 0.9, y: 1 - 2200 / 2400.0),
+                                                  CGPoint(x: 0.1, y: 1 - 2200 / 2400.0)])
+        for thickness in [4.0, 32.0] {
+            let format = UIGraphicsImageRendererFormat.default()
+            format.scale = 1
+            let image = UIGraphicsImageRenderer(size: size, format: format).image { context in
+                UIColor(white: 230 / 255.0, alpha: 1).setFill()
+                context.fill(CGRect(origin: .zero, size: size))
+                UIColor(white: 240 / 255.0, alpha: 1).setFill()
+                context.fill(paper)
+                context.cgContext.setStrokeColor(UIColor.black.cgColor)
+                context.cgContext.setLineWidth(thickness)
+                context.cgContext.stroke(paper.insetBy(dx: 30, dy: 30))
+            }
+            let refined = try PageFlattener().refineBoundary(try XCTUnwrap(image.cgImage), boundary: boundary)
+            XCTAssertTrue(refined.isValid)
+            for edge in [refined.top, refined.right, refined.bottom, refined.left] {
+                for point in edge {
+                    let x = point.x * size.width, y = (1 - point.y) * size.height
+                    let distance = min(abs(x - paper.minX), abs(x - paper.maxX),
+                                       abs(y - paper.minY), abs(y - paper.maxY))
+                    XCTAssertLessThanOrEqual(distance, 3, "Printed border must remain inside the page")
+                }
+            }
+        }
     }
 
     /// 撮影ごとの輪郭を保持し、失敗した撮影を混ぜずに入力順を維持する。
@@ -74,7 +129,7 @@ final class CameraCaptureTests: XCTestCase {
         state.finishCapture(image: twoDocuments(), shouldAppend: true, boundary: second)
         XCTAssertEqual(state.sources.count, 2)
         for (source, expected) in zip(state.sources, [first, second]) {
-            guard case .camera(_, let boundary) = source else { return XCTFail("Expected camera source") }
+            guard case .camera(_, let boundary, _) = source else { return XCTFail("Expected camera source") }
             XCTAssertEqual(boundary, expected)
         }
     }

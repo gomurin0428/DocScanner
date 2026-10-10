@@ -69,7 +69,7 @@ final class UVDocUnwarper {
         return try MLModel(contentsOf: url, configuration: configuration)
     }
 
-    func unwarp(_ image: CGImage, boundary: DocumentBoundary) throws -> CGImage? {
+    func unwarp(_ image: CGImage, boundary: DocumentBoundary, camera: DocumentCamera? = nil) throws -> CGImage? {
         guard boundary.isValid else {
             throw DocumentDetectionError.invalidImage
         }
@@ -115,13 +115,10 @@ final class UVDocUnwarper {
             AppDiagnostics.error("UVDoc model output", error: error)
             throw error
         }
-        let corners = croppedBoundary.corners.map {
-            PagePoint(x: $0.x * Double(crop.width), y: $0.y * Double(crop.height))
-        }
-        let width = ((corners[1] - corners[0]).length + (corners[2] - corners[3]).length) / 2
-        let height = ((corners[3] - corners[0]).length + (corners[2] - corners[1]).length) / 2
-        let scale = min(1, 4096 / max(width, height))
-        let output = try grid.render(crop, width: Int((width * scale).rounded()), height: Int((height * scale).rounded()))
+        let size = try PageGeometry.outputSize(boundary: boundary,
+                                               imageSize: CGSize(width: image.width, height: image.height), camera: camera)
+        let output = try grid.render(crop, width: Int(rotated ? size.height : size.width),
+                                    height: Int(rotated ? size.width : size.height))
         return rotated ? try rotate(output, right: false) : output
     }
 

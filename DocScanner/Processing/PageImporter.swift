@@ -4,12 +4,12 @@ import UIKit
 
 /// 写真取り込みと、撮影時の輪郭が固定されたカメラ画像を区別する。
 enum PageSource {
-    case photo(UIImage)
-    case camera(UIImage, boundary: DocumentBoundary?)
+    case photo(UIImage, camera: DocumentCamera? = nil)
+    case camera(UIImage, boundary: DocumentBoundary?, camera: DocumentCamera? = nil)
 
     var image: UIImage {
         switch self {
-        case .photo(let image), .camera(let image, _): return image
+        case .photo(let image, _), .camera(let image, _, _): return image
         }
     }
 }
@@ -96,12 +96,12 @@ struct PageImporter {
 
     /// PhotosPicker の選択アイテムを全て画像として読み込む。
     /// - 入力: items … 選択された PhotosPickerItem 配列
-    /// - 出力: 選択順の UIImage 配列
-    /// - 処理: 各アイテムを loadTransferable で Data 化して UIImage にデコードする。
+    /// - 出力: 画像と取得できたカメラ情報を保持した選択順の入力
+    /// - 処理: 各アイテムを Data 化して画像・EXIF を読み込む。
     ///   失敗・デコード不能は暗黙スキップせずエラーにする
     /// - Throws: 読み込み失敗時 loadFailed(index)、デコード失敗時 decodeFailed(index)
-    static func loadImages(from items: [PhotosPickerItem]) async throws -> [UIImage] {
-        var images: [UIImage] = []
+    static func loadSources(from items: [PhotosPickerItem]) async throws -> [PageSource] {
+        var images: [PageSource] = []
         for (index, item) in items.enumerated() {
             let data: Data
             do {
@@ -117,7 +117,7 @@ struct PageImporter {
             guard let image = UIImage(data: data) else {
                 throw PageImporterError.decodeFailed(index)
             }
-            images.append(image)
+            images.append(.photo(image, camera: DocumentCamera.from(data: data)?.oriented(image.imageOrientation)))
         }
         return images
     }
@@ -138,20 +138,18 @@ struct PageImporter {
     func makePages(from sources: [PageSource]) throws -> ImportResult {
         var entries: [ImportResult.Entry] = []
         for source in sources {
-            // メモリ削減のため検出前に長辺を抑える
-            let downscaled = try processor.downscaled(source.image)
             do {
                 let corrected: UIImage
                 switch source {
-                case .photo:
-                    corrected = try detector.detectAndCorrect(downscaled)
-                case .camera(_, let boundary):
+                case .photo(let image, let camera):
+                    corrected = try detector.detectAndCorrect(image, camera: camera)
+                case .camera(let image, let boundary, let camera):
                     guard let boundary else { throw DocumentDetectionError.noDocumentFound }
-                    corrected = try detector.correct(downscaled, boundary: boundary)
+                    corrected = try detector.correct(image, boundary: boundary, camera: camera, refineBoundary: true)
                 }
                 entries.append(.detected(ScannedPage(baseImage: corrected, filter: .enhanced)))
             } catch let error as DocumentDetectionError where error == .noDocumentFound {
-                entries.append(.undetected(downscaled))
+                entries.append(.undetected(try processor.downscaled(source.image)))
             }
         }
         return ImportResult(entries: entries)
