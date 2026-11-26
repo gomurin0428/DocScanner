@@ -130,12 +130,6 @@ struct DocumentDetector {
         if let detected = DocumentRectangleDetector.liveDocument(
             in: rectangles, document: segmentation, size: imageSize) {
             rectangle = detected
-        } else if let detected = DocumentRectangleDetector.liveDocument(
-            in: rectangles, document: nil, size: imageSize,
-            minimumConfidence: 0.6, minimumSize: 0.05) {
-            AppDiagnostics.selection("Photo detection size retry: strict=[\(Self.summary(rectangles))], " +
-                                     "selected=[\(Self.summary([detected]))]")
-            rectangle = detected
         } else {
             let fallbackRequest = DocumentRectangleDetector.makePhotoFallbackRequest()
             do {
@@ -150,7 +144,8 @@ struct DocumentDetector {
                                      "segmentation=\(Self.summary(segmentation))")
             guard let detected = DocumentRectangleDetector.liveDocument(
                 in: fallbackRectangles, document: segmentation, size: imageSize,
-                minimumConfidence: 0.35, minimumSize: 0.05) else {
+                minimumConfidence: 0.35, minimumSize: 0.05,
+                minimumDocumentConfidence: 0.6, minimumDocumentSize: 0.1) else {
                 throw DocumentDetectionError.noDocumentFound
             }
             rectangle = detected
@@ -191,7 +186,8 @@ struct DocumentDetector {
             }
         } else {
             corrected = try correct(image, boundary: DocumentBoundary(corners: [rectangle.topLeft,
-                rectangle.topRight, rectangle.bottomRight, rectangle.bottomLeft]), camera: camera)
+                rectangle.topRight, rectangle.bottomRight, rectangle.bottomLeft]), camera: camera,
+                refineBoundary: true)
         }
         guard let correctedCGImage = corrected.cgImage else { throw DocumentDetectionError.invalidImage }
         let upright = try PageTextOrientationCorrector().correct(correctedCGImage)

@@ -16,7 +16,7 @@ enum DocumentRectangleDetector {
         return request
     }
 
-    /// 写真の通常検出で候補が得られない場合に使う緩和リクエストを作る。
+    /// 写真の通常検出で候補が得られない場合、矩形候補だけを緩和して再検出する。
     static func makePhotoFallbackRequest() -> VNDetectRectanglesRequest {
         let request = makeRequest()
         request.minimumConfidence = 0.35
@@ -36,14 +36,16 @@ enum DocumentRectangleDetector {
     /// 書類領域を優先し、領域が取れない場合は有効な矩形を追跡候補に使う。
     /// - 入力: observations … 矩形候補、document … 書類領域、size … 向き補正済み寸法
     /// - 出力: 書類候補。不確かな領域や画面端の退化領域は nil
-    /// - 処理: 信頼度と四角形の形状を検証し、矩形の有無だけで書類を除外しない
+    /// - 処理: 矩形候補とセグメンテーション候補の信頼度・サイズを別々に検証する
     static func liveDocument(in observations: [VNRectangleObservation],
                              document: VNRectangleObservation?,
                              size: CGSize,
                              minimumConfidence: VNConfidence = 0.6,
-                             minimumSize: CGFloat = 0.1) -> VNRectangleObservation? {
+                             minimumSize: CGFloat = 0.1,
+                             minimumDocumentConfidence: VNConfidence = 0.6,
+                             minimumDocumentSize: CGFloat = 0.1) -> VNRectangleObservation? {
         if let document, isUsable(document, size: size,
-                                  minimumConfidence: minimumConfidence, minimumSize: minimumSize) {
+                                  minimumConfidence: minimumDocumentConfidence, minimumSize: minimumDocumentSize) {
             return document
         }
         return preferred(in: observations.filter {

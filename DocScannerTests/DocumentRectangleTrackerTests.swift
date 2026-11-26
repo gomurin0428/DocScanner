@@ -221,25 +221,40 @@ final class DocumentRectangleTrackerTests: XCTestCase {
             minimumConfidence: 0.35, minimumSize: 0.05)?.uuid, smallPaper.uuid)
     }
 
-    func testPhotoFallbackAcceptsReceiptRectangleWith107PixelShortEdge() {
+    func testSmallReceiptInnerRectangleDoesNotSatisfyStrictPhotoGate() {
         let size = CGSize(width: 1200, height: 1600)
-        let receipt = VNRectangleObservation(requestRevision: 1,
-            topLeft: CGPoint(x: 0.20, y: 0.80),
-            bottomLeft: CGPoint(x: 0.20, y: 0.7329),
-            bottomRight: CGPoint(x: 0.70, y: 0.7329),
-            topRight: CGPoint(x: 0.70, y: 0.80))
+        let inner = VNRectangleObservation(requestRevision: 1,
+            topLeft: CGPoint(x: 0.477, y: 0.553),
+            bottomLeft: CGPoint(x: 0.485, y: 0.268),
+            bottomRight: CGPoint(x: 0.571, y: 0.288),
+            topRight: CGPoint(x: 0.569, y: 0.553))
 
-        XCTAssertEqual((0.80 - 0.7329) * size.height, 107.36, accuracy: 0.01)
         XCTAssertNil(DocumentRectangleDetector.liveDocument(
-            in: [receipt], document: nil, size: size))
+            in: [inner], document: nil, size: size))
+    }
+
+    func testPhotoFallbackRelaxesRectanglesButNotSegmentation() {
+        let size = CGSize(width: 1200, height: 1600)
+        let inner = VNRectangleObservation(requestRevision: 1,
+            topLeft: CGPoint(x: 0.477, y: 0.553),
+            bottomLeft: CGPoint(x: 0.485, y: 0.268),
+            bottomRight: CGPoint(x: 0.571, y: 0.288),
+            topRight: CGPoint(x: 0.569, y: 0.553))
+        let fallbackRectangle = LowConfidenceDocument(
+            boundingBox: CGRect(x: 0.18, y: 0.08, width: 0.74, height: 0.86))
+        let lowConfidenceDocument = LowConfidenceDocument(
+            boundingBox: CGRect(x: 0.18, y: 0.08, width: 0.74, height: 0.86))
+
         XCTAssertEqual(DocumentRectangleDetector.liveDocument(
-            in: [receipt], document: nil, size: size,
-            minimumConfidence: 0.6, minimumSize: 0.05)?.uuid, receipt.uuid)
-        XCTAssertNil(DocumentRectangleDetector.liveDocument(
-            in: [], document: receipt, size: size))
+            in: [fallbackRectangle], document: inner, size: size,
+            minimumConfidence: 0.35, minimumSize: 0.05,
+            minimumDocumentConfidence: 0.6, minimumDocumentSize: 0.1)?.uuid,
+                       fallbackRectangle.uuid)
         XCTAssertEqual(DocumentRectangleDetector.liveDocument(
-            in: [], document: receipt, size: size,
-            minimumConfidence: 0.6, minimumSize: 0.05)?.uuid, receipt.uuid)
+            in: [fallbackRectangle], document: lowConfidenceDocument, size: size,
+            minimumConfidence: 0.35, minimumSize: 0.05,
+            minimumDocumentConfidence: 0.6, minimumDocumentSize: 0.1)?.uuid,
+                       fallbackRectangle.uuid)
     }
 
     func testReceiptRectangleSurvivesFullFrameSegmentationCandidate() {
