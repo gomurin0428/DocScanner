@@ -1,18 +1,39 @@
 import CoreImage
 
 /// 書類画像の照明ムラ（陰影）を除去して平坦化するユーティリティ。
-/// 背景（紙の明るさ）を推定し、除算ブレンドで平坦化してからレベル補正を行う。
+/// 背景（紙の明るさ）を推定し、上限付きの共通 RGB ゲインで平坦化する。
 enum ShadingCorrector {
+    private static let correctionKernel = CIColorKernel(source: """
+    kernel vec4 shadingCorrection(__sample source, __sample illumination) {
+        float alpha = source.a;
+        vec3 color = source.rgb / max(alpha, 0.00001);
+        float light = dot(illumination.rgb, vec3(0.2126, 0.7152, 0.0722));
+        float sourceLight = dot(color, vec3(0.2126, 0.7152, 0.0722));
+        float maximum = max(color.r, max(color.g, color.b));
+        float gain = min(2.4, 1.0 / max(light, 0.01));
+        float transition = clamp((sourceLight - 0.08) / 0.32, 0.0, 1.0);
+        float protection = transition * transition * (3.0 - 2.0 * transition);
+        gain = 1.0 + (gain - 1.0) * protection;
+        float correctedMaximum = maximum * gain;
+        float scale = 1.0;
+        if (gain > 1.0 && correctedMaximum > 0.9) {
+            float excess = correctedMaximum - 0.9;
+            float mappedMaximum = 0.9 + 0.1 * (1.0 - exp(-excess / 0.1));
+            scale = mappedMaximum / correctedMaximum;
+        }
+        return vec4(source.rgb * gain * scale, alpha);
+    }
+    """)
 
     /// 背景（紙の明るさ）を推定した画像を返す。
     /// - 入力: image … 入力 CIImage
     /// - 出力: 入力と同じ extent の背景推定画像
-    /// - 処理: 長辺 512px へ縮小 → CIMorphologyMaximum(radius 6) で文字を消す →
+    /// - 処理: 長辺 512px 以下へ縮小 → CIMorphologyMaximum(radius 6) で文字を消す →
     ///   CIGaussianBlur(radius 12) でぼかす → 元サイズへ戻してクロップする
     /// - Throws: いずれかのフィルタが出力を返さない場合 ImageProcessingError.filterFailed
     static func background(of image: CIImage) throws -> CIImage {
         let extent = image.extent
-        let scale = 512 / max(extent.width, extent.height)
+        let scale = min(1, 512 / max(extent.width, extent.height))
         let transform = CGAffineTransform(scaleX: scale, y: scale)
         let small = image.clampedToExtent()
             .transformed(by: transform)
@@ -36,20 +57,19 @@ enum ShadingCorrector {
             .cropped(to: extent)
     }
 
-    /// 背景推定で除算し、照明ムラを除去した平坦画像を返す。
+    /// 背景の輝度から上限付きの共通 RGB ゲインを求め、照明ムラを平坦化する。
     /// - 入力: image … 入力 CIImage
-    /// - 出力: 入力と同じ extent の平坦化画像（= image / background）
-    /// - 処理: CIDivideBlendMode(inputImage: background, backgroundImage: image) を適用してクロップする
-    /// - Throws: 背景推定または除算フィルタの失敗時に各エラー
+    /// - 出力: 入力と同じ extent の平坦化画像
+    /// - 処理: 輝度の背景マップから共通 RGB ゲインを求め、ハイライト圧縮で白飛びと色ずれを抑える
+    /// - Throws: 背景推定または補正カーネルの失敗時に各エラー
     static func flattened(_ image: CIImage) throws -> CIImage {
-        let bg = try background(of: image)
-        guard let divided = CIFilter(name: "CIDivideBlendMode", parameters: [
-            kCIInputImageKey: bg,
-            kCIInputBackgroundImageKey: image
-        ])?.outputImage else {
-            throw ImageProcessingError.filterFailed("CIDivideBlendMode")
+        let illumination = try background(of: grayscale(image))
+        guard let correctionKernel,
+              let corrected = correctionKernel.apply(extent: image.extent,
+                                                       arguments: [image, illumination]) else {
+            throw ImageProcessingError.filterFailed("ShadingCorrection")
         }
-        return divided.cropped(to: image.extent)
+        return corrected.cropped(to: image.extent)
     }
 
     /// グレースケール（彩度 0）に変換する。

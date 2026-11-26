@@ -2,6 +2,8 @@ import CoreML
 import Foundation
 
 enum DocResPrompt {
+    static let promptSide = 1024
+
     static func resized(_ bitmap: PageBitmap, side: Int) -> [UInt8] {
         var output = [UInt8](repeating: 0, count: side * side * 3)
         for y in 0..<side {
@@ -39,7 +41,6 @@ enum DocResPrompt {
 
     static func input(bitmap: PageBitmap, small: [UInt8]) throws -> MLMultiArray {
         let side = DocResEnhancer.side
-        let promptSide = 1024
         let large = resized(bitmap, side: promptSide)
         let result = try MLMultiArray(shape: [1, 6, NSNumber(value: side), NSNumber(value: side)], dataType: .float32)
         let output = result.dataPointer.assumingMemoryBound(to: Float.self)

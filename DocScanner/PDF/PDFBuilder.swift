@@ -1,16 +1,17 @@
 import CoreGraphics
+import CoreImage
 import PDFKit
 import UIKit
 
 enum PDFBuilderError: LocalizedError {
     case noPages
-    case jpegEncodingFailed
+    case rasterizationFailed
     case contextCreationFailed
 
     var errorDescription: String? {
         switch self {
         case .noPages: return "There are no pages to export."
-        case .jpegEncodingFailed: return "A page image could not be encoded as JPEG."
+        case .rasterizationFailed: return "A page image could not be converted to a PDF raster."
         case .contextCreationFailed: return "The PDF output could not be created."
         }
     }
@@ -26,7 +27,6 @@ struct PDFBuilder {
         pageCount: Int,
         to url: URL,
         pageSize: PDFPageSize,
-        jpegQuality: CGFloat = 0.8,
         imageForPage: (Int) throws -> UIImage,
         progress: (Int) -> Void
     ) throws {
@@ -45,11 +45,10 @@ struct PDFBuilder {
                     try Task.checkCancellation()
                     let upright = uprightImage(image)
                     try Task.checkCancellation()
-                    guard let jpegData = upright.jpegData(compressionQuality: jpegQuality),
-                          let encoded = UIImage(data: jpegData),
-                          let cgImage = encoded.cgImage else {
-                        throw PDFBuilderError.jpegEncodingFailed
+                    let cgImage = upright.cgImage ?? upright.ciImage.flatMap {
+                        ImageRendering.context.createCGImage($0, from: $0.extent)
                     }
+                    guard let cgImage else { throw PDFBuilderError.rasterizationFailed }
                     try Task.checkCancellation()
                     let imageSize = CGSize(width: CGFloat(cgImage.width) * pointsPerPixel,
                                            height: CGFloat(cgImage.height) * pointsPerPixel)
@@ -75,14 +74,12 @@ struct PDFBuilder {
         }
     }
 
-    func makePDF(from images: [UIImage], pageSize: PDFPageSize,
-                 jpegQuality: CGFloat = 0.8) throws -> Data {
+    func makePDF(from images: [UIImage], pageSize: PDFPageSize) throws -> Data {
         guard !images.isEmpty else { throw PDFBuilderError.noPages }
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("DocScanner-\(UUID().uuidString).pdf")
         defer { try? FileManager.default.removeItem(at: url) }
         try Self.writePDF(pageCount: images.count, to: url, pageSize: pageSize,
-                          jpegQuality: jpegQuality,
                           imageForPage: { images[$0] }, progress: { _ in })
         return try Data(contentsOf: url)
     }
@@ -92,14 +89,17 @@ struct PDFBuilder {
     }
 
     private static func uprightImage(_ image: UIImage) -> UIImage {
-        guard image.imageOrientation != .up, let cgImage = image.cgImage else { return image }
+        guard image.imageOrientation != .up else { return image }
         let swapsDimensions = image.imageOrientation == .left ||
             image.imageOrientation == .leftMirrored ||
             image.imageOrientation == .right ||
             image.imageOrientation == .rightMirrored
+        let rasterSize = image.cgImage.map { CGSize(width: CGFloat($0.width), height: CGFloat($0.height)) }
+            ?? image.ciImage?.extent.size
+        guard let rasterSize else { return image }
         let scale = image.scale
-        let size = CGSize(width: CGFloat(swapsDimensions ? cgImage.height : cgImage.width) / scale,
-                          height: CGFloat(swapsDimensions ? cgImage.width : cgImage.height) / scale)
+        let size = CGSize(width: (swapsDimensions ? rasterSize.height : rasterSize.width) / scale,
+                          height: (swapsDimensions ? rasterSize.width : rasterSize.height) / scale)
         let format = UIGraphicsImageRendererFormat.default()
         format.scale = scale
         return UIGraphicsImageRenderer(size: size, format: format).image { _ in

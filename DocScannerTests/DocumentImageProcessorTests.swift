@@ -1,3 +1,4 @@
+import CoreImage
 import XCTest
 @testable import DocScanner
 
@@ -30,6 +31,77 @@ final class DocumentImageProcessorTests: XCTestCase {
             color.getRed(&r, green: &g, blue: &b, alpha: &a)
             XCTAssertEqual(r, g, accuracy: 0.05)
             XCTAssertEqual(g, b, accuracy: 0.05)
+        }
+    }
+
+    func testShadingCorrectionKeepsLargeDarkFillDarkInSmallImages() throws {
+        let size = CGSize(width: 200, height: 200)
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let image = UIGraphicsImageRenderer(size: size, format: format).image { context in
+            UIColor.white.setFill()
+            context.fill(CGRect(origin: .zero, size: size))
+            UIColor(white: 32.0 / 255.0, alpha: 1).setFill()
+            context.fill(CGRect(x: 50, y: 50, width: 100, height: 100))
+        }
+
+        let corrected = try shadingCorrected(image)
+        let center = colorComponents(try XCTUnwrap(TestImageFactory.pixelColor(of: corrected, x: 100, y: 100)))
+        XCTAssertLessThan((center.red + center.green + center.blue) / 3, 0.2)
+    }
+
+    func testShadingCorrectionPreservesFaintColoredPrinting() throws {
+        let size = CGSize(width: 512, height: 512)
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let image = UIGraphicsImageRenderer(size: size, format: format).image { context in
+            for y in 0..<Int(size.height) {
+                let shadow = CGFloat(y) / size.height
+                UIColor(red: 0.94 - 0.12 * shadow,
+                        green: 0.80 - 0.12 * shadow,
+                        blue: 0.66 - 0.10 * shadow,
+                        alpha: 1).setFill()
+                context.fill(CGRect(x: 0, y: CGFloat(y), width: size.width, height: 1))
+            }
+            UIColor(red: 0.74, green: 0.60, blue: 0.50, alpha: 1).setFill()
+            context.fill(CGRect(x: 160, y: 252, width: 192, height: 8))
+        }
+
+        let corrected = try shadingCorrected(image)
+        let sourceInk = colorComponents(try XCTUnwrap(TestImageFactory.pixelColor(of: image, x: 256, y: 256)))
+        let correctedInk = colorComponents(try XCTUnwrap(TestImageFactory.pixelColor(of: corrected, x: 256, y: 256)))
+
+        XCTAssertEqual(correctedInk.red / correctedInk.green, sourceInk.red / sourceInk.green, accuracy: 0.05)
+        XCTAssertEqual(correctedInk.green / correctedInk.blue, sourceInk.green / sourceInk.blue, accuracy: 0.05)
+        let paper = colorComponents(try XCTUnwrap(TestImageFactory.pixelColor(of: corrected, x: 64, y: 256)))
+        XCTAssertGreaterThan(paper.blue - correctedInk.blue, 0.04)
+    }
+
+    func testShadingCorrectionKeepsSmoothShadowGradientMonotonic() throws {
+        let width = 512, height = 96
+        let size = CGSize(width: CGFloat(width), height: CGFloat(height))
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let image = UIGraphicsImageRenderer(size: size, format: format).image { context in
+            for x in 0..<width {
+                let value = 0.02 + 0.55 * CGFloat(x) / CGFloat(width - 1)
+                UIColor(white: value, alpha: 1).setFill()
+                context.fill(CGRect(x: CGFloat(x), y: 0, width: 1, height: CGFloat(height)))
+            }
+        }
+
+        let corrected = try shadingCorrected(image)
+        let bitmap = try PageBitmap(XCTUnwrap(corrected.cgImage))
+        let row = height / 2
+        var previous = Int(bitmap.data[(row * width) * 4])
+        for x in 1..<width {
+            let current = Int(bitmap.data[(row * width + x) * 4])
+            XCTAssertGreaterThanOrEqual(current, previous - 1, "x=\(x)")
+            let source = 0.02 + 0.55 * CGFloat(x) / CGFloat(width - 1)
+            if (0.06...0.42).contains(source) {
+                XCTAssertLessThanOrEqual(current - previous, 12, "x=\(x)")
+            }
+            previous = current
         }
     }
 
@@ -230,5 +302,25 @@ final class DocumentImageProcessorTests: XCTestCase {
         let three = try processor.rotate(image, quarterTurns: 3)
         XCTAssertEqual(TestImageFactory.pixelSize(of: minusOne),
                        TestImageFactory.pixelSize(of: three))
+    }
+
+    private func shadingCorrected(_ image: UIImage) throws -> UIImage {
+        let source = try XCTUnwrap(image.cgImage)
+        let sRGB = CGColorSpace(name: CGColorSpace.sRGB)!
+        let ciImage = CIImage(cgImage: source, options: [.colorSpace: sRGB])
+        let corrected = try ShadingCorrector.flattened(ciImage)
+        return UIImage(cgImage: try XCTUnwrap(
+            ImageRendering.context.createCGImage(corrected, from: corrected.extent,
+                                                 format: .RGBA8, colorSpace: sRGB)
+        ))
+    }
+
+    private func colorComponents(_ color: UIColor) -> (red: CGFloat, green: CGFloat, blue: CGFloat) {
+        var red: CGFloat = 0
+        var green: CGFloat = 0
+        var blue: CGFloat = 0
+        var alpha: CGFloat = 0
+        color.getRed(&red, green: &green, blue: &blue, alpha: &alpha)
+        return (red, green, blue)
     }
 }
