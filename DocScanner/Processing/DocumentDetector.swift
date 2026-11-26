@@ -190,19 +190,23 @@ struct DocumentDetector {
                 rectangle.topRight, rectangle.bottomRight, rectangle.bottomLeft])
             let flattener = PageFlattener()
             let locallyRefined = try flattener.refineBoundary(detectionImage, boundary: detectedBoundary)
+            Self.logBoundary(locallyRefined, imageSize: imageSize, source: "local photo refinement")
             let localEdgesSupported = [locallyRefined.top, locallyRefined.right,
                                        locallyRefined.bottom, locallyRefined.left]
                 .allSatisfy { $0.count > 2 }
+            let hasMeasuredCurve = locallyRefined.hasMeasuredCurvedEdges(in: imageSize)
             let boundary: DocumentBoundary
-            if localEdgesSupported || locallyRefined.hasMeasuredCurvedEdges(in: imageSize) {
+            if localEdgesSupported {
                 boundary = locallyRefined
-                AppDiagnostics.selection("Photo edge recovery skipped: local boundary samples retained")
-            } else {
-                guard let recovered = try flattener.recoverPhotoBoundary(
-                    detectionImage, boundary: detectedBoundary) else {
-                    throw DocumentDetectionError.noDocumentFound
-                }
+                AppDiagnostics.selection("Photo edge recovery skipped: all four local edges measured")
+            } else if let recovered = try flattener.recoverPhotoBoundary(
+                detectionImage, boundary: detectedBoundary, preservingMeasuredEdges: locallyRefined) {
                 boundary = recovered
+            } else if hasMeasuredCurve {
+                boundary = locallyRefined
+                AppDiagnostics.selection("Photo edge recovery rejected: preserving partial measured curve")
+            } else {
+                throw DocumentDetectionError.noDocumentFound
             }
             corrected = try correct(image, boundary: boundary, camera: camera, refineBoundary: false)
         }

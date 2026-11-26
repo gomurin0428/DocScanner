@@ -319,6 +319,103 @@ final class PageFlattenerTests: XCTestCase {
         XCTAssertTrue(recovered.hasStraightEdges(in: size))
     }
 
+    func testPhotoRecoveryFindsDarkPaperOnLightBackground() throws {
+        let size = CGSize(width: 1200, height: 1600)
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let actual = [CGPoint(x: 250, y: 40), CGPoint(x: 970, y: 65),
+                      CGPoint(x: 920, y: 1350), CGPoint(x: 290, y: 1490)]
+        let image = UIGraphicsImageRenderer(size: size, format: format).image { context in
+            UIColor.white.setFill()
+            context.fill(CGRect(origin: .zero, size: size))
+            let page = CGMutablePath()
+            page.move(to: actual[0])
+            for point in actual.dropFirst() { page.addLine(to: point) }
+            page.closeSubpath()
+            context.cgContext.addPath(page)
+            context.cgContext.setFillColor(UIColor(white: 0.2, alpha: 1).cgColor)
+            context.cgContext.fillPath()
+        }
+        func normalized(_ point: CGPoint) -> CGPoint {
+            CGPoint(x: point.x / size.width, y: 1 - point.y / size.height)
+        }
+        let candidate = DocumentBoundary(corners: [
+            normalized(CGPoint(x: 238, y: 32)), normalized(CGPoint(x: 984, y: 59)),
+            normalized(CGPoint(x: 940, y: 1354)), normalized(CGPoint(x: 112, y: 1509))
+        ])
+
+        let recovered = try XCTUnwrap(flattener.recoverPhotoBoundary(XCTUnwrap(image.cgImage), boundary: candidate))
+        let points = recovered.corners.map { PagePoint(x: Double($0.x) * 1200, y: (1 - Double($0.y)) * 1600) }
+
+        for (point, expected) in zip(points, actual) {
+            XCTAssertLessThan((point - PagePoint(x: Double(expected.x), y: Double(expected.y))).length, 25)
+        }
+        XCTAssertTrue(recovered.hasStraightEdges(in: size))
+    }
+
+    func testPhotoRecoveryPreservesPartialMeasuredCurve() throws {
+        let size = CGSize(width: 1200, height: 1600)
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let topLeft = CGPoint(x: 250, y: 40), topRight = CGPoint(x: 970, y: 65)
+        let bottomRight = CGPoint(x: 920, y: 1350), bottomLeft = CGPoint(x: 290, y: 1490)
+        let control1 = CGPoint(x: 975, y: 400), control2 = CGPoint(x: 925, y: 1000)
+        let image = UIGraphicsImageRenderer(size: size, format: format).image { context in
+            UIColor(red: 0.38, green: 0.34, blue: 0.29, alpha: 1).setFill()
+            context.fill(CGRect(origin: .zero, size: size))
+            let page = context.cgContext
+            page.beginPath()
+            page.move(to: topLeft)
+            page.addLine(to: topRight)
+            page.addCurve(to: bottomRight, control1: control1, control2: control2)
+            page.addLine(to: bottomLeft)
+            page.closePath()
+            page.setFillColor(UIColor.white.cgColor)
+            page.fillPath()
+        }
+        func normalized(_ point: CGPoint) -> CGPoint {
+            CGPoint(x: point.x / size.width, y: 1 - point.y / size.height)
+        }
+        func curve(_ t: CGFloat) -> CGPoint {
+            let u = 1 - t
+            return CGPoint(
+                x: u * u * u * topRight.x + 3 * u * u * t * control1.x
+                    + 3 * u * t * t * control2.x + t * t * t * bottomRight.x,
+                y: u * u * u * topRight.y + 3 * u * u * t * control1.y
+                    + 3 * u * t * t * control2.y + t * t * t * bottomRight.y
+            )
+        }
+        let detected = DocumentBoundary(corners: [
+            normalized(CGPoint(x: 238, y: 32)), normalized(CGPoint(x: 984, y: 59)),
+            normalized(CGPoint(x: 940, y: 1354)), normalized(CGPoint(x: 112, y: 1509))
+        ])
+        let measured = DocumentBoundary(
+            top: [normalized(topLeft), normalized(topRight)],
+            right: (0...4).map { normalized(curve(CGFloat($0) / 4)) },
+            bottom: [normalized(bottomLeft), normalized(bottomRight)],
+            left: [normalized(topLeft), normalized(bottomLeft)]
+        )
+        XCTAssertTrue(measured.hasMeasuredCurvedEdges(in: size))
+
+        let recovered = try XCTUnwrap(flattener.recoverPhotoBoundary(
+            XCTUnwrap(image.cgImage), boundary: detected, preservingMeasuredEdges: measured))
+
+        let measuredInterior = Array(measured.right.dropFirst().dropLast())
+        let recoveredInterior = Array(recovered.right.dropFirst().dropLast())
+        XCTAssertTrue(recoveredInterior.allSatisfy { measuredInterior.contains($0) })
+        let start = try XCTUnwrap(recovered.right.first)
+        let end = try XCTUnwrap(recovered.right.last)
+        let dx = Double(end.x - start.x), dy = Double(end.y - start.y)
+        let lengthSquared = dx * dx + dy * dy
+        let positions = recovered.right.map { point in
+            let x = Double(point.x - start.x), y = Double(point.y - start.y)
+            return (x * dx + y * dy) / lengthSquared
+        }
+        XCTAssertTrue(positions.dropFirst().dropLast().allSatisfy { $0 > 0 && $0 < 1 })
+        XCTAssertTrue(zip(positions, positions.dropFirst()).allSatisfy { $0.1 > $0.0 })
+        XCTAssertGreaterThan(try XCTUnwrap(recovered.edgeMaximumDeviationPixels(in: size))[1], 3)
+    }
+
     func testPhotoRecoveryRejectsEvidencePoorBoundary() throws {
         let size = CGSize(width: 600, height: 800)
         let image = try XCTUnwrap(TestImageFactory.solid(.white, size: size).cgImage)

@@ -150,10 +150,12 @@ struct PageBitmap {
 struct PageFlattener {
 
     private struct PhotoEdgeCandidate {
+        let sampleIndex: Int
         let t: Double
         let offset: Double
         let point: PagePoint
         let contrast: Double
+        let polarity: Int
     }
 
     private struct PhotoEdgeFit {
@@ -167,6 +169,9 @@ struct PageFlattener {
     private struct PhotoEdgeHypothesis {
         let hits: [PhotoEdgeCandidate]
         let score: Double
+        let polarity: Int
+        let intercept: Double
+        let slope: Double
         let startOffset: Double
         let middleOffset: Double
         let endOffset: Double
@@ -185,10 +190,13 @@ struct PageFlattener {
     /// - 処理: 状態を持たないため空
     init() {}
 
-    func recoverPhotoBoundary(_ image: CGImage, boundary: DocumentBoundary) throws -> DocumentBoundary? {
-        guard boundary.isValid else { throw DocumentDetectionError.invalidImage }
+    func recoverPhotoBoundary(_ image: CGImage, boundary: DocumentBoundary,
+                              preservingMeasuredEdges: DocumentBoundary? = nil) throws -> DocumentBoundary? {
+        guard boundary.isValid, preservingMeasuredEdges?.isValid != false else {
+            throw DocumentDetectionError.invalidImage
+        }
         let imageSize = CGSize(width: CGFloat(image.width), height: CGFloat(image.height))
-        if boundary.hasMeasuredCurvedEdges(in: imageSize) {
+        if preservingMeasuredEdges == nil, boundary.hasMeasuredCurvedEdges(in: imageSize) {
             AppDiagnostics.selection("Photo edge recovery skipped: measured curved boundary retained")
             return boundary
         }
@@ -200,15 +208,33 @@ struct PageFlattener {
         let movementLimit = min(width, height) * 0.21
         let corners = boundary.corners.map { PagePoint(x: $0.x * width, y: (1 - $0.y) * height) }
         let center = corners.reduce(PagePoint(x: 0, y: 0), +) * 0.25
-        let fits = [
-            fitPhotoEdge(corners[0], corners[1], center: center, bitmap: bitmap, movementLimit: movementLimit),
-            fitPhotoEdge(corners[1], corners[2], center: center, bitmap: bitmap, movementLimit: movementLimit),
-            fitPhotoEdge(corners[3], corners[2], center: center, bitmap: bitmap, movementLimit: movementLimit),
-            fitPhotoEdge(corners[0], corners[3], center: center, bitmap: bitmap, movementLimit: movementLimit)
-        ]
+        let measuredEdges: [[CGPoint]?] = [preservingMeasuredEdges?.top, preservingMeasuredEdges?.right,
+                                            preservingMeasuredEdges?.bottom, preservingMeasuredEdges?.left]
+        let measured = measuredEdges.map { ($0?.count ?? 0) > 2 }
+        let edgeNames = ["top", "right", "bottom", "left"]
+        let starts = [corners[0], corners[1], corners[3], corners[0]]
+        let ends = [corners[1], corners[2], corners[2], corners[3]]
+        if measured.allSatisfy({ $0 }) {
+            AppDiagnostics.selection("Photo edge recovery skipped: all four local edges measured")
+            return preservingMeasuredEdges ?? boundary
+        }
+        let fits: [PhotoEdgeFit?] = edgeNames.indices.map { index in
+            if let edge = measuredEdges[index], measured[index] {
+                let points = edge.map { PagePoint(x: $0.x * width, y: (1 - $0.y) * height) }
+                guard let start = points.first, let end = points.last, (end - start).length > 1 else {
+                    return nil
+                }
+                return PhotoEdgeFit(start: start, end: end, samples: [], support: edge.count,
+                                    medianContrast: 0)
+            }
+            return fitPhotoEdge(starts[index], ends[index], center: center, edgeName: edgeNames[index],
+                                bitmap: bitmap, movementLimit: movementLimit)
+        }
         guard fits.allSatisfy({ $0 != nil }), let top = fits[0], let right = fits[1],
               let bottom = fits[2], let left = fits[3] else {
-            AppDiagnostics.selection("Photo edge recovery rejected: insufficient distributed contrast support")
+            let missing = edgeNames.indices.compactMap { fits[$0] == nil ? edgeNames[$0] : nil }
+                .joined(separator: ",")
+            AppDiagnostics.selection("Photo edge recovery rejected: unusable edge evidence on [\(missing)]")
             return nil
         }
         func intersection(_ first: PhotoEdgeFit, _ second: PhotoEdgeFit) -> PagePoint? {
@@ -242,27 +268,68 @@ struct PageFlattener {
             AppDiagnostics.selection("Photo edge recovery rejected: corner movement, area, or convexity validation failed")
             return nil
         }
-        func edge(_ fit: PhotoEdgeFit, from start: PagePoint, to end: PagePoint) -> [CGPoint] {
-            ([start] + fit.samples + [end]).map { CGPoint(x: $0.x / width, y: 1 - $0.y / height) }
+        func normalized(_ point: PagePoint) -> CGPoint {
+            CGPoint(x: point.x / width, y: 1 - point.y / height)
         }
-        let recovered = DocumentBoundary(
-            top: edge(top, from: topLeft, to: topRight),
-            right: edge(right, from: topRight, to: bottomRight),
-            bottom: edge(bottom, from: bottomLeft, to: bottomRight),
-            left: edge(left, from: topLeft, to: bottomLeft)
-        )
+        func edge(_ fit: PhotoEdgeFit, from start: PagePoint, to end: PagePoint,
+                  measured: [CGPoint]?) -> [CGPoint]? {
+            guard let measured, measured.count > 2 else {
+                return ([start] + fit.samples + [end]).map(normalized)
+            }
+            let measuredStart = PagePoint(x: measured[0].x * width, y: (1 - measured[0].y) * height)
+            let measuredEnd = PagePoint(x: measured[measured.count - 1].x * width,
+                                        y: (1 - measured[measured.count - 1].y) * height)
+            let direction = end - start
+            let lengthSquared = direction.x * direction.x + direction.y * direction.y
+            let measuredDirection = measuredEnd - measuredStart
+            guard lengthSquared.isFinite, lengthSquared > 1,
+                  direction.x * measuredDirection.x + direction.y * measuredDirection.y > 0 else {
+                return nil
+            }
+            let interior = Array(measured.dropFirst().dropLast())
+            let positions = interior.map { point in
+                let pixel = PagePoint(x: point.x * width, y: (1 - point.y) * height)
+                let relative = pixel - start
+                return (relative.x * direction.x + relative.y * direction.y) / lengthSquared
+            }
+            var first = 0
+            while first < positions.count, positions[first] <= 0 { first += 1 }
+            var last = positions.count - 1
+            while last >= first, positions[last] >= 1 { last -= 1 }
+            guard first <= last else { return nil }
+            let retainedPositions = Array(positions[first...last])
+            guard retainedPositions.allSatisfy({ $0 > 0 && $0 < 1 }),
+                  zip(retainedPositions, retainedPositions.dropFirst()).allSatisfy({ $0.1 > $0.0 }) else {
+                return nil
+            }
+            let retained = Array(interior[first...last])
+            return [normalized(start)] + retained + [normalized(end)]
+        }
+        guard let recoveredTop = edge(top, from: topLeft, to: topRight, measured: measuredEdges[0]),
+              let recoveredRight = edge(right, from: topRight, to: bottomRight, measured: measuredEdges[1]),
+              let recoveredBottom = edge(bottom, from: bottomLeft, to: bottomRight, measured: measuredEdges[2]),
+              let recoveredLeft = edge(left, from: topLeft, to: bottomLeft, measured: measuredEdges[3]) else {
+            AppDiagnostics.selection("Photo edge recovery rejected: measured samples do not fit recovered spans")
+            return nil
+        }
+        let recovered = DocumentBoundary(top: recoveredTop, right: recoveredRight,
+                                         bottom: recoveredBottom, left: recoveredLeft)
         guard recovered.isValid else {
             AppDiagnostics.selection("Photo edge recovery rejected: measured outline is invalid")
             return nil
         }
-        let support = fits.compactMap { $0 }.map { String($0.support) }.joined(separator: ",")
-        let contrast = fits.compactMap { $0 }.map { String(format: "%.0f", $0.medianContrast) }
+        let edgeSources = measured.map { $0 ? "measured" : "fit" }.joined(separator: ",")
+        let support = fits.indices.map { measured[$0] ? "m\(measuredEdges[$0]!.count)" : String(fits[$0]!.support) }
             .joined(separator: ",")
-        AppDiagnostics.selection("Photo edge recovery accepted: support=[\(support)], contrast=[\(contrast)], maxCornerMove=\(String(format: "%.1f", movements.max() ?? 0))px")
+        let contrast = fits.indices.map {
+            measured[$0] ? "preserved" : String(format: "%.0f", fits[$0]!.medianContrast)
+        }.joined(separator: ",")
+        AppDiagnostics.selection("Photo edge recovery accepted: edgeSources=[\(edgeSources)], support=[\(support)], " +
+            "contrast=[\(contrast)], maxCornerMove=\(String(format: "%.1f", movements.max() ?? 0))px")
         return recovered
     }
 
-    private func fitPhotoEdge(_ start: PagePoint, _ end: PagePoint, center: PagePoint,
+    private func fitPhotoEdge(_ start: PagePoint, _ end: PagePoint, center: PagePoint, edgeName: String,
                               bitmap: PageBitmap, movementLimit: Double) -> PhotoEdgeFit? {
         let direction = end - start
         guard direction.length > 1 else { return nil }
@@ -280,10 +347,19 @@ struct PageFlattener {
         }
         var rows = [[PhotoEdgeCandidate]](repeating: [], count: sampleCount)
         let maximumOffset = Int(movementLimit.rounded())
+        func hasDistributedSupport(_ candidates: [PhotoEdgeCandidate]) -> Bool {
+            guard candidates.count >= 15 else { return false }
+            let distribution = (0..<5).map { group in
+                candidates.filter { min(4, Int($0.t * 5)) == group }.count
+            }
+            return distribution.filter { $0 > 0 }.count >= 4
+                && distribution[1..<4].allSatisfy { $0 > 0 }
+        }
         for sampleIndex in 0..<sampleCount {
             let t = (Double(sampleIndex) + 0.5) / Double(sampleCount)
             let point = start + direction * t
             var profile = [Double](repeating: -.infinity, count: maximumOffset * 2 + 1)
+            var polarities = [Int](repeating: 0, count: maximumOffset * 2 + 1)
             for offset in -maximumOffset...maximumOffset {
                 var outside = [Double](), inside = [Double]()
                 for distance in stride(from: 3.0, through: 9.0, by: 2.0) {
@@ -297,7 +373,9 @@ struct PageFlattener {
                     inside.append(bitmap.luminance(atX: inner.x, y: inner.y))
                 }
                 if outside.count == 4, inside.count == 4 {
-                    profile[offset + maximumOffset] = median(inside) - median(outside)
+                    let signedContrast = median(inside) - median(outside)
+                    profile[offset + maximumOffset] = abs(signedContrast)
+                    polarities[offset + maximumOffset] = signedContrast >= 0 ? 1 : -1
                 }
             }
             var peaks = [PhotoEdgeCandidate]()
@@ -306,8 +384,8 @@ struct PageFlattener {
                 guard contrast >= minimumContrast, contrast >= profile[index - 1],
                       contrast > profile[index + 1] else { continue }
                 let offset = Double(index - maximumOffset)
-                peaks.append(PhotoEdgeCandidate(t: t, offset: offset,
-                    point: point + normal * offset, contrast: contrast))
+                peaks.append(PhotoEdgeCandidate(sampleIndex: sampleIndex, t: t, offset: offset,
+                    point: point + normal * offset, contrast: contrast, polarity: polarities[index]))
             }
             let strongest = peaks.sorted { $0.contrast > $1.contrast }.prefix(3)
             let nearest = peaks.sorted { abs($0.offset) < abs($1.offset) }.prefix(3)
@@ -321,53 +399,93 @@ struct PageFlattener {
         }
 
         var hypotheses = [PhotoEdgeHypothesis]()
+        var bestObservedSupport = 0
+        var bestObservedDistribution = [Int](repeating: 0, count: 5)
+        func regression(_ candidates: [PhotoEdgeCandidate]) -> (intercept: Double, slope: Double)? {
+            let meanT = candidates.map(\.t).reduce(0, +) / Double(candidates.count)
+            let meanOffset = candidates.map(\.offset).reduce(0, +) / Double(candidates.count)
+            let variance = candidates.map { ($0.t - meanT) * ($0.t - meanT) }.reduce(0, +)
+            guard variance > 0 else { return nil }
+            let slope = candidates.map { ($0.t - meanT) * ($0.offset - meanOffset) }.reduce(0, +) / variance
+            return (meanOffset - slope * meanT, slope)
+        }
+        func makeHypothesis(_ hits: [PhotoEdgeCandidate], polarity: Int,
+                            fit: (intercept: Double, slope: Double)) -> PhotoEdgeHypothesis {
+            let averageContrast = hits.map(\.contrast).reduce(0, +) / Double(hits.count)
+            let medianMovement = median(hits.map { abs($0.offset) })
+            return PhotoEdgeHypothesis(hits: hits,
+                score: Double(hits.count) * 1000 + averageContrast - medianMovement * 0.5,
+                polarity: polarity, intercept: fit.intercept, slope: fit.slope,
+                startOffset: fit.intercept, middleOffset: fit.intercept + fit.slope * 0.5,
+                endOffset: fit.intercept + fit.slope)
+        }
+        func refineHypothesis(_ candidates: [PhotoEdgeCandidate], polarity: Int) -> PhotoEdgeHypothesis? {
+            var inliers = candidates
+            for _ in 0..<3 {
+                guard let fit = regression(inliers) else { return nil }
+                let refined = inliers.filter {
+                    abs($0.offset - (fit.intercept + fit.slope * $0.t)) <= residualLimit
+                }
+                guard hasDistributedSupport(refined) else { return nil }
+                if refined.count == inliers.count {
+                    return makeHypothesis(refined, polarity: polarity, fit: fit)
+                }
+                inliers = refined
+            }
+            guard let fit = regression(inliers),
+                  inliers.allSatisfy({
+                      abs($0.offset - (fit.intercept + fit.slope * $0.t)) <= residualLimit
+                  }) else { return nil }
+            return makeHypothesis(inliers, polarity: polarity, fit: fit)
+        }
+        func equivalentLine(_ first: PhotoEdgeHypothesis, _ second: PhotoEdgeHypothesis) -> Bool {
+            let separation = max(abs(first.startOffset - second.startOffset),
+                                 abs(first.middleOffset - second.middleOffset),
+                                 abs(first.endOffset - second.endOffset))
+            guard separation <= residualLimit else { return false }
+            let shared = first.hits.filter { lhs in
+                second.hits.contains { rhs in
+                    rhs.sampleIndex == lhs.sampleIndex && rhs.offset == lhs.offset
+                }
+            }.count
+            return Double(shared) / Double(min(first.hits.count, second.hits.count)) >= 0.6
+        }
         for firstIndex in 0..<sampleCount {
             guard firstIndex + 4 < sampleCount else { continue }
             for first in rows[firstIndex] {
                 for secondIndex in (firstIndex + 4)..<sampleCount {
-                    for second in rows[secondIndex] {
+                    for second in rows[secondIndex] where second.polarity == first.polarity {
                         let dx = second.point.x - first.point.x, dy = second.point.y - first.point.y
                         let length = hypot(dx, dy)
                         guard length > 1 else { continue }
                         var hits = [PhotoEdgeCandidate]()
                         for row in rows {
                             if let hit = row.filter({
+                                $0.polarity == first.polarity &&
                                 abs(dx * ($0.point.y - first.point.y) - dy * ($0.point.x - first.point.x)) / length
                                     <= residualLimit
                             }).max(by: { $0.contrast < $1.contrast }) {
                                 hits.append(hit)
                             }
                         }
-                        guard hits.count >= 15 else { continue }
                         let distribution = (0..<5).map { group in
                             hits.filter { min(4, Int($0.t * 5)) == group }.count
                         }
-                        guard distribution.allSatisfy({ $0 >= 2 }) else { continue }
-                        let averageContrast = hits.map(\.contrast).reduce(0, +) / Double(hits.count)
-                        let medianMovement = median(hits.map { abs($0.offset) })
-                        let score = Double(hits.count) * 1000 + averageContrast - medianMovement * 0.5
-                        let lineNormal = PagePoint(x: -dy / length, y: dx / length)
-                        let denominator = lineNormal.x * normal.x + lineNormal.y * normal.y
-                        guard abs(denominator) > 0.9 else { continue }
-                        func offset(at t: Double) -> Double {
-                            let base = start + direction * t
-                            return (lineNormal.x * (first.point.x - base.x)
-                                + lineNormal.y * (first.point.y - base.y)) / denominator
+                        if hits.count > bestObservedSupport {
+                            bestObservedSupport = hits.count
+                            bestObservedDistribution = distribution
                         }
-                        let hypothesis = PhotoEdgeHypothesis(hits: hits, score: score,
-                            startOffset: offset(at: 0), middleOffset: offset(at: 0.5), endOffset: offset(at: 1))
-                        if let same = hypotheses.firstIndex(where: {
-                            let startDistance = abs($0.startOffset - hypothesis.startOffset)
-                            let middleDistance = abs($0.middleOffset - hypothesis.middleOffset)
-                            let endDistance = abs($0.endOffset - hypothesis.endOffset)
-                            return max(max(startDistance, middleDistance), endDistance) <= residualLimit * 2
-                        }) {
-                            if score > hypotheses[same].score { hypotheses[same] = hypothesis }
+                        guard hits.count >= 15 else { continue }
+                        guard distribution.filter({ $0 > 0 }).count >= 4,
+                              distribution[1..<4].allSatisfy({ $0 > 0 }) else { continue }
+                        guard let hypothesis = refineHypothesis(hits, polarity: first.polarity) else { continue }
+                        if let same = hypotheses.firstIndex(where: { equivalentLine($0, hypothesis) }) {
+                            if hypothesis.score > hypotheses[same].score { hypotheses[same] = hypothesis }
                         } else if hypotheses.count < 8 {
                             hypotheses.append(hypothesis)
                         } else if let weakest = hypotheses.indices.min(by: {
                             hypotheses[$0].score < hypotheses[$1].score
-                        }), score > hypotheses[weakest].score {
+                        }), hypothesis.score > hypotheses[weakest].score {
                             hypotheses[weakest] = hypothesis
                         }
                     }
@@ -375,30 +493,33 @@ struct PageFlattener {
             }
         }
         let ranked = hypotheses.sorted { $0.score > $1.score }
-        guard let best = ranked.first else { return nil }
+        guard let best = ranked.first else {
+            let rowCandidates = rows.map(\.count).map(String.init).joined(separator: ",")
+            AppDiagnostics.selection("Photo edge fit rejected on \(edgeName): rows=[\(rowCandidates)], " +
+                "bestSupport=\(bestObservedSupport), bins=\(bestObservedDistribution)")
+            return nil
+        }
         if ranked.count > 1 {
             let alternative = ranked[1]
             let scoreGap = best.score - alternative.score
             if best.hits.count - alternative.hits.count <= 1,
                scoreGap <= max(500, best.score * 0.08) {
-                AppDiagnostics.selection("Photo edge fit rejected: competing distributed boundaries are similarly supported")
+                let separation = max(abs(best.startOffset - alternative.startOffset),
+                                     abs(best.middleOffset - alternative.middleOffset),
+                                     abs(best.endOffset - alternative.endOffset))
+                AppDiagnostics.selection("Photo edge fit rejected on \(edgeName): competing boundaries " +
+                    "support=\(best.hits.count)/\(alternative.hits.count), " +
+                    "polarity=\(best.polarity)/\(alternative.polarity), " +
+                    "separation=\(separation)px")
                 return nil
             }
         }
         let hits = best.hits
-        let meanT = hits.map(\.t).reduce(0, +) / Double(hits.count)
-        let meanOffset = hits.map(\.offset).reduce(0, +) / Double(hits.count)
-        let variance = hits.map { ($0.t - meanT) * ($0.t - meanT) }.reduce(0, +)
-        guard variance > 0 else { return nil }
-        let slope = hits.map { ($0.t - meanT) * ($0.offset - meanOffset) }.reduce(0, +) / variance
-        let intercept = meanOffset - slope * meanT
-        guard hits.allSatisfy({ abs($0.offset - (intercept + slope * $0.t)) <= residualLimit }) else {
-            return nil
-        }
-        let fittedStart = start + normal * intercept
-        let fittedEnd = end + normal * (intercept + slope)
+        let fit = (intercept: best.intercept, slope: best.slope)
+        let fittedStart = start + normal * fit.intercept
+        let fittedEnd = end + normal * (fit.intercept + fit.slope)
         let measured = hits.sorted { $0.t < $1.t }.map { candidate in
-            start + direction * candidate.t + normal * (intercept + slope * candidate.t)
+            start + direction * candidate.t + normal * (fit.intercept + fit.slope * candidate.t)
         }
         return PhotoEdgeFit(start: fittedStart, end: fittedEnd, samples: measured, support: hits.count,
                             medianContrast: median(hits.map(\.contrast)))
