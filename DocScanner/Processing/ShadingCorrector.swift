@@ -10,7 +10,12 @@ enum ShadingCorrector {
         float chromaticDifference = max(abs(delta.r - delta.g),
                                         max(abs(delta.g - delta.b), abs(delta.b - delta.r)));
         float brightTransition = clamp((lumaDelta - 0.02) / 0.08, 0.0, 1.0);
-        float darkInk = 1.0 - brightTransition * brightTransition * (3.0 - 2.0 * brightTransition);
+        float sourceMaximum = max(source.r, max(source.g, source.b));
+        float sourceMinimum = min(source.r, min(source.g, source.b));
+        float sourceSaturation = (sourceMaximum - sourceMinimum) / max(sourceMaximum, 0.0001);
+        float neutralTransition = clamp((sourceSaturation - 0.08) / 0.32, 0.0, 1.0);
+        float neutralInk = 1.0 - neutralTransition * neutralTransition * (3.0 - 2.0 * neutralTransition);
+        float darkInk = 1.0 - brightTransition * neutralInk;
         float difference = chromaticDifference * darkInk;
         return vec4(difference, difference, difference, 1.0);
     }

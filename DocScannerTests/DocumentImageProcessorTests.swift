@@ -327,6 +327,80 @@ final class DocumentImageProcessorTests: XCTestCase {
                           "navy field should remain dark")
     }
 
+    func testBlackAndWhiteRetainsBrightYellowTextOnBlue() throws {
+        let size = CGSize(width: 240, height: 300)
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let blue = UIColor(red: 0.04, green: 0.09, blue: 0.45, alpha: 1)
+        let yellow = UIColor(red: 1, green: 0.84, blue: 0.02, alpha: 1)
+        let font = UIFont.systemFont(ofSize: 36)
+        let image = UIGraphicsImageRenderer(size: size, format: format).image { context in
+            blue.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: size.width, height: 150))
+            UIColor(white: 0.68, alpha: 1).setFill()
+            context.fill(CGRect(x: 0, y: 150, width: size.width, height: 150))
+            ("YELLOW" as NSString).draw(at: CGPoint(x: 22, y: 55), withAttributes: [
+                .font: font, .foregroundColor: yellow
+            ])
+            ("YELLOW" as NSString).draw(at: CGPoint(x: 22, y: 185), withAttributes: [
+                .font: font, .foregroundColor: yellow
+            ])
+        }
+        let glyphMask = UIGraphicsImageRenderer(size: size, format: format).image { context in
+            UIColor.black.setFill()
+            context.fill(CGRect(origin: .zero, size: size))
+            ("YELLOW" as NSString).draw(at: CGPoint(x: 22, y: 55), withAttributes: [
+                .font: font, .foregroundColor: UIColor.white
+            ])
+            ("YELLOW" as NSString).draw(at: CGPoint(x: 22, y: 185), withAttributes: [
+                .font: font, .foregroundColor: UIColor.white
+            ])
+        }
+
+        let result = try processor.apply(.blackAndWhite, to: image)
+        let pixels = try PageBitmap(XCTUnwrap(result.cgImage))
+        let maskPixels = try PageBitmap(XCTUnwrap(glyphMask.cgImage))
+        var blueGlyph = [Double](), grayGlyph = [Double]()
+        var blueBackground = [Double](), grayBackground = [Double]()
+        for y in 50..<110 {
+            for x in 18..<225 where maskPixels.luminance(atX: Double(x), y: Double(y)) > 220 {
+                blueGlyph.append(pixels.luminance(atX: Double(x), y: Double(y)))
+            }
+        }
+        for y in 180..<240 {
+            for x in 18..<225 where maskPixels.luminance(atX: Double(x), y: Double(y)) > 220 {
+                grayGlyph.append(pixels.luminance(atX: Double(x), y: Double(y)))
+            }
+        }
+        for y in 120..<145 {
+            for x in 20..<220 {
+                blueBackground.append(pixels.luminance(atX: Double(x), y: Double(y)))
+            }
+        }
+        for y in 260..<285 {
+            for x in 20..<220 {
+                grayBackground.append(pixels.luminance(atX: Double(x), y: Double(y)))
+            }
+        }
+        guard !blueGlyph.isEmpty, !grayGlyph.isEmpty else {
+            XCTFail("yellow text mask contained no glyph pixels")
+            return
+        }
+        let blueGlyphMean = blueGlyph.reduce(0, +) / Double(blueGlyph.count)
+        let grayGlyphMean = grayGlyph.reduce(0, +) / Double(grayGlyph.count)
+        let blueBackgroundMean = blueBackground.reduce(0, +) / Double(blueBackground.count)
+        let grayBackgroundMean = grayBackground.reduce(0, +) / Double(grayBackground.count)
+
+        XCTAssertGreaterThan(blueGlyph.count, 100)
+        XCTAssertGreaterThan(grayGlyph.count, 100)
+        XCTAssertGreaterThan(blueGlyphMean - blueBackgroundMean, 25,
+                             "bright chromatic text merged into its dark blue field")
+        XCTAssertLessThan(blueBackgroundMean, 40, "blue field should remain dark")
+        XCTAssertGreaterThan(grayBackgroundMean - grayGlyphMean, 25,
+                             "bright yellow text merged into the light paper field")
+        XCTAssertGreaterThan(grayBackgroundMean, 200, "light paper should remain bright")
+    }
+
     /// 陰影のある合成書類画像を生成する。
     /// - 入力: なし
     /// - 出力: 1200x1600 で上端白(1.0)→下端暗(0.45)の縦グラデーション紙に、
