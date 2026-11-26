@@ -139,6 +139,7 @@ final class PageContentStraightenerTests: XCTestCase {
         XCTAssertEqual(PageTextOrientationCorrector.preferredOrientation(scores: [1, 30, 2, 1]), .right)
         XCTAssertEqual(PageTextOrientationCorrector.preferredOrientation(scores: [1, 2, 3, 30]), .left)
         XCTAssertNil(PageTextOrientationCorrector.preferredOrientation(scores: [30, 29, 28, 27]))
+        XCTAssertNil(PageTextOrientationCorrector.preferredOrientation(scores: [30, 32, 31, 29]))
         XCTAssertNil(PageTextOrientationCorrector.preferredOrientation(scores: [0, 0, 0, 0]))
     }
 
@@ -152,6 +153,13 @@ final class PageContentStraightenerTests: XCTestCase {
         XCTAssertEqual(PageContentStraightener.classifyTextCurvature([straight[0], straight[3], straight[7]]), .straight)
         XCTAssertEqual(PageContentStraightener.classifyTextCurvature(curvedLines()), .curved)
         XCTAssertEqual(PageContentStraightener.classifyTextCurvature(Array(straight.prefix(2))), .insufficientText)
+        let irregularSlanted = (0..<3).map { row in
+            (0..<24).map { column in
+                let x = 0.1 + 0.8 * pow(Double(column) / 23, 2.1)
+                return PagePoint(x: x, y: 0.15 + Double(row) * 0.20 + 0.14 * x)
+            }
+        }
+        XCTAssertEqual(PageContentStraightener.classifyTextCurvature(irregularSlanted), .straight)
     }
 
     func testSidewaysSyntheticTextIsReturnedUpright() throws {

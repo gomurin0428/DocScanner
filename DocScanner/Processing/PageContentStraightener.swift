@@ -97,15 +97,20 @@ struct PageContentStraightener {
     private static func baselineCurvature(_ lines: [[PagePoint]]) -> Double? {
         let residuals = lines.compactMap { line -> [Double]? in
             guard let minX = line.map(\.x).min(), let maxX = line.map(\.x).max(), maxX > minX else { return nil }
-            var bins = [[Double]](repeating: [], count: 6)
+            var bins = [[PagePoint]](repeating: [], count: 6)
             for point in line {
                 let bin = min(5, Int((point.x - minX) / (maxX - minX) * 6))
-                bins[bin].append(point.y)
+                bins[bin].append(point)
             }
-            let samples = bins.enumerated().compactMap { index, values -> PagePoint? in
+            let samples = bins.compactMap { values -> PagePoint? in
                 guard !values.isEmpty else { return nil }
-                return PagePoint(x: minX + (Double(index) + 0.5) / 6 * (maxX - minX),
-                                 y: median(values))
+                let medianX = median(values.map(\.x))
+                let medianY = median(values.map(\.y))
+                return values.min { lhs, rhs in
+                    let leftDistance = pow(lhs.x - medianX, 2) + pow(lhs.y - medianY, 2)
+                    let rightDistance = pow(rhs.x - medianX, 2) + pow(rhs.y - medianY, 2)
+                    return leftDistance < rightDistance
+                }
             }
             guard samples.count >= 4 else { return nil }
             let meanX = samples.map(\.x).reduce(0, +) / Double(samples.count)
@@ -238,8 +243,8 @@ struct PageTextOrientationCorrector {
         let bestScore = scores[best]
         let nextBest = scores.indices.filter { $0 != best }.map { scores[$0] }.max() ?? 0
         guard bestScore >= 12,
-              bestScore >= scores[0] * 1.35 + 4,
-              bestScore - nextBest >= max(2, bestScore * 0.1) else { return nil }
+              bestScore >= scores[0] * 1.08 + 4,
+              bestScore - nextBest >= max(4, bestScore * 0.08) else { return nil }
         return orientations[best]
     }
 
