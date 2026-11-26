@@ -6,8 +6,12 @@ enum ShadingCorrector {
     private static let chromaticDifferenceKernel = CIColorKernel(source: """
     kernel vec4 chromaticDifference(__sample source, __sample background) {
         vec3 delta = source.rgb - background.rgb;
-        float difference = max(abs(delta.r - delta.g),
-                               max(abs(delta.g - delta.b), abs(delta.b - delta.r)));
+        float lumaDelta = dot(delta, vec3(0.299, 0.587, 0.114));
+        float chromaticDifference = max(abs(delta.r - delta.g),
+                                        max(abs(delta.g - delta.b), abs(delta.b - delta.r)));
+        float brightTransition = clamp((lumaDelta - 0.02) / 0.08, 0.0, 1.0);
+        float darkInk = 1.0 - brightTransition * brightTransition * (3.0 - 2.0 * brightTransition);
+        float difference = chromaticDifference * darkInk;
         return vec4(difference, difference, difference, 1.0);
     }
     """)

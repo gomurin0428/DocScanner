@@ -1,4 +1,5 @@
 import CoreImage
+import Foundation
 import XCTest
 @testable import DocScanner
 
@@ -242,6 +243,88 @@ final class DocumentImageProcessorTests: XCTestCase {
                              "white paper was darkened")
         XCTAssertGreaterThan(brightness(of: result, fx: 0.75, fy: 0.5), 0.95,
                              "yellow paper field was darkened")
+    }
+
+    func testBlackAndWhiteKeepsThinInkLegibleOnChromaticPaperTexture() throws {
+        let size = CGSize(width: 240, height: 240)
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let pink = UIColor(red: 0.80, green: 0.74, blue: 0.80, alpha: 1)
+        let image = UIGraphicsImageRenderer(size: size, format: format).image { context in
+            for y in stride(from: 0, to: 240, by: 8) {
+                for x in stride(from: 0, to: 240, by: 8) {
+                    let texture = CGFloat(0.012 * (sin(Double(x) * 0.71) + cos(Double(y) * 0.63)))
+                    UIColor(red: 0.94 + texture, green: 0.94 - texture * 0.5,
+                            blue: 0.94 - texture * 0.5, alpha: 1).setFill()
+                    context.fill(CGRect(x: CGFloat(x), y: CGFloat(y), width: 8, height: 8))
+                }
+            }
+            let canvas = context.cgContext
+            canvas.setLineWidth(2)
+            canvas.setStrokeColor(pink.cgColor)
+            canvas.move(to: CGPoint(x: 20, y: 64))
+            canvas.addLine(to: CGPoint(x: 220, y: 64))
+            canvas.strokePath()
+            ("FINE" as NSString).draw(at: CGPoint(x: 38, y: 100), withAttributes: [
+                .font: UIFont.systemFont(ofSize: 20), .foregroundColor: pink
+            ])
+            canvas.setLineWidth(3)
+            canvas.setStrokeColor(UIColor(white: 0.72, alpha: 1).cgColor)
+            canvas.move(to: CGPoint(x: 20, y: 165))
+            canvas.addLine(to: CGPoint(x: 220, y: 165))
+            canvas.strokePath()
+        }
+
+        let result = try processor.apply(.blackAndWhite, to: image)
+        let pixels = try PageBitmap(XCTUnwrap(result.cgImage))
+        func meanLuminance(x: Range<Int>, y: Range<Int>) -> Double {
+            let values = y.flatMap { row in x.map { pixels.luminance(atX: Double($0), y: Double(row)) } }
+            return values.reduce(0, +) / Double(values.count)
+        }
+        let paperSamples = (20..<50).flatMap { row in
+            (20..<220).map { pixels.luminance(atX: Double($0), y: Double(row)) }
+        }
+        let paperMean = meanLuminance(x: 20..<220, y: 20..<50)
+        let lineMean = meanLuminance(x: 30..<210, y: 63..<66)
+        let labelMean = meanLuminance(x: 25..<120, y: 96..<128)
+        let labelPaperMean = meanLuminance(x: 25..<120, y: 132..<156)
+        let road = (30..<210).map { pixels.luminance(atX: Double($0), y: 165) }
+
+        XCTAssertGreaterThan(paperMean, 230, "low-amplitude paper color texture became dark noise")
+        XCTAssertGreaterThan(paperSamples.min() ?? 0, 220, "paper texture produced dark chromatic blobs")
+        XCTAssertGreaterThan(lineMean, 55, "pink ink collapsed to black blobs")
+        XCTAssertGreaterThan(paperMean - lineMean, 35, "thin pink glyph lost contrast")
+        XCTAssertGreaterThan(labelPaperMean - labelMean, 12, "faint text is not legible against paper")
+        let roadMean = road.reduce(0, +) / Double(road.count)
+        XCTAssertGreaterThan(roadMean, 20, "gray road became a black blob")
+        XCTAssertLessThan(roadMean, 190, "gray road disappeared")
+        XCTAssertLessThan((road.max() ?? 0) - (road.min() ?? 0), 24, "gray road became mottled")
+    }
+
+    func testBlackAndWhitePreservesWhiteKnockoutTextOnNavy() throws {
+        let size = CGSize(width: 240, height: 240)
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let image = UIGraphicsImageRenderer(size: size, format: format).image { _ in
+            UIColor(red: 0.02, green: 0.05, blue: 0.20, alpha: 1).setFill()
+            UIRectFill(CGRect(origin: .zero, size: size))
+            ("WHITE" as NSString).draw(at: CGPoint(x: 34, y: 92), withAttributes: [
+                .font: UIFont.systemFont(ofSize: 34), .foregroundColor: UIColor.white
+            ])
+        }
+
+        let result = try processor.apply(.blackAndWhite, to: image)
+        let pixels = try PageBitmap(XCTUnwrap(result.cgImage))
+        var brightGlyphPixels = 0
+        for y in 85..<135 {
+            for x in 25..<220 where pixels.luminance(atX: Double(x), y: Double(y)) > 220 {
+                brightGlyphPixels += 1
+            }
+        }
+
+        XCTAssertGreaterThan(brightGlyphPixels, 100, "white knockout text on navy disappeared")
+        XCTAssertLessThan(brightness(of: result, fx: 0.05, fy: 0.10), 0.15,
+                          "navy field should remain dark")
     }
 
     /// 陰影のある合成書類画像を生成する。
