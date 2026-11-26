@@ -89,7 +89,7 @@ struct DocumentImageProcessor {
             ci = try ShadingCorrector.levels(gray, black: 0.1, white: 0.92, gamma: 1.2)
         case .blackAndWhite:
             // 陰影除去で平坦化 → グレースケール → 適応閾値（局所比）と
-            // グローバルランプの min 合成でアンチエイリアス付き 2 値化。
+            // 色差を併用し、薄い色印刷も残すアンチエイリアス付き 2 値化。
             // ハードなグローバル閾値だと細線・薄い線が消えるため、
             // g/local 比で文字を拾い、大きな黒領域のくり抜きはグローバル側で防ぐ
             let flat = try learned.map { CIImage(cgImage: $0) } ?? ShadingCorrector.flattened(ci)
@@ -110,13 +110,32 @@ struct DocumentImageProcessor {
             }
             let adaptive = try ShadingCorrector.ramp(ratio.cropped(to: extent), lo: 0.78, hi: 0.94)
             let global = try ShadingCorrector.ramp(gray, lo: 0.20, hi: 0.45)
+            guard let colorLocal = CIFilter(name: "CIGaussianBlur", parameters: [
+                kCIInputImageKey: flat.clampedToExtent(),
+                kCIInputRadiusKey: radius
+            ])?.outputImage else {
+                throw ImageProcessingError.filterFailed("CIGaussianBlur")
+            }
+            let chroma = try ShadingCorrector.chromaticDifference(flat, from: colorLocal.cropped(to: extent))
+            let chromaticRamp = try ShadingCorrector.ramp(chroma, lo: 0.01, hi: 0.05)
+            guard let chromatic = CIFilter(name: "CIColorInvert", parameters: [
+                kCIInputImageKey: chromaticRamp
+            ])?.outputImage else {
+                throw ImageProcessingError.filterFailed("CIColorInvert")
+            }
             guard let combined = CIFilter(name: "CIMinimumCompositing", parameters: [
                 kCIInputImageKey: adaptive,
                 kCIInputBackgroundImageKey: global
             ])?.outputImage else {
                 throw ImageProcessingError.filterFailed("CIMinimumCompositing")
             }
-            ci = combined.cropped(to: extent)
+            guard let colorCombined = CIFilter(name: "CIMinimumCompositing", parameters: [
+                kCIInputImageKey: combined.cropped(to: extent),
+                kCIInputBackgroundImageKey: chromatic
+            ])?.outputImage else {
+                throw ImageProcessingError.filterFailed("CIMinimumCompositing")
+            }
+            ci = colorCombined.cropped(to: extent)
         }
 
         // 出力を入力 extent に合わせてピクセルサイズを保持する

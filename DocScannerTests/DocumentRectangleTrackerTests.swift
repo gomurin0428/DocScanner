@@ -202,6 +202,40 @@ final class DocumentRectangleTrackerTests: XCTestCase {
             in: [], document: nil, size: CGSize(width: 1000, height: 1400)))
     }
 
+    func testPhotoFallbackGateAcceptsModerateAndSmallPaperCandidates() {
+        let size = CGSize(width: 1000, height: 1400)
+        let lowConfidence = LowConfidenceDocument(
+            boundingBox: CGRect(x: 0.2, y: 0.2, width: 0.6, height: 0.6))
+        let smallPaper = ModerateConfidenceDocument(
+            boundingBox: CGRect(x: 0.46, y: 0.32, width: 0.08, height: 0.36))
+
+        XCTAssertNil(DocumentRectangleDetector.liveDocument(
+            in: [lowConfidence], document: nil, size: size))
+        XCTAssertEqual(DocumentRectangleDetector.liveDocument(
+            in: [lowConfidence], document: nil, size: size,
+            minimumConfidence: 0.35, minimumSize: 0.05)?.uuid, lowConfidence.uuid)
+        XCTAssertNil(DocumentRectangleDetector.liveDocument(
+            in: [smallPaper], document: nil, size: size))
+        XCTAssertEqual(DocumentRectangleDetector.liveDocument(
+            in: [smallPaper], document: nil, size: size,
+            minimumConfidence: 0.35, minimumSize: 0.05)?.uuid, smallPaper.uuid)
+    }
+
+    func testReceiptRectangleSurvivesFullFrameSegmentationCandidate() {
+        let receipt = VNRectangleObservation(requestRevision: 1,
+            topLeft: CGPoint(x: 0.20554, y: 0.97260),
+            bottomLeft: CGPoint(x: 0.24049, y: 0.06783),
+            bottomRight: CGPoint(x: 0.77287, y: 0.16326),
+            topRight: CGPoint(x: 0.80956, y: 0.95599))
+        let fullFrame = VNRectangleObservation(boundingBox: CGRect(x: 0, y: 0, width: 1, height: 1))
+        let size = CGSize(width: 1200, height: 1600)
+
+        XCTAssertEqual(DocumentRectangleDetector.liveDocument(
+            in: [receipt], document: nil, size: size)?.uuid, receipt.uuid)
+        XCTAssertEqual(DocumentRectangleDetector.liveDocument(
+            in: [receipt], document: fullFrame, size: size)?.uuid, receipt.uuid)
+    }
+
     /// 共通の紙を 3 回確認済みの追跡状態を生成する。
     private func acquiredTracker() -> DocumentRectangleTracker {
         var tracker = DocumentRectangleTracker()

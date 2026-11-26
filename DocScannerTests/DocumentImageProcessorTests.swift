@@ -189,6 +189,61 @@ final class DocumentImageProcessorTests: XCTestCase {
                              "blank paper not white")
     }
 
+    func testBlackAndWhiteRetainsFaintPinkStrokesOnWhiteAndYellow() throws {
+        let size = CGSize(width: 240, height: 240)
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let pink = UIColor(red: 0.80, green: 0.74, blue: 0.80, alpha: 1)
+        let image = UIGraphicsImageRenderer(size: size, format: format).image { context in
+            UIColor.white.setFill()
+            context.fill(CGRect(origin: .zero, size: size))
+            UIColor(red: 0.82, green: 0.76, blue: 0.64, alpha: 1).setFill()
+            context.fill(CGRect(x: 120, y: 0, width: 120, height: size.height))
+            pink.setFill()
+            context.fill(CGRect(x: 12, y: 70, width: 96, height: 3))
+            context.fill(CGRect(x: 132, y: 170, width: 96, height: 3))
+            ("STAMP" as NSString).draw(at: CGPoint(x: 15, y: 100), withAttributes: [
+                .font: UIFont.systemFont(ofSize: 16), .foregroundColor: pink
+            ])
+            ("MAP" as NSString).draw(at: CGPoint(x: 135, y: 190), withAttributes: [
+                .font: UIFont.systemFont(ofSize: 16), .foregroundColor: pink
+            ])
+            let road = UIBezierPath()
+            road.move(to: CGPoint(x: 135, y: 226))
+            road.addLine(to: CGPoint(x: 228, y: 210))
+            road.lineWidth = 3
+            pink.setStroke()
+            road.stroke()
+        }
+
+        let result = try processor.apply(.blackAndWhite, to: image)
+        let pixels = try PageBitmap(XCTUnwrap(result.cgImage))
+        func darkPixels(in rect: CGRect) -> Int {
+            var count = 0
+            for y in Int(rect.minY)..<Int(rect.maxY) {
+                for x in Int(rect.minX)..<Int(rect.maxX) where pixels.luminance(atX: Double(x), y: Double(y)) < 220 {
+                    count += 1
+                }
+            }
+            return count
+        }
+
+        XCTAssertLessThan(brightness(of: result, fx: 0.25, fy: 0.30), 0.8,
+                          "faint pink stroke on white disappeared")
+        XCTAssertLessThan(brightness(of: result, fx: 0.75, fy: 0.71), 0.8,
+                          "faint pink stroke on yellow disappeared")
+        XCTAssertGreaterThan(darkPixels(in: CGRect(x: 10, y: 95, width: 95, height: 30)), 20,
+                             "faint pink label on white disappeared")
+        XCTAssertGreaterThan(darkPixels(in: CGRect(x: 130, y: 185, width: 90, height: 30)), 12,
+                             "faint pink map label on yellow disappeared")
+        XCTAssertLessThan(brightness(of: result, fx: 0.69, fy: 0.92), 0.8,
+                          "faint map road was lost")
+        XCTAssertGreaterThan(brightness(of: result, fx: 0.25, fy: 0.5), 0.95,
+                             "white paper was darkened")
+        XCTAssertGreaterThan(brightness(of: result, fx: 0.75, fy: 0.5), 0.95,
+                             "yellow paper field was darkened")
+    }
+
     /// 陰影のある合成書類画像を生成する。
     /// - 入力: なし
     /// - 出力: 1200x1600 で上端白(1.0)→下端暗(0.45)の縦グラデーション紙に、

@@ -1,4 +1,5 @@
 import CoreGraphics
+import CoreImage
 import UIKit
 import XCTest
 @testable import DocScanner
@@ -132,6 +133,51 @@ final class PageContentStraightenerTests: XCTestCase {
         let image = try XCTUnwrap(TestImageFactory.solid(.white, size: CGSize(width: 300, height: 400)).cgImage)
         let result = try PageContentStraightener().straighten(image)
         XCTAssertTrue(result === image)
+    }
+
+    func testTextOrientationRequiresClearEvidenceToRotate() {
+        XCTAssertEqual(PageTextOrientationCorrector.preferredOrientation(scores: [1, 30, 2, 1]), .right)
+        XCTAssertEqual(PageTextOrientationCorrector.preferredOrientation(scores: [1, 2, 3, 30]), .left)
+        XCTAssertNil(PageTextOrientationCorrector.preferredOrientation(scores: [30, 29, 28, 27]))
+        XCTAssertNil(PageTextOrientationCorrector.preferredOrientation(scores: [0, 0, 0, 0]))
+    }
+
+    func testTextCurvatureKeepsFlatRowsOutOfUVDocAndRetainsCurvedRows() {
+        let straight = (0..<8).map { row in
+            (0..<20).map { column in
+                PagePoint(x: 0.1 + Double(column) * 0.8 / 19, y: 0.12 + Double(row) * 0.1)
+            }
+        }
+        XCTAssertEqual(PageContentStraightener.classifyTextCurvature(straight), .straight)
+        XCTAssertEqual(PageContentStraightener.classifyTextCurvature([straight[0], straight[3], straight[7]]), .straight)
+        XCTAssertEqual(PageContentStraightener.classifyTextCurvature(curvedLines()), .curved)
+        XCTAssertEqual(PageContentStraightener.classifyTextCurvature(Array(straight.prefix(2))), .insufficientText)
+    }
+
+    func testSidewaysSyntheticTextIsReturnedUpright() throws {
+        let size = CGSize(width: 700, height: 900)
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let text = (0..<14).map { "DOCUMENT LINE \($0 + 1) 123456789" }.joined(separator: "\n")
+        let image = UIGraphicsImageRenderer(size: size, format: format).image { _ in
+            UIColor.white.setFill()
+            UIRectFill(CGRect(origin: .zero, size: size))
+            text.draw(in: CGRect(x: 45, y: 35, width: 610, height: 830), withAttributes: [
+                .font: UIFont.systemFont(ofSize: 32),
+                .foregroundColor: UIColor.black
+            ])
+        }
+        let upright = try XCTUnwrap(image.cgImage)
+        let sidewaysCI = CIImage(cgImage: upright).oriented(forExifOrientation: 6)
+        let sideways = try XCTUnwrap(ImageRendering.context.createCGImage(sidewaysCI, from: sidewaysCI.extent.integral))
+        let corrector = PageTextOrientationCorrector()
+
+        let corrected = try corrector.correct(sideways)
+        XCTAssertEqual(corrected.width, upright.width)
+        XCTAssertEqual(corrected.height, upright.height)
+        let scores = try corrector.orientationScores(of: corrected)
+        XCTAssertGreaterThan(scores[0], scores[1])
+        XCTAssertGreaterThan(scores[0], scores[3])
     }
 
     private func curvedLines() -> [[PagePoint]] {

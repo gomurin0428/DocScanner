@@ -103,6 +103,10 @@ final class UVDocUnwarper {
             AppDiagnostics.selection("UVDoc skipped: low contrast document crop")
             return nil
         }
+        if try PageContentStraightener().textCurvature(in: crop) == .straight {
+            AppDiagnostics.selection("UVDoc skipped: straight text baselines; using planar correction")
+            return try PageFlattener().flatten(image, boundary: DocumentBoundary(corners: boundary.corners), camera: camera)
+        }
         try ensureModel()
         guard model != nil else { return nil }
         guard let raw = try predict(input) else {

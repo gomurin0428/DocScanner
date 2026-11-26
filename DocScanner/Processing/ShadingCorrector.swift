@@ -3,6 +3,15 @@ import CoreImage
 /// 書類画像の照明ムラ（陰影）を除去して平坦化するユーティリティ。
 /// 背景（紙の明るさ）を推定し、上限付きの共通 RGB ゲインで平坦化する。
 enum ShadingCorrector {
+    private static let chromaticDifferenceKernel = CIColorKernel(source: """
+    kernel vec4 chromaticDifference(__sample source, __sample background) {
+        vec3 delta = source.rgb - background.rgb;
+        float difference = max(abs(delta.r - delta.g),
+                               max(abs(delta.g - delta.b), abs(delta.b - delta.r)));
+        return vec4(difference, difference, difference, 1.0);
+    }
+    """)
+
     private static let correctionKernel = CIColorKernel(source: """
     kernel vec4 shadingCorrection(__sample source, __sample illumination) {
         float alpha = source.a;
@@ -93,6 +102,14 @@ enum ShadingCorrector {
             throw ImageProcessingError.filterFailed("CIColorControls")
         }
         return output
+    }
+
+    static func chromaticDifference(_ image: CIImage, from background: CIImage) throws -> CIImage {
+        guard let chromaticDifferenceKernel,
+              let output = chromaticDifferenceKernel.apply(extent: image.extent, arguments: [image, background]) else {
+            throw ImageProcessingError.filterFailed("ChromaticDifference")
+        }
+        return output.cropped(to: image.extent)
     }
 
     /// 線形ランプ（clamp((x-lo)/(hi-lo))）を各チャンネルへ適用する。

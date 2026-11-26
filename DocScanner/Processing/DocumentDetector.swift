@@ -1,4 +1,5 @@
 import CoreImage
+import Foundation
 import UIKit
 import Vision
 
@@ -119,12 +120,35 @@ struct DocumentDetector {
             AppDiagnostics.error("Document segmentation", error: error)
             throw DocumentDetectionError.visionFailed(error)
         }
-        guard let rectangle = DocumentRectangleDetector.liveDocument(
-            in: rectangles, document: segRequest.results?.first,
-            size: CGSize(width: width, height: height))
-            else {
-            throw DocumentDetectionError.noDocumentFound
+        let segmentation = segRequest.results?.first
+        let imageSize = CGSize(width: width, height: height)
+        AppDiagnostics.selection("Photo candidates: rectangles=[\(Self.summary(rectangles))], " +
+                                 "segmentation=\(Self.summary(segmentation))")
+        let rectangle: VNRectangleObservation
+        if let detected = DocumentRectangleDetector.liveDocument(
+            in: rectangles, document: segmentation, size: imageSize) {
+            rectangle = detected
+        } else {
+            let fallbackRequest = DocumentRectangleDetector.makePhotoFallbackRequest()
+            do {
+                try handler.perform([fallbackRequest])
+            } catch {
+                AppDiagnostics.error("Rectangle detection retry", error: error)
+                throw DocumentDetectionError.visionFailed(error)
+            }
+            let fallbackRectangles = fallbackRequest.results ?? []
+            AppDiagnostics.selection("Photo detection retry: strict=[\(Self.summary(rectangles))], " +
+                                     "fallback=[\(Self.summary(fallbackRectangles))], " +
+                                     "segmentation=\(Self.summary(segmentation))")
+            guard let detected = DocumentRectangleDetector.liveDocument(
+                in: fallbackRectangles, document: segmentation, size: imageSize,
+                minimumConfidence: 0.35, minimumSize: 0.05) else {
+                throw DocumentDetectionError.noDocumentFound
+            }
+            rectangle = detected
         }
+        AppDiagnostics.selection("Photo selected paper: \(Self.summary([rectangle]))")
+        let corrected: UIImage
         if let observation = segRequest.results?.first,
            observation.confidence >= Self.segConfidenceThreshold,
            let maskBuffer = observation.globalSegmentationMask,
@@ -149,14 +173,19 @@ struct DocumentDetector {
                 toTopLeft(observation.bottomRight), toTopLeft(observation.bottomLeft)
             ], mask: mask)
             if let output = try unwarper.unwarp(cg, boundary: boundary, camera: camera) {
-                return UIImage(cgImage: output, scale: image.scale, orientation: .up)
+                corrected = UIImage(cgImage: output, scale: image.scale, orientation: .up)
+            } else {
+                let flattened = try PageFlattener().flatten(cg, boundary: boundary, camera: camera)
+                let straightened = try PageContentStraightener().straighten(flattened)
+                corrected = UIImage(cgImage: straightened, scale: image.scale, orientation: .up)
             }
-            let flattened = try PageFlattener().flatten(cg, boundary: boundary, camera: camera)
-            let straightened = try PageContentStraightener().straighten(flattened)
-            return UIImage(cgImage: straightened, scale: image.scale, orientation: .up)
+        } else {
+            corrected = try correct(image, boundary: DocumentBoundary(corners: [rectangle.topLeft,
+                rectangle.topRight, rectangle.bottomRight, rectangle.bottomLeft]), camera: camera)
         }
-        return try correct(image, boundary: DocumentBoundary(corners: [rectangle.topLeft, rectangle.topRight,
-                                                                      rectangle.bottomRight, rectangle.bottomLeft]), camera: camera)
+        guard let correctedCGImage = corrected.cgImage else { throw DocumentDetectionError.invalidImage }
+        let upright = try PageTextOrientationCorrector().correct(correctedCGImage)
+        return UIImage(cgImage: upright, scale: corrected.scale, orientation: .up)
     }
 
     /// セグメンテーション四角形と矩形検出四角形が十分一致するかを判定する。
@@ -175,6 +204,20 @@ struct DocumentDetector {
             if (dx * dx + dy * dy).squareRoot() > threshold { return false }
         }
         return true
+    }
+
+    private static func summary(_ observations: [VNRectangleObservation]) -> String {
+        observations.map { observation in
+            let points = [observation.topLeft, observation.topRight,
+                          observation.bottomRight, observation.bottomLeft]
+            let corners = points.map { String(format: "%.3f,%.3f", $0.x, $0.y) }.joined(separator: ";")
+            return String(format: "%.2f:[%@]", observation.confidence, corners)
+        }.joined(separator: ";")
+    }
+
+    private static func summary(_ observation: VNRectangleObservation?) -> String {
+        guard let observation else { return "none" }
+        return summary([observation])
     }
 
     /// UIImage の向きを正規化した CGImage を返す。

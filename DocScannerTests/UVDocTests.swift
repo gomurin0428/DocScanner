@@ -98,4 +98,40 @@ final class UVDocTests: XCTestCase {
             XCTAssertEqual(a.y, b.y, accuracy: 0.000001)
         }
     }
+
+    func testStraightTextPageUsesPlanarFlatteningAndKeepsRoundMarkRound() throws {
+        let size = CGSize(width: 700, height: 900)
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let text = (0..<14).map { "POSTCARD LINE \($0 + 1) 123456789" }.joined(separator: "\n")
+        let image = UIGraphicsImageRenderer(size: size, format: format).image { _ in
+            UIColor.white.setFill()
+            UIRectFill(CGRect(origin: .zero, size: size))
+            text.draw(in: CGRect(x: 45, y: 35, width: 610, height: 650), withAttributes: [
+                .font: UIFont.systemFont(ofSize: 24),
+                .foregroundColor: UIColor.black
+            ])
+            let mark = UIBezierPath(ovalIn: CGRect(x: 300, y: 735, width: 100, height: 100))
+            mark.lineWidth = 6
+            UIColor.black.setStroke()
+            mark.stroke()
+        }
+        let cgImage = try XCTUnwrap(image.cgImage)
+        var modelLoadCount = 0
+        let unwarper = UVDocUnwarper(modelLoader: {
+            modelLoadCount += 1
+            throw UVDocModelLoadingError.missingResource
+        })
+
+        let planar = try XCTUnwrap(unwarper.unwarp(cgImage, boundary: boundary))
+        XCTAssertEqual(modelLoadCount, 0)
+        let bitmap = try PageBitmap(planar)
+        let horizontal = (240...460).filter { bitmap.luminance(atX: Double($0), y: 785) < 100 }
+        let vertical = (680...900).filter { bitmap.luminance(atX: 350, y: Double($0)) < 100 }
+        XCTAssertFalse(horizontal.isEmpty)
+        XCTAssertFalse(vertical.isEmpty)
+        let horizontalDiameter = Double(horizontal.max()! - horizontal.min()!)
+        let verticalDiameter = Double(vertical.max()! - vertical.min()!)
+        XCTAssertEqual(horizontalDiameter, verticalDiameter, accuracy: 3)
+    }
 }
