@@ -78,6 +78,8 @@ struct DocumentDetector {
                  refineBoundary: Bool = false) throws -> UIImage {
         let cg = try normalizedCGImage(of: image)
         let boundary = refineBoundary ? try PageFlattener().refineBoundary(cg, boundary: boundary) : boundary
+        Self.logBoundary(boundary, imageSize: CGSize(width: CGFloat(cg.width), height: CGFloat(cg.height)),
+                         source: refineBoundary ? "refined rectangle" : "rectangle")
         if let output = try unwarper.unwarp(cg, boundary: boundary, camera: camera) {
             return UIImage(cgImage: output, scale: image.scale, orientation: .up)
         }
@@ -128,6 +130,12 @@ struct DocumentDetector {
         if let detected = DocumentRectangleDetector.liveDocument(
             in: rectangles, document: segmentation, size: imageSize) {
             rectangle = detected
+        } else if let detected = DocumentRectangleDetector.liveDocument(
+            in: rectangles, document: nil, size: imageSize,
+            minimumConfidence: 0.6, minimumSize: 0.05) {
+            AppDiagnostics.selection("Photo detection size retry: strict=[\(Self.summary(rectangles))], " +
+                                     "selected=[\(Self.summary([detected]))]")
+            rectangle = detected
         } else {
             let fallbackRequest = DocumentRectangleDetector.makePhotoFallbackRequest()
             do {
@@ -172,6 +180,8 @@ struct DocumentDetector {
                 toTopLeft(observation.topLeft), toTopLeft(observation.topRight),
                 toTopLeft(observation.bottomRight), toTopLeft(observation.bottomLeft)
             ], mask: mask)
+            Self.logBoundary(boundary, imageSize: CGSize(width: CGFloat(cg.width), height: CGFloat(cg.height)),
+                             source: "segmentation")
             if let output = try unwarper.unwarp(cg, boundary: boundary, camera: camera) {
                 corrected = UIImage(cgImage: output, scale: image.scale, orientation: .up)
             } else {
@@ -218,6 +228,19 @@ struct DocumentDetector {
     private static func summary(_ observation: VNRectangleObservation?) -> String {
         guard let observation else { return "none" }
         return summary([observation])
+    }
+
+    private static func logBoundary(_ boundary: DocumentBoundary, imageSize: CGSize, source: String) {
+        let deviations: String
+        if let values = boundary.edgeMaximumDeviationPixels(in: imageSize) {
+            deviations = values.map { String(format: "%.1f", $0) }.joined(separator: ",")
+        } else {
+            deviations = "unmeasured"
+        }
+        let corners = boundary.corners.map { String(format: "%.3f,%.3f", $0.x, $0.y) }
+            .joined(separator: ";")
+        AppDiagnostics.selection("Photo crop boundary: source=\(source), corners=[\(corners)], " +
+                                 "maxDeviationPx=[\(deviations)]")
     }
 
     /// UIImage の向きを正規化した CGImage を返す。

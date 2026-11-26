@@ -42,7 +42,10 @@ enum DocumentRectangleDetector {
                              size: CGSize,
                              minimumConfidence: VNConfidence = 0.6,
                              minimumSize: CGFloat = 0.1) -> VNRectangleObservation? {
-        if let document, isUsable(document, size: size) { return document }
+        if let document, isUsable(document, size: size,
+                                  minimumConfidence: minimumConfidence, minimumSize: minimumSize) {
+            return document
+        }
         return preferred(in: observations.filter {
             isUsable($0, size: size, minimumConfidence: minimumConfidence, minimumSize: minimumSize)
         })

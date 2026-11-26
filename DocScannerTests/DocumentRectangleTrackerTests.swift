@@ -221,6 +221,27 @@ final class DocumentRectangleTrackerTests: XCTestCase {
             minimumConfidence: 0.35, minimumSize: 0.05)?.uuid, smallPaper.uuid)
     }
 
+    func testPhotoFallbackAcceptsReceiptRectangleWith107PixelShortEdge() {
+        let size = CGSize(width: 1200, height: 1600)
+        let receipt = VNRectangleObservation(requestRevision: 1,
+            topLeft: CGPoint(x: 0.20, y: 0.80),
+            bottomLeft: CGPoint(x: 0.20, y: 0.7329),
+            bottomRight: CGPoint(x: 0.70, y: 0.7329),
+            topRight: CGPoint(x: 0.70, y: 0.80))
+
+        XCTAssertEqual((0.80 - 0.7329) * size.height, 107.36, accuracy: 0.01)
+        XCTAssertNil(DocumentRectangleDetector.liveDocument(
+            in: [receipt], document: nil, size: size))
+        XCTAssertEqual(DocumentRectangleDetector.liveDocument(
+            in: [receipt], document: nil, size: size,
+            minimumConfidence: 0.6, minimumSize: 0.05)?.uuid, receipt.uuid)
+        XCTAssertNil(DocumentRectangleDetector.liveDocument(
+            in: [], document: receipt, size: size))
+        XCTAssertEqual(DocumentRectangleDetector.liveDocument(
+            in: [], document: receipt, size: size,
+            minimumConfidence: 0.6, minimumSize: 0.05)?.uuid, receipt.uuid)
+    }
+
     func testReceiptRectangleSurvivesFullFrameSegmentationCandidate() {
         let receipt = VNRectangleObservation(requestRevision: 1,
             topLeft: CGPoint(x: 0.20554, y: 0.97260),
