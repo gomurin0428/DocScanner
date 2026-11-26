@@ -133,8 +133,7 @@ final class PDFBuilderTests: XCTestCase {
             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
         context.setFillColor(CGColor(gray: 1, alpha: 1))
         context.fill(CGRect(x: 0, y: 0, width: CGFloat(width), height: CGFloat(height)))
-        context.translateBy(x: 0, y: CGFloat(height))
-        context.scaleBy(x: CGFloat(width) / bounds.width, y: -CGFloat(height) / bounds.height)
+        context.scaleBy(x: CGFloat(width) / bounds.width, y: CGFloat(height) / bounds.height)
         context.interpolationQuality = .none
         page.draw(with: .mediaBox, to: context)
         let rendered = try XCTUnwrap(context.makeImage())
