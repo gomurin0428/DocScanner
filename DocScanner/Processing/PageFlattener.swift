@@ -166,6 +166,19 @@ struct PageFlattener {
         let medianContrast: Double
     }
 
+    private enum PhotoEdgeFitResult {
+        case fitted(PhotoEdgeFit)
+        case noCoherentFit
+        case ambiguous
+        case invalid
+    }
+
+    private enum PhotoEdgeSource: String, Equatable {
+        case measured
+        case fit
+        case retained
+    }
+
     private struct PhotoEdgeHypothesis {
         let hits: [PhotoEdgeCandidate]
         let score: Double
@@ -183,6 +196,7 @@ struct PageFlattener {
     private static let coonsGrid = 32
     /// 定数スケールの基準解像度（プロトタイプ動作サイズ）。
     private static let referenceSize = 3000.0
+    private static let photoEdgeResidualFraction = 0.0067
 
     /// フラットナを初期化する。
     /// - 入力: なし
@@ -218,25 +232,46 @@ struct PageFlattener {
             AppDiagnostics.selection("Photo edge recovery skipped: all four local edges measured")
             return preservingMeasuredEdges ?? boundary
         }
-        let fits: [PhotoEdgeFit?] = edgeNames.indices.map { index in
+        var fits = [PhotoEdgeFit]()
+        var edgeSources = [PhotoEdgeSource]()
+        for index in edgeNames.indices {
             if let edge = measuredEdges[index], measured[index] {
                 let points = edge.map { PagePoint(x: $0.x * width, y: (1 - $0.y) * height) }
                 guard let start = points.first, let end = points.last, (end - start).length > 1 else {
+                    AppDiagnostics.selection("Photo edge recovery rejected: invalid measured edge on \(edgeNames[index])")
                     return nil
                 }
-                return PhotoEdgeFit(start: start, end: end, samples: [], support: edge.count,
-                                    medianContrast: 0)
+                fits.append(PhotoEdgeFit(start: start, end: end, samples: [], support: edge.count,
+                                         medianContrast: 0))
+                edgeSources.append(.measured)
+                continue
             }
-            return fitPhotoEdge(starts[index], ends[index], center: center, edgeName: edgeNames[index],
-                                bitmap: bitmap, movementLimit: movementLimit)
+            switch fitPhotoEdge(starts[index], ends[index], center: center, edgeName: edgeNames[index],
+                                bitmap: bitmap, movementLimit: movementLimit) {
+            case .fitted(let fit):
+                fits.append(fit)
+                edgeSources.append(.fit)
+            case .noCoherentFit:
+                fits.append(PhotoEdgeFit(start: starts[index], end: ends[index], samples: [], support: 0,
+                                         medianContrast: 0))
+                edgeSources.append(.retained)
+            case .ambiguous:
+                AppDiagnostics.selection("Photo edge recovery rejected: ambiguous edge evidence on \(edgeNames[index])")
+                return nil
+            case .invalid:
+                AppDiagnostics.selection("Photo edge recovery rejected: invalid edge geometry on \(edgeNames[index])")
+                return nil
+            }
         }
-        guard fits.allSatisfy({ $0 != nil }), let top = fits[0], let right = fits[1],
-              let bottom = fits[2], let left = fits[3] else {
-            let missing = edgeNames.indices.compactMap { fits[$0] == nil ? edgeNames[$0] : nil }
-                .joined(separator: ",")
-            AppDiagnostics.selection("Photo edge recovery rejected: unusable edge evidence on [\(missing)]")
+        let retainedEdges = edgeSources.indices.filter { edgeSources[$0] == .retained }
+        guard retainedEdges.count <= 1,
+              edgeSources.filter({ $0 != .retained }).count >= 3 else {
+            let retainedNames = retainedEdges.map { edgeNames[$0] }.joined(separator: ",")
+            AppDiagnostics.selection("Photo edge recovery rejected: insufficient supported sides; " +
+                                     "retained=[\(retainedNames)]")
             return nil
         }
+        let top = fits[0], right = fits[1], bottom = fits[2], left = fits[3]
         func intersection(_ first: PhotoEdgeFit, _ second: PhotoEdgeFit) -> PagePoint? {
             let u = first.end - first.start, v = second.end - second.start
             let delta = second.start - first.start
@@ -252,6 +287,15 @@ struct PageFlattener {
         }
         let recoveredCorners = [topLeft, topRight, bottomRight, bottomLeft]
         let movements = zip(recoveredCorners, corners).map { ($0 - $1).length }
+        let edgeCornerIndices = [[0, 1], [1, 2], [3, 2], [0, 3]]
+        let retainedCornerIndices = Set(retainedEdges.flatMap { edgeCornerIndices[$0] })
+        let retainedCornerLimit = min(width, height) * Self.photoEdgeResidualFraction
+        guard retainedCornerIndices.allSatisfy({
+            movements[$0].isFinite && movements[$0] <= retainedCornerLimit
+        }) else {
+            AppDiagnostics.selection("Photo edge recovery rejected: retained edge corners moved beyond fit tolerance")
+            return nil
+        }
         func area(_ points: [PagePoint]) -> Double {
             abs(points.indices.reduce(0.0) { result, index in
                 let a = points[index], b = points[(index + 1) % points.count]
@@ -318,21 +362,30 @@ struct PageFlattener {
             AppDiagnostics.selection("Photo edge recovery rejected: measured outline is invalid")
             return nil
         }
-        let edgeSources = measured.map { $0 ? "measured" : "fit" }.joined(separator: ",")
-        let support = fits.indices.map { measured[$0] ? "m\(measuredEdges[$0]!.count)" : String(fits[$0]!.support) }
-            .joined(separator: ",")
-        let contrast = fits.indices.map {
-            measured[$0] ? "preserved" : String(format: "%.0f", fits[$0]!.medianContrast)
+        let edgeSourceNames = edgeSources.map(\.rawValue).joined(separator: ",")
+        let support = fits.indices.map { index in
+            switch edgeSources[index] {
+            case .measured: return "m\(measuredEdges[index]!.count)"
+            case .fit: return String(fits[index].support)
+            case .retained: return "none"
+            }
         }.joined(separator: ",")
-        AppDiagnostics.selection("Photo edge recovery accepted: edgeSources=[\(edgeSources)], support=[\(support)], " +
+        let contrast = fits.indices.map { index in
+            switch edgeSources[index] {
+            case .measured: return "preserved"
+            case .fit: return String(format: "%.0f", fits[index].medianContrast)
+            case .retained: return "none"
+            }
+        }.joined(separator: ",")
+        AppDiagnostics.selection("Photo edge recovery accepted: edgeSources=[\(edgeSourceNames)], support=[\(support)], " +
             "contrast=[\(contrast)], maxCornerMove=\(String(format: "%.1f", movements.max() ?? 0))px")
         return recovered
     }
 
     private func fitPhotoEdge(_ start: PagePoint, _ end: PagePoint, center: PagePoint, edgeName: String,
-                              bitmap: PageBitmap, movementLimit: Double) -> PhotoEdgeFit? {
+                              bitmap: PageBitmap, movementLimit: Double) -> PhotoEdgeFitResult {
         let direction = end - start
-        guard direction.length > 1 else { return nil }
+        guard direction.length > 1 else { return .invalid }
         var normal = PagePoint(x: -direction.y, y: direction.x) * (1 / direction.length)
         if normal.x * (center.x - (start.x + end.x) / 2)
             + normal.y * (center.y - (start.y + end.y) / 2) < 0 {
@@ -340,7 +393,7 @@ struct PageFlattener {
         }
         let sampleCount = 21
         let minimumContrast = 25.0
-        let residualLimit = min(Double(bitmap.width), Double(bitmap.height)) * 0.0067
+        let residualLimit = min(Double(bitmap.width), Double(bitmap.height)) * Self.photoEdgeResidualFraction
         func median(_ values: [Double]) -> Double {
             let sorted = values.sorted()
             return sorted[sorted.count / 2]
@@ -495,9 +548,10 @@ struct PageFlattener {
         let ranked = hypotheses.sorted { $0.score > $1.score }
         guard let best = ranked.first else {
             let rowCandidates = rows.map(\.count).map(String.init).joined(separator: ",")
-            AppDiagnostics.selection("Photo edge fit rejected on \(edgeName): rows=[\(rowCandidates)], " +
+            AppDiagnostics.selection("Photo edge fit unavailable on \(edgeName): no coherent distributed support; " +
+                "rows=[\(rowCandidates)], " +
                 "bestSupport=\(bestObservedSupport), bins=\(bestObservedDistribution)")
-            return nil
+            return .noCoherentFit
         }
         if ranked.count > 1 {
             let alternative = ranked[1]
@@ -511,7 +565,7 @@ struct PageFlattener {
                     "support=\(best.hits.count)/\(alternative.hits.count), " +
                     "polarity=\(best.polarity)/\(alternative.polarity), " +
                     "separation=\(separation)px")
-                return nil
+                return .ambiguous
             }
         }
         let hits = best.hits
@@ -521,8 +575,8 @@ struct PageFlattener {
         let measured = hits.sorted { $0.t < $1.t }.map { candidate in
             start + direction * candidate.t + normal * (fit.intercept + fit.slope * candidate.t)
         }
-        return PhotoEdgeFit(start: fittedStart, end: fittedEnd, samples: measured, support: hits.count,
-                            medianContrast: median(hits.map(\.contrast)))
+        return .fitted(PhotoEdgeFit(start: fittedStart, end: fittedEnd, samples: measured, support: hits.count,
+                                    medianContrast: median(hits.map(\.contrast))))
     }
 
     /// 画像をセグメンテーションマスクと四隅でフラット化した CGImage を返す。

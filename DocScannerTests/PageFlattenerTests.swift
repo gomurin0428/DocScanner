@@ -425,6 +425,67 @@ final class PageFlattenerTests: XCTestCase {
         XCTAssertNil(try flattener.recoverPhotoBoundary(image, boundary: boundary))
     }
 
+    func testPhotoRecoveryRetainsOneUnmeasuredEdgeWithoutInventingSamples() throws {
+        let size = CGSize(width: 1200, height: 1600)
+        let image = try XCTUnwrap(TestImageFactory.solid(.white, size: size).cgImage)
+        let corners = [CGPoint(x: 150, y: 100), CGPoint(x: 650, y: 120),
+                       CGPoint(x: 620, y: 650), CGPoint(x: 170, y: 630)]
+        func normalized(_ point: CGPoint) -> CGPoint {
+            CGPoint(x: point.x / size.width, y: 1 - point.y / size.height)
+        }
+        func edge(_ start: CGPoint, _ end: CGPoint) -> [CGPoint] {
+            (0...4).map { index in
+                let t = CGFloat(index) / 4
+                return normalized(CGPoint(x: start.x * (1 - t) + end.x * t,
+                                          y: start.y * (1 - t) + end.y * t))
+            }
+        }
+        let candidate = DocumentBoundary(corners: corners.map(normalized))
+        let local = DocumentBoundary(top: candidate.top,
+                                     right: edge(corners[1], corners[2]),
+                                     bottom: edge(corners[3], corners[2]),
+                                     left: edge(corners[0], corners[3]))
+
+        let recovered = try XCTUnwrap(flattener.recoverPhotoBoundary(
+            image, boundary: candidate, preservingMeasuredEdges: local))
+
+        XCTAssertEqual(recovered.top.count, 2)
+        XCTAssertEqual(recovered.top, candidate.top)
+        XCTAssertEqual(Array(recovered.right.dropFirst().dropLast()),
+                       Array(local.right.dropFirst().dropLast()))
+        XCTAssertEqual(Array(recovered.bottom.dropFirst().dropLast()),
+                       Array(local.bottom.dropFirst().dropLast()))
+        XCTAssertEqual(Array(recovered.left.dropFirst().dropLast()),
+                       Array(local.left.dropFirst().dropLast()))
+    }
+
+    func testPhotoRecoveryRejectsLargeCornerShiftOnRetainedEdge() throws {
+        let size = CGSize(width: 1200, height: 1600)
+        let image = try XCTUnwrap(TestImageFactory.solid(.white, size: size).cgImage)
+        let corners = [CGPoint(x: 150, y: 100), CGPoint(x: 650, y: 120),
+                       CGPoint(x: 620, y: 650), CGPoint(x: 170, y: 630)]
+        func normalized(_ point: CGPoint) -> CGPoint {
+            CGPoint(x: point.x / size.width, y: 1 - point.y / size.height)
+        }
+        func edge(_ start: CGPoint, _ end: CGPoint) -> [CGPoint] {
+            (0...4).map { index in
+                let t = CGFloat(index) / 4
+                return normalized(CGPoint(x: start.x * (1 - t) + end.x * t,
+                                          y: start.y * (1 - t) + end.y * t))
+            }
+        }
+        let shiftedTopRight = CGPoint(x: corners[1].x + 24, y: corners[1].y)
+        let shiftedBottomRight = CGPoint(x: corners[2].x + 24, y: corners[2].y)
+        let candidate = DocumentBoundary(corners: corners.map(normalized))
+        let local = DocumentBoundary(top: candidate.top,
+                                     right: edge(shiftedTopRight, shiftedBottomRight),
+                                     bottom: edge(corners[3], shiftedBottomRight),
+                                     left: edge(corners[0], corners[3]))
+
+        XCTAssertNil(try flattener.recoverPhotoBoundary(
+            image, boundary: candidate, preservingMeasuredEdges: local))
+    }
+
     func testPhotoRecoveryRejectsCompetingPrintedBoundary() throws {
         let size = CGSize(width: 1200, height: 1600)
         let format = UIGraphicsImageRendererFormat.default()
