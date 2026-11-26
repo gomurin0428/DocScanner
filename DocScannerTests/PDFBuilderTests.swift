@@ -1,5 +1,6 @@
 import CoreGraphics
 import PDFKit
+import UIKit
 import XCTest
 @testable import DocScanner
 
@@ -108,6 +109,20 @@ final class PDFBuilderTests: XCTestCase {
                 color.setFill()
                 context.fill(CGRect(x: CGFloat(x), y: 0, width: 8, height: CGFloat(height)))
             }
+            let graphics = context.cgContext
+            graphics.setLineWidth(1)
+            graphics.setStrokeColor(UIColor.red.cgColor)
+            graphics.move(to: CGPoint(x: 3, y: 13))
+            graphics.addLine(to: CGPoint(x: 124, y: 13))
+            graphics.strokePath()
+            graphics.setStrokeColor(UIColor.white.cgColor)
+            graphics.move(to: CGPoint(x: 12, y: 19))
+            graphics.addLine(to: CGPoint(x: 116, y: 83))
+            graphics.strokePath()
+            ("TOP 17" as NSString).draw(at: CGPoint(x: 41, y: 43), withAttributes: [
+                .font: UIFont.monospacedSystemFont(ofSize: 8, weight: .regular),
+                .foregroundColor: UIColor.yellow
+            ])
         }
         let data = try PDFBuilder().makePDF(from: [image], pageSize: .fitImage)
         let page = try XCTUnwrap(PDFDocument(data: data)?.page(at: 0))
