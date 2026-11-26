@@ -517,6 +517,88 @@ final class DocumentImageProcessorTests: XCTestCase {
         XCTAssertLessThanOrEqual(brightness(of: result, fx: 0.5, fy: 0.93), 0.3, "bottom bar")
     }
 
+    func testEnhancedPreservesWarmCastRatiosAndColoredMarks() throws {
+        let size = CGSize(width: 240, height: 160)
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let paper = UIColor(red: 0.88, green: 0.77, blue: 0.65, alpha: 1)
+        let yellow = UIColor(red: 0.96, green: 0.84, blue: 0.12, alpha: 1)
+        let pink = UIColor(red: 0.91, green: 0.58, blue: 0.70, alpha: 1)
+        let image = UIGraphicsImageRenderer(size: size, format: format).image { context in
+            paper.setFill()
+            context.fill(CGRect(origin: .zero, size: size))
+            yellow.setFill()
+            context.fill(CGRect(x: 20, y: 40, width: 80, height: 80))
+            pink.setFill()
+            context.fill(CGRect(x: 140, y: 40, width: 80, height: 80))
+        }
+        let result = try DocumentImageProcessor(enhancer: DocResEnhancer(model: nil)).apply(.enhanced, to: image)
+        func components(_ image: UIImage, x: Int, y: Int) throws -> (CGFloat, CGFloat, CGFloat) {
+            let color = try XCTUnwrap(TestImageFactory.pixelColor(of: image, x: x, y: y))
+            var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+            color.getRed(&r, green: &g, blue: &b, alpha: &a)
+            return (r, g, b)
+        }
+        let sourcePaper = try components(image, x: 10, y: 20)
+        let outputPaper = try components(result, x: 10, y: 20)
+        XCTAssertEqual((outputPaper.1 - outputPaper.2) / ((outputPaper.0 + outputPaper.1 + outputPaper.2) / 3),
+                       (sourcePaper.1 - sourcePaper.2) / ((sourcePaper.0 + sourcePaper.1 + sourcePaper.2) / 3),
+                       accuracy: 0.04)
+        let outputYellow = try components(result, x: 60, y: 80)
+        let outputPink = try components(result, x: 180, y: 80)
+        XCTAssertGreaterThan(abs(outputYellow.0 - outputYellow.2), 0.3)
+        XCTAssertGreaterThan(abs(outputPink.0 - outputPink.1), 0.15)
+        XCTAssertGreaterThan(abs(outputYellow.1 - outputPaper.1), 0.02)
+        XCTAssertGreaterThan(abs(outputPink.0 - outputPaper.0), 0.02)
+    }
+
+    func testBlackAndWhiteKeepsBrightYellowContrastAcrossGrayBackgrounds() throws {
+        let size = CGSize(width: 360, height: 150)
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let backgrounds: [CGFloat] = [0.26, 0.30, 0.36, 0.42]
+        let yellow = UIColor(red: 0.98, green: 0.82, blue: 0.05, alpha: 1)
+        let font = UIFont.systemFont(ofSize: 24)
+        let image = UIGraphicsImageRenderer(size: size, format: format).image { context in
+            for (index, gray) in backgrounds.enumerated() {
+                UIColor(white: gray, alpha: 1).setFill()
+                context.fill(CGRect(x: CGFloat(index * 90), y: 0, width: 90, height: 150))
+                ("Y" as NSString).draw(at: CGPoint(x: CGFloat(index * 90 + 28), y: 55),
+                    withAttributes: [.font: font, .foregroundColor: yellow])
+            }
+        }
+        let mask = UIGraphicsImageRenderer(size: size, format: format).image { context in
+            UIColor.black.setFill()
+            context.fill(CGRect(origin: .zero, size: size))
+            for index in backgrounds.indices {
+                ("Y" as NSString).draw(at: CGPoint(x: CGFloat(index * 90 + 28), y: 55),
+                    withAttributes: [.font: font, .foregroundColor: UIColor.white])
+            }
+        }
+        let result = try processor.apply(.blackAndWhite, to: image)
+        let pixels = try PageBitmap(XCTUnwrap(result.cgImage))
+        let maskPixels = try PageBitmap(XCTUnwrap(mask.cgImage))
+        for index in backgrounds.indices {
+            var glyph = [Double](), backdrop = [Double]()
+            for y in 50..<105 {
+                for x in (index * 90 + 12)..<(index * 90 + 78) {
+                    if maskPixels.luminance(atX: Double(x), y: Double(y)) > 220 {
+                        glyph.append(pixels.luminance(atX: Double(x), y: Double(y)))
+                    }
+                }
+            }
+            for y in 115..<140 {
+                for x in (index * 90 + 12)..<(index * 90 + 78) {
+                    backdrop.append(pixels.luminance(atX: Double(x), y: Double(y)))
+                }
+            }
+            XCTAssertGreaterThan(glyph.count, 5)
+            XCTAssertGreaterThan(glyph.reduce(0, +) / Double(glyph.count) -
+                                 backdrop.reduce(0, +) / Double(backdrop.count), 20,
+                                 "bright ink lost contrast over gray \(backgrounds[index])")
+        }
+    }
+
     /// grayscale で R==G==B を保ち暗い下部の紙が明るくなることを検証する。
     /// - 入力: なし
     /// - 出力: なし

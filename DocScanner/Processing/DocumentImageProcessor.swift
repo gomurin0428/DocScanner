@@ -64,16 +64,9 @@ struct DocumentImageProcessor {
         case .original:
             break
         case .enhanced:
-            // 陰影除去で平坦化 → レベル補正 → 彩度 +15% → 輝度シャープ化
+            // 陰影除去で平坦化 → 輝度レベル補正 → 輝度シャープ化
             let flat = try learned.map { CIImage(cgImage: $0) } ?? ShadingCorrector.flattened(ci)
-            var output = try ShadingCorrector.levels(flat, black: 0.12, white: 0.92, gamma: 1.3)
-            guard let saturated = CIFilter(name: "CIColorControls", parameters: [
-                kCIInputImageKey: output,
-                kCIInputSaturationKey: 1.15
-            ])?.outputImage else {
-                throw ImageProcessingError.filterFailed("CIColorControls")
-            }
-            output = saturated
+            let output = try ShadingCorrector.luminanceLevels(flat, black: 0.12, white: 0.92, gamma: 1.3)
             guard let sharpened = CIFilter(name: "CISharpenLuminance", parameters: [
                 kCIInputImageKey: output,
                 kCIInputSharpnessKey: 0.5,
@@ -139,7 +132,10 @@ struct DocumentImageProcessor {
             ])?.outputImage else {
                 throw ImageProcessingError.filterFailed("CIMinimumCompositing")
             }
-            ci = colorCombined.cropped(to: extent)
+            ci = try ShadingCorrector.preserveBrightChromaticContrast(
+                colorCombined.cropped(to: extent), source: gray, local: local.cropped(to: extent),
+                chromatic: chromaticRamp
+            )
         }
 
         // 出力を入力 extent に合わせてピクセルサイズを保持する

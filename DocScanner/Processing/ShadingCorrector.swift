@@ -3,6 +3,44 @@ import CoreImage
 /// 書類画像の照明ムラ（陰影）を除去して平坦化するユーティリティ。
 /// 背景（紙の明るさ）を推定し、上限付きの共通 RGB ゲインで平坦化する。
 enum ShadingCorrector {
+    private static let luminanceLevelKernel = CIColorKernel(source: """
+    kernel vec4 luminanceLevel(__sample source, __sample target) {
+        float sourceLuma = dot(source.rgb, vec3(0.2126, 0.7152, 0.0722));
+        float targetLuma = dot(target.rgb, vec3(0.2126, 0.7152, 0.0722));
+        float gain = targetLuma / max(sourceLuma, 0.00001);
+        vec3 color = source.rgb * gain;
+        float maximum = max(source.r, max(source.g, source.b));
+        float correctedMaximum = maximum * gain;
+        float scale = 1.0;
+        if (gain > 1.0 && correctedMaximum > 0.9) {
+            float gainIncrease = maximum * (gain - 1.0);
+            float beforeKnee = min(gainIncrease, max(0.0, 0.9 - maximum));
+            float aboveKnee = max(0.0, gainIncrease - beforeKnee);
+            float headroom = max(0.0, 1.0 - maximum - beforeKnee);
+            float mappedMaximum = maximum + beforeKnee
+                + headroom * (1.0 - exp(-aboveKnee / max(headroom, 0.00001)));
+            scale = mappedMaximum / correctedMaximum;
+        }
+        return vec4(color * scale, source.a);
+    }
+    """)
+
+    private static let brightContrastKernel = CIColorKernel(source: """
+    kernel vec4 preserveBrightChromatic(__sample output, __sample source,
+                                        __sample local, __sample chromatic) {
+        float sourceLuma = dot(source.rgb, vec3(0.299, 0.587, 0.114));
+        float localLuma = dot(local.rgb, vec3(0.299, 0.587, 0.114));
+        float localOutput = clamp((localLuma - 0.20) / 0.25, 0.0, 1.0);
+        float brightContrast = max(0.0, sourceLuma - localLuma) / 0.25 * chromatic.r;
+        float minimumOutput = clamp(localOutput + brightContrast, 0.0, 1.0);
+        float value = output.r;
+        if (sourceLuma > localLuma && chromatic.r > 0.0) {
+            value = max(value, minimumOutput);
+        }
+        return vec4(value, value, value, 1.0);
+    }
+    """)
+
     private static let chromaticDifferenceKernel = CIColorKernel(source: """
     kernel vec4 chromaticDifference(__sample source, __sample background) {
         vec3 delta = source.rgb - background.rgb;
@@ -160,5 +198,25 @@ enum ShadingCorrector {
             throw ImageProcessingError.filterFailed("CIGammaAdjust")
         }
         return gammaed
+    }
+
+    static func luminanceLevels(_ image: CIImage, black: Float, white: Float, gamma: Float) throws -> CIImage {
+        let gray = try grayscale(image)
+        let target = try levels(gray, black: black, white: white, gamma: gamma)
+        guard let luminanceLevelKernel,
+              let output = luminanceLevelKernel.apply(extent: image.extent, arguments: [image, target]) else {
+            throw ImageProcessingError.filterFailed("LuminanceLevels")
+        }
+        return output.cropped(to: image.extent)
+    }
+
+    static func preserveBrightChromaticContrast(_ output: CIImage, source: CIImage,
+                                                local: CIImage, chromatic: CIImage) throws -> CIImage {
+        guard let brightContrastKernel,
+              let result = brightContrastKernel.apply(extent: output.extent,
+                                                       arguments: [output, source, local, chromatic]) else {
+            throw ImageProcessingError.filterFailed("BrightChromaticContrast")
+        }
+        return result.cropped(to: output.extent)
     }
 }
