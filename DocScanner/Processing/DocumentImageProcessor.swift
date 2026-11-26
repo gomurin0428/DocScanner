@@ -109,7 +109,7 @@ struct DocumentImageProcessor {
                 throw ImageProcessingError.filterFailed("CIDivideBlendMode")
             }
             let adaptive = try ShadingCorrector.ramp(ratio.cropped(to: extent), lo: 0.78, hi: 0.94)
-            let global = try ShadingCorrector.ramp(gray, lo: 0.35, hi: 0.70)
+            let global = try ShadingCorrector.ramp(gray, lo: 0.20, hi: 0.45)
             guard let combined = CIFilter(name: "CIMinimumCompositing", parameters: [
                 kCIInputImageKey: adaptive,
                 kCIInputBackgroundImageKey: global

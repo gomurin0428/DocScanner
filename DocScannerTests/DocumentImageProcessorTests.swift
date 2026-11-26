@@ -256,12 +256,30 @@ final class DocumentImageProcessorTests: XCTestCase {
         let result = try DocumentImageProcessor(enhancer: enhancer).apply(.blackAndWhite, to: image)
 
         XCTAssertEqual(modelLoadCount, 0)
-        XCTAssertGreaterThan(brightness(of: result, fx: 10.0 / CGFloat(width), fy: 20.0 / CGFloat(height)), 0.1,
-                             "shadowed paper collapsed to black")
+        XCTAssertGreaterThan(brightness(of: result, fx: 10.0 / CGFloat(width), fy: 20.0 / CGFloat(height)), 0.75,
+                             "shadowed paper was not lifted")
         XCTAssertLessThan(brightness(of: result, fx: 60.0 / CGFloat(width), fy: 120.0 / CGFloat(height)), 0.1,
-                          "fine text stroke was lost")
+                          "synthetic hairline was lost")
         XCTAssertLessThan(brightness(of: result, fx: 157.0 / CGFloat(width), fy: 202.0 / CGFloat(height)), 0.1,
                           "dark fill was lifted")
+
+        let sourcePixels = try PageBitmap(XCTUnwrap(image.cgImage)).data
+        let resultPixels = try PageBitmap(XCTUnwrap(result.cgImage)).data
+        var glyphPixelCount = 0
+        for y in 0..<height where !(117..<124).contains(y) {
+            for x in 18..<70 {
+                let offset = (y * width + x) * 4
+                let sourceLuma = (Int(sourcePixels[offset]) + Int(sourcePixels[offset + 1]) +
+                                  Int(sourcePixels[offset + 2])) / 3
+                if sourceLuma < 24 {
+                    glyphPixelCount += 1
+                    let resultLuma = (Int(resultPixels[offset]) + Int(resultPixels[offset + 1]) +
+                                      Int(resultPixels[offset + 2])) / 3
+                    XCTAssertLessThan(resultLuma, 26, "glyph pixel at (\(x), \(y)) was lost")
+                }
+            }
+        }
+        XCTAssertGreaterThan(glyphPixelCount, 8, "synthetic text mask was empty")
     }
 
     /// enhanced で暗い下部の紙が明るく持ち上がることを検証する。
