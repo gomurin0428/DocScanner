@@ -1,4 +1,5 @@
 import CoreML
+import Foundation
 import UIKit
 import XCTest
 @testable import DocScanner
@@ -7,6 +8,25 @@ final class UVDocTests: XCTestCase {
     private var boundary: DocumentBoundary {
         DocumentBoundary(corners: [CGPoint(x: 0, y: 1), CGPoint(x: 1, y: 1),
                                    CGPoint(x: 1, y: 0), CGPoint(x: 0, y: 0)])
+    }
+
+    private var sampledStraightBoundary: DocumentBoundary {
+        let positions = (0...32).map { CGFloat($0) / 32 }
+        return DocumentBoundary(top: positions.map { CGPoint(x: $0, y: 1) },
+                                right: positions.map { CGPoint(x: 1, y: 1 - $0) },
+                                bottom: positions.map { CGPoint(x: $0, y: 0) },
+                                left: positions.map { CGPoint(x: 0, y: 1 - $0) })
+    }
+
+    private var curvedSampledBoundary: DocumentBoundary {
+        let positions = (0...32).map { CGFloat($0) / 32 }
+        let bow: (CGFloat) -> CGFloat = { position in
+            CGFloat(0.03 * sin(Double.pi * Double(position)))
+        }
+        return DocumentBoundary(top: positions.map { CGPoint(x: $0, y: 1 - bow($0)) },
+                                right: positions.map { CGPoint(x: 1, y: 1 - $0) },
+                                bottom: positions.map { CGPoint(x: $0, y: bow($0)) },
+                                left: positions.map { CGPoint(x: 0, y: 1 - $0) })
     }
 
     private func identity(width: Int = 31, height: Int = 45) -> UVDocGrid {
@@ -117,13 +137,14 @@ final class UVDocTests: XCTestCase {
             mark.stroke()
         }
         let cgImage = try XCTUnwrap(image.cgImage)
+        XCTAssertTrue(sampledStraightBoundary.hasStraightEdges(in: size))
         var modelLoadCount = 0
         let unwarper = UVDocUnwarper(modelLoader: {
             modelLoadCount += 1
             throw UVDocModelLoadingError.missingResource
         })
 
-        let planar = try XCTUnwrap(unwarper.unwarp(cgImage, boundary: boundary))
+        let planar = try XCTUnwrap(unwarper.unwarp(cgImage, boundary: sampledStraightBoundary))
         XCTAssertEqual(modelLoadCount, 0)
         let bitmap = try PageBitmap(planar)
         let horizontal = (240...460).filter { bitmap.luminance(atX: Double($0), y: 785) < 100 }
@@ -133,5 +154,32 @@ final class UVDocTests: XCTestCase {
         let horizontalDiameter = Double(horizontal.max()! - horizontal.min()!)
         let verticalDiameter = Double(vertical.max()! - vertical.min()!)
         XCTAssertEqual(horizontalDiameter, verticalDiameter, accuracy: 3)
+    }
+
+    func testStraightTextKeepsCurvedSampledBoundaryOnUVDocPath() throws {
+        let size = CGSize(width: 700, height: 900)
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let text = (0..<14).map { "POSTCARD LINE \($0 + 1) 123456789" }.joined(separator: "\n")
+        let image = UIGraphicsImageRenderer(size: size, format: format).image { _ in
+            UIColor.white.setFill()
+            UIRectFill(CGRect(origin: .zero, size: size))
+            text.draw(in: CGRect(x: 45, y: 35, width: 610, height: 650), withAttributes: [
+                .font: UIFont.systemFont(ofSize: 24), .foregroundColor: UIColor.black
+            ])
+        }
+        let cgImage = try XCTUnwrap(image.cgImage)
+        XCTAssertEqual(try PageContentStraightener().textCurvature(in: cgImage), .straight)
+        XCTAssertFalse(curvedSampledBoundary.hasStraightEdges(in: size))
+
+        var modelLoadCount = 0
+        let unwarper = UVDocUnwarper(modelLoader: {
+            modelLoadCount += 1
+            throw UVDocModelLoadingError.missingResource
+        })
+        XCTAssertThrowsError(try unwarper.unwarp(cgImage, boundary: curvedSampledBoundary)) { error in
+            XCTAssertTrue(error is UVDocModelLoadingError)
+        }
+        XCTAssertEqual(modelLoadCount, 1)
     }
 }

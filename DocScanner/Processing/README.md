@@ -25,7 +25,7 @@ Core Image / Vision を使った画像処理（フィルタ・回転・書類検
 | `DocumentRectangleDetector` | `liveDocument(in:document:size:)` (static) | confidence ≥ 0.6・画像内四隅・凸形状・辺長を検証した書類領域を優先し、領域が無効なら有効な矩形を使用。画面端に近いことだけでは除外しない |
 | `DocumentDetector` | `correct(_:boundary:camera:refineBoundary:)` | 保存済み輪郭を必要に応じて近傍だけで調整し、カメラ情報とともに元画像を補正。対象を全画面から再検出しない（throws） |
 | `DocumentBoundary` | `init(top:right:bottom:left:)` / `init(corners:)` / `corners` / `outline` / `map(_:)` / `isValid` | 左下原点の正規化四辺。表示・座標変換・補正で共有し、有限性・範囲・凸な四隅を検証 |
-| `DocumentDetector` | `detectAndCorrect(_:camera:)` | 長辺1600pxの解析画像で矩形・書類領域を検出し、ライブと同じ候補を選択。候補と一致するマスクから曲線境界を作り、マスクがなければ四隅の境界を使う。十分な文字行が直線なら四隅の平面補正、それ以外はUVDocで処理（throws） |
+| `DocumentDetector` | `detectAndCorrect(_:camera:)` | 長辺1600pxの解析画像で矩形・書類領域を検出し、ライブと同じ候補を選択。候補と一致するマスクから曲線境界を作り、マスクがなければ四隅の境界を使う。十分な文字行とサンプリング済み四辺の両方が直線なら平面補正、それ以外はUVDocで処理（throws） |
 | `DocumentDetector` | `quadsAgree(_:_:width:height:)` (static) | seg 四角形と優先候補の 4 隅距離が max(W,H)×8% 以内か判定 |
 | `DocumentDetector` | `normalizedCGImage(of:)` (private) | UIImage の向きを .up に正規化 |
 | `SegmentationMask` | `init(pixelBuffer:imageWidth:imageHeight:)` | Vision Float32 マスクを読み込む（形式不一致は throw） |
@@ -52,7 +52,7 @@ Core Image / Vision を使った画像処理（フィルタ・回転・書類検
 
 文字行補正は最低6行、横幅45%・高さ25%以上に分布する文字を要求し、行内残差の中央値が30%以上改善する安全なモデルだけを適用する。空白・写真・文字が少ない紙や過大な変形は輪郭補正の結果を保持する。カメラの保存済み輪郭は近傍の同じ辺だけを調整し、対象を再選択しない。文字行補正だけでQRの全辺や大きなロゴの形状まで完全な長方形へ復元する保証はない。
 
-DocRes / UVDoc の実際のモデル読み込み・予測・出力検証・描画失敗は、詳細を private として記録し、処理エラーとして呼び出し元へ返す。入力が小さい、極端な縦横比、低コントラスト、または複数の文字行が平面性を示す場合だけ、明示的な selection としてモデル外の補正を使う。Vision の文字検出エラーもログ後に伝播し、文字量が足りず平面性を判断できない場合はUVDocを維持する。全処理は共有 sRGB `ImageRendering.context` を使う。
+DocRes / UVDoc の実際のモデル読み込み・予測・出力検証・描画失敗は、詳細を private として記録し、処理エラーとして呼び出し元へ返す。入力が小さい、極端な縦横比、低コントラスト、または複数の文字行とサンプリング済み四辺の両方が平面性を示す場合だけ、明示的な selection として平面補正を使う。Vision の文字検出エラーもログ後に伝播し、文字量または境界点が不足する場合はUVDocを維持する。全処理は共有 sRGB `ImageRendering.context` を使う。
 
 ## クラス図
 

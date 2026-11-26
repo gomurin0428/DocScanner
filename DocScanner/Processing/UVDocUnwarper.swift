@@ -103,9 +103,15 @@ final class UVDocUnwarper {
             AppDiagnostics.selection("UVDoc skipped: low contrast document crop")
             return nil
         }
-        if try PageContentStraightener().textCurvature(in: crop) == .straight {
-            AppDiagnostics.selection("UVDoc skipped: straight text baselines; using planar correction")
-            return try PageFlattener().flatten(image, boundary: DocumentBoundary(corners: boundary.corners), camera: camera)
+        let sourceSize = CGSize(width: CGFloat(image.width), height: CGFloat(image.height))
+        let straightBoundary = boundary.hasStraightEdges(in: sourceSize)
+        if straightBoundary {
+            if try PageContentStraightener().textCurvature(in: crop) == .straight {
+                AppDiagnostics.selection("UVDoc skipped: straight text baselines and sampled straight boundaries; using planar correction")
+                return try PageFlattener().flatten(image, boundary: boundary, camera: camera)
+            }
+        } else {
+            AppDiagnostics.selection("UVDoc retained: boundary edges are curved or unsampled")
         }
         try ensureModel()
         guard model != nil else { return nil }
