@@ -548,8 +548,10 @@ final class DocumentImageProcessorTests: XCTestCase {
         let outputPink = try components(result, x: 180, y: 80)
         XCTAssertGreaterThan(abs(outputYellow.0 - outputYellow.2), 0.3)
         XCTAssertGreaterThan(abs(outputPink.0 - outputPink.1), 0.15)
-        XCTAssertGreaterThan(abs(outputYellow.1 - outputPaper.1), 0.02)
-        XCTAssertGreaterThan(abs(outputPink.0 - outputPaper.0), 0.02)
+        let yellowGreenBlueContrast = outputYellow.1 / outputYellow.2 - outputPaper.1 / outputPaper.2
+        let pinkRedGreenContrast = outputPink.0 / outputPink.1 - outputPaper.0 / outputPaper.1
+        XCTAssertGreaterThan(yellowGreenBlueContrast, 2.0)
+        XCTAssertGreaterThan(pinkRedGreenContrast, 0.2)
     }
 
     func testEnhancedKeepsDarkBlueDistinctFromBlack() throws {

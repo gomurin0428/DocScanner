@@ -26,19 +26,19 @@ enum ShadingCorrector {
     """)
 
     private static let brightContrastKernel = CIColorKernel(source: """
-    kernel vec4 preserveBrightChromatic(__sample output, __sample source,
-                                        __sample local, __sample chromatic) {
-        float sourceLuma = dot(source.rgb, vec3(0.299, 0.587, 0.114));
-        float localLuma = dot(local.rgb, vec3(0.299, 0.587, 0.114));
+    kernel vec4 preserveBrightChromatic(__sample processedColor, __sample inputColor,
+                                        __sample backgroundColor, __sample chromaSignal) {
+        float sourceLuma = dot(inputColor.rgb, vec3(0.299, 0.587, 0.114));
+        float localLuma = dot(backgroundColor.rgb, vec3(0.299, 0.587, 0.114));
         float localOutput = clamp((localLuma - 0.20) / 0.25, 0.0, 1.0);
-        float brightContrast = max(0.0, sourceLuma - localLuma) / 0.25 * chromatic.r;
+        float brightContrast = max(0.0, sourceLuma - localLuma) / 0.25 * chromaSignal.r;
         float minimumOutput = clamp(localOutput + brightContrast, 0.0, 1.0);
-        float value = output.r;
-        float currentSeparation = abs(output.r - localOutput);
-        float candidateOutput = max(output.r, minimumOutput);
+        float value = processedColor.r;
+        float currentSeparation = abs(processedColor.r - localOutput);
+        float candidateOutput = max(processedColor.r, minimumOutput);
         float candidateSeparation = abs(candidateOutput - localOutput);
-        float requiredSeparation = 0.25 * chromatic.r;
-        if (localOutput < 0.5 && sourceLuma > localLuma && chromatic.r > 0.0
+        float requiredSeparation = 0.25 * chromaSignal.r;
+        if (localOutput < 0.5 && sourceLuma > localLuma && chromaSignal.r > 0.0
             && candidateSeparation > currentSeparation
             && candidateSeparation >= requiredSeparation) {
             value = candidateOutput;
