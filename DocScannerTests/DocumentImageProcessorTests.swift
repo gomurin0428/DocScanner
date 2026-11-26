@@ -200,6 +200,42 @@ final class DocumentImageProcessorTests: XCTestCase {
         XCTAssertLessThanOrEqual(brightness(of: result, fx: 0.5, fy: 0.93), 0.1, "bottom bar")
     }
 
+    func testBlackAndWhiteKeepsFinePrintOnShadowedSmallPage() throws {
+        let width = 180, height = 240
+        let size = CGSize(width: CGFloat(width), height: CGFloat(height))
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let image = UIGraphicsImageRenderer(size: size, format: format).image { context in
+            for y in 0..<height {
+                let value = 0.18 + 0.08 * CGFloat(y) / CGFloat(height - 1)
+                UIColor(white: value, alpha: 1).setFill()
+                context.fill(CGRect(x: 0, y: CGFloat(y), width: CGFloat(width), height: 1))
+            }
+            UIColor(white: 0.05, alpha: 1).setFill()
+            context.fill(CGRect(x: 22, y: 120, width: 90, height: 1))
+            ("FINE" as NSString).draw(at: CGPoint(x: 22, y: 100), withAttributes: [
+                .font: UIFont.systemFont(ofSize: 8),
+                .foregroundColor: UIColor(white: 0.05, alpha: 1)
+            ])
+            UIColor(white: 32.0 / 255.0, alpha: 1).setFill()
+            context.fill(CGRect(x: 145, y: 190, width: 24, height: 24))
+        }
+        var modelLoadCount = 0
+        let enhancer = DocResEnhancer(modelLoader: {
+            modelLoadCount += 1
+            throw DocResModelLoadingError.restartRequired
+        })
+        let result = try DocumentImageProcessor(enhancer: enhancer).apply(.blackAndWhite, to: image)
+
+        XCTAssertEqual(modelLoadCount, 0)
+        XCTAssertGreaterThan(brightness(of: result, fx: 10.0 / CGFloat(width), fy: 20.0 / CGFloat(height)), 0.1,
+                             "shadowed paper collapsed to black")
+        XCTAssertLessThan(brightness(of: result, fx: 60.0 / CGFloat(width), fy: 120.0 / CGFloat(height)), 0.1,
+                          "fine text stroke was lost")
+        XCTAssertLessThan(brightness(of: result, fx: 157.0 / CGFloat(width), fy: 202.0 / CGFloat(height)), 0.1,
+                          "dark fill was lifted")
+    }
+
     /// enhanced で暗い下部の紙が明るく持ち上がることを検証する。
     /// - 入力: なし
     /// - 出力: なし

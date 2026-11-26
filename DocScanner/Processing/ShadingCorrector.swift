@@ -11,7 +11,7 @@ enum ShadingCorrector {
         float sourceLight = dot(color, vec3(0.2126, 0.7152, 0.0722));
         float maximum = max(color.r, max(color.g, color.b));
         float gain = min(2.4, 1.0 / max(light, 0.01));
-        float transition = clamp((sourceLight - 0.08) / 0.32, 0.0, 1.0);
+        float transition = clamp((sourceLight - 0.08) / 0.12, 0.0, 1.0);
         float protection = transition * transition * (3.0 - 2.0 * transition);
         gain = 1.0 + (gain - 1.0) * protection;
         float correctedMaximum = maximum * gain;
