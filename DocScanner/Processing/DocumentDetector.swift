@@ -204,7 +204,7 @@ struct DocumentDetector {
                 }
                 boundary = recovered
             }
-            corrected = try correct(image, boundary: boundary, camera: camera, refineBoundary: true)
+            corrected = try correct(image, boundary: boundary, camera: camera, refineBoundary: false)
         }
         guard let correctedCGImage = corrected.cgImage else { throw DocumentDetectionError.invalidImage }
         let upright = try PageTextOrientationCorrector().correct(correctedCGImage)
