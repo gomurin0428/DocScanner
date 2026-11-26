@@ -296,6 +296,35 @@ final class DocResTests: XCTestCase {
         }
     }
 
+    func testHighlightShoulderIsContinuousAcrossUnityGain() throws {
+        let size = CGSize(width: 512, height: 96)
+        let source = try XCTUnwrap(TestImageFactory.solid(
+            UIColor(red: 1, green: 200.0 / 255, blue: 150.0 / 255, alpha: 1), size: size
+        ).cgImage)
+        var gain = [Float](repeating: 1, count: 512 * 512)
+        for y in 0..<512 {
+            for x in 0..<512 {
+                gain[y * 512 + x] = 1 + 0.02 * Float(x - 256) / 256
+            }
+        }
+
+        let result = try DocResEnhancer.render(source, gain: gain)
+        let sourcePixels = try PageBitmap(source).data
+        let resultPixels = try PageBitmap(result).data
+        let row = 48
+        let unityOffset = (row * 512 + 256) * 4
+        XCTAssertEqual(Array(resultPixels[unityOffset..<(unityOffset + 3)]),
+                       Array(sourcePixels[unityOffset..<(unityOffset + 3)]))
+        for x in 240..<280 {
+            let offset = (row * 512 + x) * 4
+            let previous = (row * 512 + x - 1) * 4
+            for channel in 0..<3 {
+                XCTAssertLessThanOrEqual(abs(Int(resultPixels[offset + channel]) -
+                                                Int(resultPixels[previous + channel])), 2, "x=\(x)")
+            }
+        }
+    }
+
     func testPromptMorphologyMatchesIndependentWindowCalculation() {
         let side = 13
         var pixels: [UInt8] = []

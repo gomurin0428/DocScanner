@@ -299,11 +299,16 @@ final class DocResEnhancer {
                 let red = Float(pixels[offset]) * appliedFactor
                 let green = Float(pixels[offset + 1]) * appliedFactor
                 let blue = Float(pixels[offset + 2]) * appliedFactor
+                let sourceMaximum = Float(max(pixels[offset], max(pixels[offset + 1], pixels[offset + 2]))) / 255
                 let maximum = max(red, max(green, blue)) / 255
                 var scale: Float = 1
                 if appliedFactor > 1 && maximum > 0.9 {
-                    let excess = maximum - 0.9
-                    let mappedMaximum = 0.9 + 0.1 * (1 - exp(-excess / 0.1))
+                    let gainIncrease = sourceMaximum * (appliedFactor - 1)
+                    let beforeKnee = min(gainIncrease, max(0, 0.9 - sourceMaximum))
+                    let aboveKnee = max(0, gainIncrease - beforeKnee)
+                    let headroom = max(0, 1 - sourceMaximum - beforeKnee)
+                    let mappedMaximum = sourceMaximum + beforeKnee
+                        + headroom * (1 - exp(-aboveKnee / max(headroom, 0.00001)))
                     scale = mappedMaximum / maximum
                 }
                 pixels[offset] = UInt8(min(255, max(0, red * scale)))

@@ -17,8 +17,12 @@ enum ShadingCorrector {
         float correctedMaximum = maximum * gain;
         float scale = 1.0;
         if (gain > 1.0 && correctedMaximum > 0.9) {
-            float excess = correctedMaximum - 0.9;
-            float mappedMaximum = 0.9 + 0.1 * (1.0 - exp(-excess / 0.1));
+            float gainIncrease = maximum * (gain - 1.0);
+            float beforeKnee = min(gainIncrease, max(0.0, 0.9 - maximum));
+            float aboveKnee = max(0.0, gainIncrease - beforeKnee);
+            float headroom = max(0.0, 1.0 - maximum - beforeKnee);
+            float mappedMaximum = maximum + beforeKnee + headroom *
+                (1.0 - exp(-aboveKnee / max(headroom, 0.00001)));
             scale = mappedMaximum / correctedMaximum;
         }
         return vec4(source.rgb * gain * scale, alpha);

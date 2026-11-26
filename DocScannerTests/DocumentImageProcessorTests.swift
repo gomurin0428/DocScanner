@@ -105,6 +105,34 @@ final class DocumentImageProcessorTests: XCTestCase {
         }
     }
 
+    func testShadingHighlightShoulderIsContinuousAcrossUnityGain() throws {
+        let width = 512, height = 96
+        let size = CGSize(width: CGFloat(width), height: CGFloat(height))
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let image = UIGraphicsImageRenderer(size: size, format: format).image { context in
+            for x in 0..<width {
+                let value = x < 320 ? 0.96 + 0.04 * CGFloat(x) / 320 : 1
+                UIColor(white: value, alpha: 1).setFill()
+                context.fill(CGRect(x: CGFloat(x), y: 0, width: 1, height: CGFloat(height)))
+            }
+            UIColor(red: 1, green: 200.0 / 255, blue: 150.0 / 255, alpha: 1).setFill()
+            context.fill(CGRect(x: 0, y: 40, width: CGFloat(width), height: 8))
+        }
+
+        let corrected = try shadingCorrected(image)
+        let bitmap = try PageBitmap(XCTUnwrap(corrected.cgImage))
+        let row = 44
+        for x in 280..<460 {
+            let offset = (row * width + x) * 4
+            let previous = (row * width + x - 1) * 4
+            for channel in 0..<3 {
+                XCTAssertLessThanOrEqual(abs(Int(bitmap.data[offset + channel]) -
+                                                Int(bitmap.data[previous + channel])), 2, "x=\(x)")
+            }
+        }
+    }
+
     /// 白黒フィルタが輝度 0.75 の細線を保持しつつ大きな黒領域をくり抜かないことを検証する。
     /// - 入力: なし
     /// - 出力: なし
