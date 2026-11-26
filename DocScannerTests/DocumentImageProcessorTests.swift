@@ -552,16 +552,18 @@ final class DocumentImageProcessorTests: XCTestCase {
         XCTAssertGreaterThan(abs(outputPink.0 - outputPaper.0), 0.02)
     }
 
-    func testBlackAndWhiteKeepsBrightYellowContrastAcrossGrayBackgrounds() throws {
-        let size = CGSize(width: 360, height: 150)
+    func testBlackAndWhitePreservesYellowContrastAcrossGrayAndLightBlueBackgrounds() throws {
+        let size = CGSize(width: 450, height: 150)
         let format = UIGraphicsImageRendererFormat.default()
         format.scale = 1
-        let backgrounds: [CGFloat] = [0.26, 0.30, 0.36, 0.42]
+        let backgrounds: [UIColor] = [.init(white: 0.26, alpha: 1), .init(white: 0.30, alpha: 1),
+                                      .init(white: 0.36, alpha: 1), .init(white: 0.42, alpha: 1),
+                                      .init(red: 0.35, green: 0.62, blue: 0.95, alpha: 1)]
         let yellow = UIColor(red: 0.98, green: 0.82, blue: 0.05, alpha: 1)
         let font = UIFont.systemFont(ofSize: 24)
         let image = UIGraphicsImageRenderer(size: size, format: format).image { context in
-            for (index, gray) in backgrounds.enumerated() {
-                UIColor(white: gray, alpha: 1).setFill()
+            for (index, background) in backgrounds.enumerated() {
+                background.setFill()
                 context.fill(CGRect(x: CGFloat(index * 90), y: 0, width: 90, height: 150))
                 ("Y" as NSString).draw(at: CGPoint(x: CGFloat(index * 90 + 28), y: 55),
                     withAttributes: [.font: font, .foregroundColor: yellow])
@@ -593,9 +595,15 @@ final class DocumentImageProcessorTests: XCTestCase {
                 }
             }
             XCTAssertGreaterThan(glyph.count, 5)
-            XCTAssertGreaterThan(glyph.reduce(0, +) / Double(glyph.count) -
-                                 backdrop.reduce(0, +) / Double(backdrop.count), 20,
-                                 "bright ink lost contrast over gray \(backgrounds[index])")
+            let difference = glyph.reduce(0, +) / Double(glyph.count) -
+                backdrop.reduce(0, +) / Double(backdrop.count)
+            XCTAssertGreaterThan(abs(difference), 20, "bright ink lost contrast over background \(index)")
+            if index < 2 {
+                XCTAssertGreaterThan(difference, 20, "bright ink should lift from a dark B&W background")
+            }
+            if index == backgrounds.count - 1 {
+                XCTAssertLessThan(difference, -20, "light-blue print should retain its dark B&W separation")
+            }
         }
     }
 
