@@ -272,6 +272,101 @@ final class PageFlattenerTests: XCTestCase {
         XCTAssertEqual(refined, boundary)
     }
 
+    func testPhotoRecoveryFindsOuterPagePastClutterAndPrintedEdges() throws {
+        let size = CGSize(width: 1200, height: 1600)
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let actual = [CGPoint(x: 250, y: 40), CGPoint(x: 970, y: 65),
+                      CGPoint(x: 920, y: 1350), CGPoint(x: 290, y: 1490)]
+        let image = UIGraphicsImageRenderer(size: size, format: format).image { context in
+            UIColor(red: 0.38, green: 0.34, blue: 0.29, alpha: 1).setFill()
+            context.fill(CGRect(origin: .zero, size: size))
+            let canvas = context.cgContext
+            for index in 0..<12 {
+                canvas.setStrokeColor(UIColor(white: 0.25 + CGFloat(index % 4) * 0.04, alpha: 1).cgColor)
+                canvas.setLineWidth(3)
+                canvas.move(to: CGPoint(x: 0, y: CGFloat(index * 127)))
+                canvas.addLine(to: CGPoint(x: size.width, y: CGFloat(index * 127 + 55)))
+                canvas.strokePath()
+            }
+            let page = CGMutablePath()
+            page.move(to: actual[0])
+            for point in actual.dropFirst() { page.addLine(to: point) }
+            page.closeSubpath()
+            canvas.addPath(page)
+            canvas.setFillColor(UIColor.white.cgColor)
+            canvas.fillPath()
+            canvas.setStrokeColor(UIColor(white: 0.12, alpha: 1).cgColor)
+            canvas.setLineWidth(9)
+            canvas.stroke(CGRect(x: 410, y: 420, width: 240, height: 340))
+            canvas.setLineWidth(11)
+            canvas.move(to: CGPoint(x: 315, y: 170))
+            canvas.addLine(to: CGPoint(x: 315, y: 1380))
+            canvas.strokePath()
+        }
+        let detected = DocumentBoundary(corners: [
+            CGPoint(x: 238.0 / 1200, y: 1 - 32.0 / 1600), CGPoint(x: 984.0 / 1200, y: 1 - 59.0 / 1600),
+            CGPoint(x: 940.0 / 1200, y: 1 - 1354.0 / 1600), CGPoint(x: 112.0 / 1200, y: 1 - 1509.0 / 1600)
+        ])
+
+        let recovered = try XCTUnwrap(flattener.recoverPhotoBoundary(XCTUnwrap(image.cgImage), boundary: detected))
+        let points = recovered.corners.map { PagePoint(x: Double($0.x) * 1200, y: (1 - Double($0.y)) * 1600) }
+
+        for (point, expected) in zip(points, actual) {
+            XCTAssertLessThan((point - PagePoint(x: Double(expected.x), y: Double(expected.y))).length, 25)
+        }
+        XCTAssertGreaterThan(recovered.left.count, 16)
+        XCTAssertTrue(recovered.hasStraightEdges(in: size))
+    }
+
+    func testPhotoRecoveryRejectsEvidencePoorBoundary() throws {
+        let size = CGSize(width: 600, height: 800)
+        let image = try XCTUnwrap(TestImageFactory.solid(.white, size: size).cgImage)
+        let boundary = DocumentBoundary(corners: [CGPoint(x: 0.2, y: 0.9), CGPoint(x: 0.8, y: 0.9),
+                                                   CGPoint(x: 0.8, y: 0.1), CGPoint(x: 0.2, y: 0.1)])
+
+        XCTAssertNil(try flattener.recoverPhotoBoundary(image, boundary: boundary))
+    }
+
+    func testPhotoRecoveryRejectsCompetingPrintedBoundary() throws {
+        let size = CGSize(width: 1200, height: 1600)
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let image = UIGraphicsImageRenderer(size: size, format: format).image { context in
+            UIColor(red: 0.38, green: 0.34, blue: 0.29, alpha: 1).setFill()
+            context.fill(CGRect(origin: .zero, size: size))
+            let canvas = context.cgContext
+            canvas.setFillColor(UIColor.white.cgColor)
+            canvas.fill(CGRect(x: 250, y: 100, width: 700, height: 1300))
+            canvas.setStrokeColor(UIColor.black.cgColor)
+            canvas.setLineWidth(8)
+            canvas.stroke(CGRect(x: 265, y: 115, width: 670, height: 1270))
+        }
+        func normalized(_ point: CGPoint) -> CGPoint {
+            CGPoint(x: point.x / size.width, y: 1 - point.y / size.height)
+        }
+        let candidate = DocumentBoundary(corners: [
+            normalized(CGPoint(x: 257.5, y: 107.5)), normalized(CGPoint(x: 942.5, y: 107.5)),
+            normalized(CGPoint(x: 942.5, y: 1392.5)), normalized(CGPoint(x: 257.5, y: 1392.5))
+        ])
+
+        XCTAssertNil(try flattener.recoverPhotoBoundary(XCTUnwrap(image.cgImage), boundary: candidate))
+    }
+
+    func testPhotoRecoveryRetainsKnownCurvedBoundary() throws {
+        let size = CGSize(width: 600, height: 800)
+        let image = try XCTUnwrap(TestImageFactory.solid(.white, size: size).cgImage)
+        let topLeft = CGPoint(x: 0.2, y: 0.9), topRight = CGPoint(x: 0.8, y: 0.9)
+        let boundary = DocumentBoundary(top: [topLeft, CGPoint(x: 0.4, y: 0.87),
+                                               CGPoint(x: 0.6, y: 0.93), topRight],
+            right: [topRight, CGPoint(x: 0.8, y: 0.1)],
+            bottom: [CGPoint(x: 0.2, y: 0.1), CGPoint(x: 0.8, y: 0.1)],
+            left: [topLeft, CGPoint(x: 0.2, y: 0.1)])
+        XCTAssertTrue(boundary.hasMeasuredCurvedEdges(in: size))
+
+        XCTAssertEqual(try XCTUnwrap(flattener.recoverPhotoBoundary(image, boundary: boundary)), boundary)
+    }
+
     /// 上原点 raw 画像とマスクで、ページ位置・上下マーカーを保って flatten することを検証する。
     /// - 入力: なし
     /// - 出力: なし

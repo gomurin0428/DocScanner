@@ -186,9 +186,25 @@ struct DocumentDetector {
                 corrected = UIImage(cgImage: straightened, scale: image.scale, orientation: .up)
             }
         } else {
-            corrected = try correct(image, boundary: DocumentBoundary(corners: [rectangle.topLeft,
-                rectangle.topRight, rectangle.bottomRight, rectangle.bottomLeft]), camera: camera,
-                refineBoundary: true)
+            let detectedBoundary = DocumentBoundary(corners: [rectangle.topLeft,
+                rectangle.topRight, rectangle.bottomRight, rectangle.bottomLeft])
+            let flattener = PageFlattener()
+            let locallyRefined = try flattener.refineBoundary(detectionImage, boundary: detectedBoundary)
+            let localEdgesSupported = [locallyRefined.top, locallyRefined.right,
+                                       locallyRefined.bottom, locallyRefined.left]
+                .allSatisfy { $0.count > 2 }
+            let boundary: DocumentBoundary
+            if localEdgesSupported || locallyRefined.hasMeasuredCurvedEdges(in: imageSize) {
+                boundary = locallyRefined
+                AppDiagnostics.selection("Photo edge recovery skipped: local boundary samples retained")
+            } else {
+                guard let recovered = try flattener.recoverPhotoBoundary(
+                    detectionImage, boundary: detectedBoundary) else {
+                    throw DocumentDetectionError.noDocumentFound
+                }
+                boundary = recovered
+            }
+            corrected = try correct(image, boundary: boundary, camera: camera, refineBoundary: true)
         }
         guard let correctedCGImage = corrected.cgImage else { throw DocumentDetectionError.invalidImage }
         let upright = try PageTextOrientationCorrector().correct(correctedCGImage)
