@@ -68,6 +68,10 @@ enum ShadingCorrector {
     /// - Throws: 背景推定または補正カーネルの失敗時に各エラー
     static func flattened(_ image: CIImage) throws -> CIImage {
         let illumination = try background(of: grayscale(image))
+        return try applyingCorrection(to: image, using: illumination)
+    }
+
+    static func applyingCorrection(to image: CIImage, using illumination: CIImage) throws -> CIImage {
         guard let correctionKernel,
               let corrected = correctionKernel.apply(extent: image.extent,
                                                        arguments: [image, illumination]) else {

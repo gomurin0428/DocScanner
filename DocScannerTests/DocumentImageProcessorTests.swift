@@ -110,25 +110,38 @@ final class DocumentImageProcessorTests: XCTestCase {
         let size = CGSize(width: CGFloat(width), height: CGFloat(height))
         let format = UIGraphicsImageRendererFormat.default()
         format.scale = 1
-        let image = UIGraphicsImageRenderer(size: size, format: format).image { context in
+        let sourceImage = UIGraphicsImageRenderer(size: size, format: format).image { context in
+            UIColor(red: 1, green: 200.0 / 255, blue: 150.0 / 255, alpha: 1).setFill()
+            context.fill(CGRect(origin: .zero, size: size))
+        }
+        let illuminationImage = UIGraphicsImageRenderer(size: size, format: format).image { context in
             for x in 0..<width {
-                let value = x < 320 ? 0.96 + 0.04 * CGFloat(x) / 320 : 1
+                let value = 0.98 + 0.02 * CGFloat(x) / CGFloat(width - 1)
                 UIColor(white: value, alpha: 1).setFill()
                 context.fill(CGRect(x: CGFloat(x), y: 0, width: 1, height: CGFloat(height)))
             }
-            UIColor(red: 1, green: 200.0 / 255, blue: 150.0 / 255, alpha: 1).setFill()
-            context.fill(CGRect(x: 0, y: 40, width: CGFloat(width), height: 8))
         }
-
-        let corrected = try shadingCorrected(image)
-        let bitmap = try PageBitmap(XCTUnwrap(corrected.cgImage))
+        let sRGB = CGColorSpace(name: CGColorSpace.sRGB)!
+        let source = CIImage(cgImage: try XCTUnwrap(sourceImage.cgImage), options: [.colorSpace: sRGB])
+        let illumination = CIImage(cgImage: try XCTUnwrap(illuminationImage.cgImage), options: [.colorSpace: sRGB])
+        let corrected = try ShadingCorrector.applyingCorrection(to: source, using: illumination)
+        let correctedCGImage = try XCTUnwrap(ImageRendering.context.createCGImage(
+            corrected, from: corrected.extent, format: .RGBA8, colorSpace: sRGB
+        ))
+        let sourcePixels = try PageBitmap(XCTUnwrap(sourceImage.cgImage)).data
+        let resultPixels = try PageBitmap(correctedCGImage).data
         let row = 44
-        for x in 280..<460 {
+        let unityOffset = (row * width + width - 1) * 4
+        for channel in 0..<3 {
+            XCTAssertLessThanOrEqual(abs(Int(resultPixels[unityOffset + channel]) -
+                                            Int(sourcePixels[unityOffset + channel])), 1)
+        }
+        for x in 1..<width {
             let offset = (row * width + x) * 4
             let previous = (row * width + x - 1) * 4
             for channel in 0..<3 {
-                XCTAssertLessThanOrEqual(abs(Int(bitmap.data[offset + channel]) -
-                                                Int(bitmap.data[previous + channel])), 2, "x=\(x)")
+                XCTAssertLessThanOrEqual(abs(Int(resultPixels[offset + channel]) -
+                                                Int(resultPixels[previous + channel])), 2, "x=\(x)")
             }
         }
     }
