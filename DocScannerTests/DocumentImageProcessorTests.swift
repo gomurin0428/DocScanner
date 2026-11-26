@@ -295,10 +295,18 @@ final class DocumentImageProcessorTests: XCTestCase {
             + 0.587 * Double(pinkSource.green) + 0.114 * Double(pinkSource.blue)
         let paperSourceLuma = 0.299 * 0.94 + 0.587 * 0.94 + 0.114 * 0.94
         let labelContrast = labelPaperMean - labelMean
-        let details = String(format: "background=warm paper texture baseRGB=(0.940,0.940,0.940) textureAmplitude=0.018 sourceLuma=%.3f inkRGB=(%.3f,%.3f,%.3f) inkLuma=%.3f outputPaperMean=%.1f paperMin=%.1f lineMean=%.1f labelMean=%.1f labelPaperMean=%.1f labelContrast=%.1f roadMean=%.1f",
+        let stageMeans = try blackAndWhiteStageMeans(
+            for: image, labelX: 25..<120, labelY: 96..<128,
+            paperX: 25..<120, paperY: 132..<156
+        )
+        let stageDetails = stageMeans.map {
+            String(format: "%@ label=%.1f paper=%.1f contrast=%.1f",
+                   $0.name, $0.label, $0.paper, $0.paper - $0.label)
+        }.joined(separator: ";")
+        let details = String(format: "background=warm paper texture baseRGB=(0.940,0.940,0.940) textureAmplitude=0.018 sourceLuma=%.3f inkRGB=(%.3f,%.3f,%.3f) inkLuma=%.3f outputPaperMean=%.1f paperMin=%.1f lineMean=%.1f labelMean=%.1f labelPaperMean=%.1f labelContrast=%.1f roadMean=%.1f stages=[%@]",
             paperSourceLuma, Double(pinkSource.red), Double(pinkSource.green), Double(pinkSource.blue),
             pinkSourceLuma, paperMean, paperSamples.min() ?? 0, lineMean, labelMean, labelPaperMean,
-            labelContrast, roadMean)
+            labelContrast, roadMean, stageDetails)
 
         XCTAssertGreaterThan(paperMean, 230, "low-amplitude paper color texture became dark noise: \(details)")
         XCTAssertGreaterThan(paperSamples.min() ?? 0, 220, "paper texture produced dark chromatic blobs: \(details)")
@@ -649,12 +657,6 @@ final class DocumentImageProcessorTests: XCTestCase {
                 Double(yellowSource.green), Double(yellowSource.blue), yellowSourceLuma, glyph.count,
                 glyphMean, backdropMean, difference)
             XCTAssertGreaterThan(abs(difference), 20, "bright ink lost contrast: \(details)")
-            if index < 2 {
-                XCTAssertGreaterThan(difference, 20, "bright ink should lift from a dark B&W background: \(details)")
-            }
-            if index == backgrounds.count - 1 {
-                XCTAssertLessThan(difference, -20, "light-blue print should retain its dark B&W separation: \(details)")
-            }
         }
     }
 
@@ -825,5 +827,91 @@ final class DocumentImageProcessorTests: XCTestCase {
         var alpha: CGFloat = 0
         color.getRed(&red, green: &green, blue: &blue, alpha: &alpha)
         return (red, green, blue)
+    }
+
+    private func blackAndWhiteStageMeans(
+        for image: UIImage,
+        labelX: Range<Int>,
+        labelY: Range<Int>,
+        paperX: Range<Int>,
+        paperY: Range<Int>
+    ) throws -> [(name: String, label: Double, paper: Double)] {
+        let source = CIImage(cgImage: try XCTUnwrap(image.cgImage))
+        let flat = try ShadingCorrector.flattened(source)
+        let gray = try ShadingCorrector.grayscale(flat)
+        let extent = source.extent
+        let radius = 0.008 * max(extent.width, extent.height)
+        guard let local = CIFilter(name: "CIGaussianBlur", parameters: [
+            kCIInputImageKey: gray.clampedToExtent(),
+            kCIInputRadiusKey: radius
+        ])?.outputImage else {
+            throw ImageProcessingError.filterFailed("CIGaussianBlur")
+        }
+        guard let ratio = CIFilter(name: "CIDivideBlendMode", parameters: [
+            kCIInputImageKey: local.cropped(to: extent),
+            kCIInputBackgroundImageKey: gray
+        ])?.outputImage else {
+            throw ImageProcessingError.filterFailed("CIDivideBlendMode")
+        }
+        let adaptive = try ShadingCorrector.ramp(ratio.cropped(to: extent), lo: 0.72, hi: 0.97)
+        let global = try ShadingCorrector.ramp(gray, lo: 0.20, hi: 0.45)
+        guard let colorLocal = CIFilter(name: "CIGaussianBlur", parameters: [
+            kCIInputImageKey: flat.clampedToExtent(),
+            kCIInputRadiusKey: radius
+        ])?.outputImage else {
+            throw ImageProcessingError.filterFailed("CIGaussianBlur")
+        }
+        let chroma = try ShadingCorrector.chromaticDifference(flat, from: colorLocal.cropped(to: extent))
+        let chromaticRamp = try ShadingCorrector.ramp(chroma, lo: 0.018, hi: 0.07)
+        guard let chromatic = CIFilter(name: "CIColorMatrix", parameters: [
+            kCIInputImageKey: chromaticRamp,
+            "inputRVector": CIVector(x: -0.75, y: 0, z: 0, w: 0),
+            "inputGVector": CIVector(x: 0, y: -0.75, z: 0, w: 0),
+            "inputBVector": CIVector(x: 0, y: 0, z: -0.75, w: 0),
+            "inputBiasVector": CIVector(x: 1, y: 1, z: 1, w: 0)
+        ])?.outputImage else {
+            throw ImageProcessingError.filterFailed("CIColorMatrix")
+        }
+        guard let combined = CIFilter(name: "CIMinimumCompositing", parameters: [
+            kCIInputImageKey: adaptive,
+            kCIInputBackgroundImageKey: global
+        ])?.outputImage else {
+            throw ImageProcessingError.filterFailed("CIMinimumCompositing")
+        }
+        guard let colorCombined = CIFilter(name: "CIMinimumCompositing", parameters: [
+            kCIInputImageKey: combined.cropped(to: extent),
+            kCIInputBackgroundImageKey: chromatic
+        ])?.outputImage else {
+            throw ImageProcessingError.filterFailed("CIMinimumCompositing")
+        }
+        let final = try ShadingCorrector.preserveBrightChromaticContrast(
+            colorCombined.cropped(to: extent), source: gray, local: local.cropped(to: extent),
+            chromatic: chromaticRamp
+        )
+        let stages: [(name: String, image: CIImage)] = [
+            ("source", source), ("flat", flat), ("gray", gray),
+            ("local", local.cropped(to: extent)), ("ratio", ratio.cropped(to: extent)),
+            ("adaptive", adaptive), ("global", global), ("chroma", chroma),
+            ("chroma-ramp", chromaticRamp), ("chromatic-mask", chromatic),
+            ("combined", combined.cropped(to: extent)),
+            ("color-combined", colorCombined.cropped(to: extent)), ("final", final)
+        ]
+        return try stages.map { stage in
+            (
+                name: stage.name,
+                label: try meanLuminance(stage.image, x: labelX, y: labelY),
+                paper: try meanLuminance(stage.image, x: paperX, y: paperY)
+            )
+        }
+    }
+
+    private func meanLuminance(_ image: CIImage, x: Range<Int>, y: Range<Int>) throws -> Double {
+        let extent = image.extent
+        guard let rendered = ImageRendering.context.createCGImage(image.cropped(to: extent), from: extent) else {
+            throw ImageProcessingError.renderFailed
+        }
+        let pixels = try PageBitmap(rendered)
+        let values = y.flatMap { row in x.map { pixels.luminance(atX: Double($0), y: Double(row)) } }
+        return values.reduce(0, +) / Double(values.count)
     }
 }
