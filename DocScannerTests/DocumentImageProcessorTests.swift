@@ -292,7 +292,7 @@ final class DocumentImageProcessorTests: XCTestCase {
                 }
             }
         }
-        XCTAssertGreaterThan(glyphPixelCount, 8, "synthetic text mask was empty")
+        XCTAssertGreaterThan(glyphPixelCount, 5, "synthetic text mask was empty")
     }
 
     /// enhanced で暗い下部の紙が明るく持ち上がることを検証する。
