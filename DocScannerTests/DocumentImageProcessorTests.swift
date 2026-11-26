@@ -289,16 +289,25 @@ final class DocumentImageProcessorTests: XCTestCase {
         let labelMean = meanLuminance(x: 25..<120, y: 96..<128)
         let labelPaperMean = meanLuminance(x: 25..<120, y: 132..<156)
         let road = (30..<210).map { pixels.luminance(atX: Double($0), y: 165) }
-
-        XCTAssertGreaterThan(paperMean, 230, "low-amplitude paper color texture became dark noise")
-        XCTAssertGreaterThan(paperSamples.min() ?? 0, 220, "paper texture produced dark chromatic blobs")
-        XCTAssertGreaterThan(lineMean, 55, "pink ink collapsed to black blobs")
-        XCTAssertGreaterThan(paperMean - lineMean, 35, "thin pink glyph lost contrast")
-        XCTAssertGreaterThan(labelPaperMean - labelMean, 12, "faint text is not legible against paper")
         let roadMean = road.reduce(0, +) / Double(road.count)
-        XCTAssertGreaterThan(roadMean, 20, "gray road became a black blob")
-        XCTAssertLessThan(roadMean, 190, "gray road disappeared")
-        XCTAssertLessThan((road.max() ?? 0) - (road.min() ?? 0), 24, "gray road became mottled")
+        let pinkSource = colorComponents(pink)
+        let pinkSourceLuma = 0.299 * Double(pinkSource.red)
+            + 0.587 * Double(pinkSource.green) + 0.114 * Double(pinkSource.blue)
+        let paperSourceLuma = 0.299 * 0.94 + 0.587 * 0.94 + 0.114 * 0.94
+        let labelContrast = labelPaperMean - labelMean
+        let details = String(format: "background=warm paper texture baseRGB=(0.940,0.940,0.940) textureAmplitude=0.018 sourceLuma=%.3f inkRGB=(%.3f,%.3f,%.3f) inkLuma=%.3f outputPaperMean=%.1f paperMin=%.1f lineMean=%.1f labelMean=%.1f labelPaperMean=%.1f labelContrast=%.1f roadMean=%.1f",
+            paperSourceLuma, Double(pinkSource.red), Double(pinkSource.green), Double(pinkSource.blue),
+            pinkSourceLuma, paperMean, paperSamples.min() ?? 0, lineMean, labelMean, labelPaperMean,
+            labelContrast, roadMean)
+
+        XCTAssertGreaterThan(paperMean, 230, "low-amplitude paper color texture became dark noise: \(details)")
+        XCTAssertGreaterThan(paperSamples.min() ?? 0, 220, "paper texture produced dark chromatic blobs: \(details)")
+        XCTAssertGreaterThan(lineMean, 55, "pink ink collapsed to black blobs: \(details)")
+        XCTAssertGreaterThan(paperMean - lineMean, 35, "thin pink glyph lost contrast: \(details)")
+        XCTAssertGreaterThan(labelContrast, 12, "faint text is not legible against paper: \(details)")
+        XCTAssertGreaterThan(roadMean, 20, "gray road became a black blob: \(details)")
+        XCTAssertLessThan(roadMean, 190, "gray road disappeared: \(details)")
+        XCTAssertLessThan((road.max() ?? 0) - (road.min() ?? 0), 24, "gray road became mottled: \(details)")
     }
 
     func testBlackAndWhitePreservesWhiteKnockoutTextOnNavy() throws {
@@ -583,7 +592,11 @@ final class DocumentImageProcessorTests: XCTestCase {
         let backgrounds: [UIColor] = [.init(white: 0.26, alpha: 1), .init(white: 0.30, alpha: 1),
                                       .init(white: 0.36, alpha: 1), .init(white: 0.42, alpha: 1),
                                       .init(red: 0.35, green: 0.62, blue: 0.95, alpha: 1)]
+        let backgroundLabels = ["gray 0.26", "gray 0.30", "gray 0.36", "gray 0.42", "light blue"]
         let yellow = UIColor(red: 0.98, green: 0.82, blue: 0.05, alpha: 1)
+        let yellowSource = colorComponents(yellow)
+        let yellowSourceLuma = 0.299 * Double(yellowSource.red)
+            + 0.587 * Double(yellowSource.green) + 0.114 * Double(yellowSource.blue)
         let font = UIFont.systemFont(ofSize: 24)
         let image = UIGraphicsImageRenderer(size: size, format: format).image { context in
             for (index, background) in backgrounds.enumerated() {
@@ -618,15 +631,29 @@ final class DocumentImageProcessorTests: XCTestCase {
                     backdrop.append(pixels.luminance(atX: Double(x), y: Double(y)))
                 }
             }
-            XCTAssertGreaterThan(glyph.count, 5)
-            let difference = glyph.reduce(0, +) / Double(glyph.count) -
-                backdrop.reduce(0, +) / Double(backdrop.count)
-            XCTAssertGreaterThan(abs(difference), 20, "bright ink lost contrast over background \(index)")
+            let backgroundRGB = colorComponents(backgrounds[index])
+            let backgroundSourceLuma = 0.299 * Double(backgroundRGB.red)
+                + 0.587 * Double(backgroundRGB.green) + 0.114 * Double(backgroundRGB.blue)
+            let inputDetails = String(format: "background=%@ RGB=(%.3f,%.3f,%.3f) sourceLuma=%.3f yellowRGB=(%.3f,%.3f,%.3f) yellowLuma=%.3f glyphPixels=%d",
+                backgroundLabels[index], Double(backgroundRGB.red), Double(backgroundRGB.green),
+                Double(backgroundRGB.blue), backgroundSourceLuma, Double(yellowSource.red),
+                Double(yellowSource.green), Double(yellowSource.blue), yellowSourceLuma, glyph.count)
+            XCTAssertGreaterThan(glyph.count, 5, inputDetails)
+            guard glyph.count > 5, !backdrop.isEmpty else { continue }
+            let glyphMean = glyph.reduce(0, +) / Double(glyph.count)
+            let backdropMean = backdrop.reduce(0, +) / Double(backdrop.count)
+            let difference = glyphMean - backdropMean
+            let details = String(format: "background=%@ RGB=(%.3f,%.3f,%.3f) sourceLuma=%.3f yellowRGB=(%.3f,%.3f,%.3f) yellowLuma=%.3f glyphPixels=%d outputGlyphMean=%.1f outputBackdropMean=%.1f difference=%.1f",
+                backgroundLabels[index], Double(backgroundRGB.red), Double(backgroundRGB.green),
+                Double(backgroundRGB.blue), backgroundSourceLuma, Double(yellowSource.red),
+                Double(yellowSource.green), Double(yellowSource.blue), yellowSourceLuma, glyph.count,
+                glyphMean, backdropMean, difference)
+            XCTAssertGreaterThan(abs(difference), 20, "bright ink lost contrast: \(details)")
             if index < 2 {
-                XCTAssertGreaterThan(difference, 20, "bright ink should lift from a dark B&W background")
+                XCTAssertGreaterThan(difference, 20, "bright ink should lift from a dark B&W background: \(details)")
             }
             if index == backgrounds.count - 1 {
-                XCTAssertLessThan(difference, -20, "light-blue print should retain its dark B&W separation")
+                XCTAssertLessThan(difference, -20, "light-blue print should retain its dark B&W separation: \(details)")
             }
         }
     }
@@ -664,10 +691,26 @@ final class DocumentImageProcessorTests: XCTestCase {
             }
         }
 
-        XCTAssertGreaterThan(glyph.count, 5)
-        let separation = backdrop.reduce(0, +) / Double(backdrop.count) -
-            glyph.reduce(0, +) / Double(glyph.count)
-        XCTAssertGreaterThan(separation, 20, "near-equal-luma colored ink should retain its dark separation")
+        let background = colorComponents(UIColor(white: 0.30, alpha: 1))
+        let inkSource = colorComponents(ink)
+        let backgroundLuma = 0.299 * Double(background.red) + 0.587 * Double(background.green)
+            + 0.114 * Double(background.blue)
+        let inkLuma = 0.299 * Double(inkSource.red) + 0.587 * Double(inkSource.green)
+            + 0.114 * Double(inkSource.blue)
+        let inputDetails = String(format: "background=gray 0.30 RGB=(%.3f,%.3f,%.3f) sourceLuma=%.3f inkRGB=(%.3f,%.3f,%.3f) inkLuma=%.3f glyphPixels=%d",
+            Double(background.red), Double(background.green), Double(background.blue), backgroundLuma,
+            Double(inkSource.red), Double(inkSource.green), Double(inkSource.blue), inkLuma,
+            glyph.count)
+        XCTAssertGreaterThan(glyph.count, 5, inputDetails)
+        guard glyph.count > 5, !backdrop.isEmpty else { return }
+        let glyphMean = glyph.reduce(0, +) / Double(glyph.count)
+        let backdropMean = backdrop.reduce(0, +) / Double(backdrop.count)
+        let separation = backdropMean - glyphMean
+        let details = String(format: "background=gray 0.30 RGB=(%.3f,%.3f,%.3f) sourceLuma=%.3f inkRGB=(%.3f,%.3f,%.3f) inkLuma=%.3f glyphPixels=%d outputGlyphMean=%.1f outputBackdropMean=%.1f separation=%.1f",
+            Double(background.red), Double(background.green), Double(background.blue), backgroundLuma,
+            Double(inkSource.red), Double(inkSource.green), Double(inkSource.blue), inkLuma,
+            glyph.count, glyphMean, backdropMean, separation)
+        XCTAssertGreaterThan(separation, 20, "near-equal-luma colored ink should retain its dark separation: \(details)")
     }
 
     /// grayscale で R==G==B を保ち暗い下部の紙が明るくなることを検証する。
