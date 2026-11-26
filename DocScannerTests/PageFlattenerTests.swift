@@ -237,7 +237,39 @@ final class PageFlattenerTests: XCTestCase {
 
         XCTAssertEqual(refined.top.count, 2)
         XCTAssertFalse(refined.hasStraightEdges(in: size))
-        XCTAssertThrowsError(try flattener.flattenPlanar(image, boundary: refined))
+        XCTAssertNoThrow(try flattener.flattenPlanar(image, boundary: refined))
+    }
+
+    func testRefineBoundaryDeclinesAcuteCornerShiftBeyondLocalRange() throws {
+        let size = CGSize(width: 1000, height: 1000)
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let actual = [PagePoint(x: 100, y: 100), PagePoint(x: 800, y: 500),
+                      PagePoint(x: 800, y: 900), PagePoint(x: 700, y: 900)]
+        let candidate = [PagePoint(x: 144.39, y: 139.19), PagePoint(x: 788, y: 506.96),
+                         PagePoint(x: 788, y: 888), PagePoint(x: 706, y: 888)]
+        let image = UIGraphicsImageRenderer(size: size, format: format).image { context in
+            UIColor(white: 0.1, alpha: 1).setFill()
+            context.fill(CGRect(origin: .zero, size: size))
+            let path = context.cgContext
+            path.beginPath()
+            path.move(to: CGPoint(x: CGFloat(actual[0].x), y: CGFloat(actual[0].y)))
+            for point in actual.dropFirst() {
+                path.addLine(to: CGPoint(x: CGFloat(point.x), y: CGFloat(point.y)))
+            }
+            path.closePath()
+            UIColor.white.setFill()
+            path.fillPath()
+        }
+        func normalized(_ point: PagePoint) -> CGPoint {
+            CGPoint(x: CGFloat(point.x / Double(size.width)),
+                    y: CGFloat(1 - point.y / Double(size.height)))
+        }
+        let boundary = DocumentBoundary(corners: candidate.map(normalized))
+
+        let refined = try flattener.refineBoundary(XCTUnwrap(image.cgImage), boundary: boundary)
+
+        XCTAssertEqual(refined, boundary)
     }
 
     /// 上原点 raw 画像とマスクで、ページ位置・上下マーカーを保って flatten することを検証する。

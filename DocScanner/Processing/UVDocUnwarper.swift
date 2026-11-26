@@ -104,23 +104,28 @@ final class UVDocUnwarper {
             return nil
         }
         let sourceSize = CGSize(width: CGFloat(image.width), height: CGFloat(image.height))
-        let straightBoundary = boundary.hasStraightEdges(in: sourceSize)
-        if straightBoundary {
-            if try PageContentStraightener().textCurvature(in: crop) == .straight {
-                AppDiagnostics.selection("UVDoc skipped: straight text baselines and sampled straight boundaries; using corner-only planar correction")
-                return try PageFlattener().flattenPlanar(image, boundary: boundary, camera: camera)
-            }
-        } else {
-            AppDiagnostics.selection("UVDoc retained: boundary edges are curved or unsampled")
+        let hasMeasuredCurvature = boundary.hasMeasuredCurvedEdges(in: sourceSize)
+        let hasStraightText = try PageContentStraightener().textCurvature(in: crop) == .straight
+        if hasStraightText && !hasMeasuredCurvature {
+            AppDiagnostics.selection("UVDoc skipped: straight text and no measured curved boundary; using corner-only planar correction")
+            return try PageFlattener().flattenPlanar(image, boundary: boundary, camera: camera)
+        }
+        if hasMeasuredCurvature {
+            AppDiagnostics.selection("UVDoc retained: measured curved boundary")
+        } else if !hasStraightText {
+            AppDiagnostics.selection("UVDoc retained: text baselines are not straight")
         }
         try ensureModel()
         guard model != nil else { return nil }
         guard let raw = try predict(input) else {
+            AppDiagnostics.selection("UVDoc output rejected: predictor returned no grid")
             let error = UVDocProcessingError.invalidModelOutput
             AppDiagnostics.error("UVDoc model output", error: error)
             throw error
         }
-        guard let grid = raw.constrained(to: croppedBoundary) else {
+        var rejectionReason: String?
+        guard let grid = raw.constrained(to: croppedBoundary, rejectionReason: &rejectionReason) else {
+            AppDiagnostics.selection("UVDoc output rejected: \(rejectionReason ?? "constraint validation failed")")
             let error = UVDocProcessingError.invalidModelOutput
             AppDiagnostics.error("UVDoc model output", error: error)
             throw error
@@ -145,8 +150,20 @@ final class UVDocUnwarper {
             AppDiagnostics.error("UVDoc prediction", error: predictionError)
             throw predictionError
         }
-        guard let array = result.featureValue(for: "grid")?.multiArrayValue,
-              array.shape.map(\.intValue) == [1, 2, 45, 31], array.dataType == .float32 else {
+        guard let array = result.featureValue(for: "grid")?.multiArrayValue else {
+            AppDiagnostics.selection("UVDoc output rejected: missing grid feature")
+            let error = UVDocProcessingError.invalidModelOutput
+            AppDiagnostics.error("UVDoc model output", error: error)
+            throw error
+        }
+        guard array.shape.map(\.intValue) == [1, 2, 45, 31] else {
+            AppDiagnostics.selection("UVDoc output rejected: grid shape \(array.shape.map(\.intValue))")
+            let error = UVDocProcessingError.invalidModelOutput
+            AppDiagnostics.error("UVDoc model output", error: error)
+            throw error
+        }
+        guard array.dataType == .float32 else {
+            AppDiagnostics.selection("UVDoc output rejected: grid data type \(array.dataType)")
             let error = UVDocProcessingError.invalidModelOutput
             AppDiagnostics.error("UVDoc model output", error: error)
             throw error

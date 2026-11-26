@@ -380,7 +380,8 @@ struct PageFlattener {
         let corners = [intersection(top, left, near: original[0]), intersection(top, right, near: original[1]),
                        intersection(bottom, right, near: original[2]), intersection(bottom, left, near: original[3])]
         guard zip(corners, original).allSatisfy({ ($0 - $1).length <= range * 1.5 + 2 }) else {
-            throw DocumentDetectionError.correctionFailed
+            AppDiagnostics.selection("Photo boundary refinement declined: corner shift exceeds correction range; preserving detected boundary")
+            return boundary
         }
         func reconcile(_ points: inout [PagePoint], _ start: PagePoint, _ end: PagePoint) {
             let a = start - points[0], b = end - points[points.count - 1]
@@ -398,7 +399,13 @@ struct PageFlattener {
         }
         let result = DocumentBoundary(top: normalize(top), right: normalize(right),
                                       bottom: normalize(bottom), left: normalize(left))
-        guard result.isValid else { throw DocumentDetectionError.correctionFailed }
+        guard result.isValid else {
+            AppDiagnostics.selection("Photo boundary refinement declined: refined outline is invalid; preserving detected boundary")
+            return boundary
+        }
+        if result == boundary {
+            AppDiagnostics.selection("Photo boundary refinement found no usable edge evidence; preserving detected boundary")
+        }
         return result
     }
 
@@ -406,7 +413,9 @@ struct PageFlattener {
     func flattenPlanar(_ image: CGImage, boundary: DocumentBoundary,
                        camera: DocumentCamera? = nil) throws -> CGImage {
         let imageSize = CGSize(width: CGFloat(image.width), height: CGFloat(image.height))
-        guard boundary.hasStraightEdges(in: imageSize) else { throw DocumentDetectionError.correctionFailed }
+        guard boundary.isValid, !boundary.hasMeasuredCurvedEdges(in: imageSize) else {
+            throw DocumentDetectionError.correctionFailed
+        }
         let planarBoundary = boundary.cornersOnly
         let bitmap = try PageBitmap(image)
         let corners = planarBoundary.corners.map {

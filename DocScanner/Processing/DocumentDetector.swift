@@ -77,9 +77,10 @@ struct DocumentDetector {
     func correct(_ image: UIImage, boundary: DocumentBoundary, camera: DocumentCamera? = nil,
                  refineBoundary: Bool = false) throws -> UIImage {
         let cg = try normalizedCGImage(of: image)
+        let detectedBoundary = boundary
         let boundary = refineBoundary ? try PageFlattener().refineBoundary(cg, boundary: boundary) : boundary
         Self.logBoundary(boundary, imageSize: CGSize(width: CGFloat(cg.width), height: CGFloat(cg.height)),
-                         source: refineBoundary ? "refined rectangle" : "rectangle")
+                         source: refineBoundary && boundary != detectedBoundary ? "refined rectangle" : "rectangle")
         if let output = try unwarper.unwarp(cg, boundary: boundary, camera: camera) {
             return UIImage(cgImage: output, scale: image.scale, orientation: .up)
         }

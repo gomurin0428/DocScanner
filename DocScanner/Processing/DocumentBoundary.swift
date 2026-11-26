@@ -39,6 +39,26 @@ struct DocumentBoundary: Equatable {
         return deviations.allSatisfy { $0 <= max(imageSize.width, imageSize.height) * 0.002 }
     }
 
+    func hasMeasuredCurvedEdges(in imageSize: CGSize) -> Bool {
+        guard isValid, imageSize.width.isFinite, imageSize.height.isFinite,
+              imageSize.width > 0, imageSize.height > 0 else { return false }
+        let tolerance = max(imageSize.width, imageSize.height) * 0.002
+        return [top, right, bottom, left].contains { edge in
+            guard edge.count >= 3 else { return false }
+            let start = edge[0], end = edge[edge.count - 1]
+            let dx = (end.x - start.x) * imageSize.width
+            let dy = (end.y - start.y) * imageSize.height
+            let length = hypot(dx, dy)
+            guard length.isFinite, length > 0 else { return false }
+            let deviation = edge.dropFirst().dropLast().map { point in
+                let px = (point.x - start.x) * imageSize.width
+                let py = (point.y - start.y) * imageSize.height
+                return abs(dx * py - dy * px) / length
+            }.max() ?? 0
+            return deviation > tolerance
+        }
+    }
+
     /// 四辺を受け取り、描画・保存で共有する輪郭を構成する。
     init(top: [CGPoint], right: [CGPoint], bottom: [CGPoint], left: [CGPoint]) {
         self.top = top

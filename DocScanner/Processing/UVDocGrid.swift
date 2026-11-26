@@ -8,9 +8,20 @@ struct UVDocGrid {
     let points: [PagePoint]
 
     func constrained(to boundary: DocumentBoundary) -> UVDocGrid? {
-        guard boundary.isValid, width >= 2, height >= 2, points.count == width * height,
-              points.allSatisfy({ $0.x.isFinite && $0.y.isFinite &&
-                  (-0.25...1.25).contains($0.x) && (-0.25...1.25).contains($0.y) }) else { return nil }
+        var rejectionReason: String?
+        return constrained(to: boundary, rejectionReason: &rejectionReason)
+    }
+
+    func constrained(to boundary: DocumentBoundary, rejectionReason: inout String?) -> UVDocGrid? {
+        guard boundary.isValid, width >= 2, height >= 2, points.count == width * height else {
+            rejectionReason = "invalid boundary or grid dimensions"
+            return nil
+        }
+        guard points.allSatisfy({ $0.x.isFinite && $0.y.isFinite &&
+            (-0.25...1.25).contains($0.x) && (-0.25...1.25).contains($0.y) }) else {
+            rejectionReason = "nonfinite or out-of-range model coordinates"
+            return nil
+        }
         func edge(_ values: [CGPoint]) -> [PagePoint] {
             values.map { PagePoint(x: $0.x, y: 1 - $0.y) }
         }
@@ -29,7 +40,10 @@ struct UVDocGrid {
         let db = corrections(bottom, indices: Array((height - 1) * width..<height * width))
         let dl = corrections(left, indices: (0..<height).map { $0 * width })
         let dr = corrections(right, indices: (0..<height).map { $0 * width + width - 1 })
-        guard (dt + db + dl + dr).allSatisfy({ $0.length <= 0.18 }) else { return nil }
+        guard (dt + db + dl + dr).allSatisfy({ $0.length <= 0.18 }) else {
+            rejectionReason = "boundary projection exceeds the permitted 0.18 normalized displacement"
+            return nil
+        }
         func taper(_ distance: Double) -> Double {
             let t = min(1, max(0, distance / 0.15))
             return 1 - t * t * (3 - 2 * t)
@@ -48,7 +62,11 @@ struct UVDocGrid {
             }
         }
         let result = UVDocGrid(width: width, height: height, points: adjusted)
-        return result.isSafe ? result : nil
+        guard result.isSafe else {
+            rejectionReason = "boundary-constrained grid is folded or outside safe cell-area bounds"
+            return nil
+        }
+        return result
     }
 
     var isSafe: Bool {

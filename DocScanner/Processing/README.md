@@ -25,7 +25,7 @@ Core Image / Vision を使った画像処理（フィルタ・回転・書類検
 | `DocumentRectangleDetector` | `liveDocument(in:document:size:)` (static) | confidence ≥ 0.6・画像内四隅・凸形状・辺長を検証した書類領域を優先し、領域が無効なら有効な矩形を使用。画面端に近いことだけでは除外しない |
 | `DocumentDetector` | `correct(_:boundary:camera:refineBoundary:)` | 保存済み輪郭を必要に応じて近傍だけで調整し、カメラ情報とともに元画像を補正。対象を全画面から再検出しない（throws） |
 | `DocumentBoundary` | `init(top:right:bottom:left:)` / `init(corners:)` / `corners` / `outline` / `map(_:)` / `isValid` | 左下原点の正規化四辺。表示・座標変換・補正で共有し、有限性・範囲・凸な四隅を検証 |
-| `DocumentDetector` | `detectAndCorrect(_:camera:)` | 長辺1600pxの解析画像で矩形・書類領域を検出し、候補不在時は矩形検出のみを緩和して再試行。マスクが使えない写真は原画像上で四辺を実測補正する。十分な文字行と測定済み四辺の両方が直線なら四隅のホモグラフィで平面補正、それ以外はUVDocで処理（throws） |
+| `DocumentDetector` | `detectAndCorrect(_:camera:)` | 長辺1600pxの解析画像で矩形・書類領域を検出し、候補不在時は矩形検出のみを緩和して再試行。マスクが使えない写真は原画像上で四辺を実測補正する。十分な文字行が直線で、測定済み曲線辺がなければ四隅のホモグラフィで平面補正。実測曲線辺または曲がった文字行はUVDocで処理（throws） |
 | `DocumentDetector` | `quadsAgree(_:_:width:height:)` (static) | seg 四角形と優先候補の 4 隅距離が max(W,H)×8% 以内か判定 |
 | `DocumentDetector` | `normalizedCGImage(of:)` (private) | UIImage の向きを .up に正規化 |
 | `SegmentationMask` | `init(pixelBuffer:imageWidth:imageHeight:)` | Vision Float32 マスクを読み込む（形式不一致は throw） |

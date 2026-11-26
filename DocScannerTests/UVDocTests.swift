@@ -156,6 +156,34 @@ final class UVDocTests: XCTestCase {
         XCTAssertEqual(horizontalDiameter, verticalDiameter, accuracy: 3)
     }
 
+    func testStraightTextWithUnmeasuredCornersUsesPlanarCorrection() throws {
+        let size = CGSize(width: 700, height: 900)
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let text = (0..<14).map { "POSTCARD LINE \($0 + 1) 123456789" }.joined(separator: "\n")
+        let image = UIGraphicsImageRenderer(size: size, format: format).image { _ in
+            UIColor.white.setFill()
+            UIRectFill(CGRect(origin: .zero, size: size))
+            text.draw(in: CGRect(x: 45, y: 35, width: 610, height: 650), withAttributes: [
+                .font: UIFont.systemFont(ofSize: 24), .foregroundColor: UIColor.black
+            ])
+        }
+        let cgImage = try XCTUnwrap(image.cgImage)
+        let boundary = DocumentBoundary(corners: sampledStraightBoundary.corners)
+        XCTAssertEqual(try PageContentStraightener().textCurvature(in: cgImage), .straight)
+
+        var modelLoadCount = 0
+        let unwarper = UVDocUnwarper(modelLoader: {
+            modelLoadCount += 1
+            throw UVDocModelLoadingError.missingResource
+        })
+        let planar = try XCTUnwrap(unwarper.unwarp(cgImage, boundary: boundary))
+
+        XCTAssertEqual(modelLoadCount, 0)
+        XCTAssertGreaterThan(planar.width, 0)
+        XCTAssertGreaterThan(planar.height, 0)
+    }
+
     func testStraightTextKeepsCurvedSampledBoundaryOnUVDocPath() throws {
         let size = CGSize(width: 700, height: 900)
         let format = UIGraphicsImageRendererFormat.default()
@@ -181,5 +209,18 @@ final class UVDocTests: XCTestCase {
             XCTAssertTrue(error is UVDocModelLoadingError)
         }
         XCTAssertEqual(modelLoadCount, 1)
+    }
+
+    func testGridConstraintReportsOutOfRangeModelCoordinates() {
+        let boundary = DocumentBoundary(corners: [CGPoint(x: 0.1, y: 0.9), CGPoint(x: 0.9, y: 0.9),
+                                                   CGPoint(x: 0.9, y: 0.1), CGPoint(x: 0.1, y: 0.1)])
+        let grid = UVDocGrid(width: 2, height: 2, points: [PagePoint(x: 1.3, y: 0),
+                                                           PagePoint(x: 1, y: 0),
+                                                           PagePoint(x: 0, y: 1),
+                                                           PagePoint(x: 1, y: 1)])
+        var rejectionReason: String?
+
+        XCTAssertNil(grid.constrained(to: boundary, rejectionReason: &rejectionReason))
+        XCTAssertEqual(rejectionReason, "nonfinite or out-of-range model coordinates")
     }
 }
