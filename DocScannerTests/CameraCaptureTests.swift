@@ -67,6 +67,7 @@ final class CameraCaptureTests: XCTestCase {
         let saved = actual.map { CGPoint(x: $0.x + 0.015, y: $0.y - 0.012) }
         let refined = try PageFlattener().refineBoundary(try XCTUnwrap(image.cgImage), boundary: saved)
         XCTAssertTrue(refined.isValid)
+        XCTAssertGreaterThan(refined.top.count, 2)
         for (point, expected) in zip(refined.corners, actual.corners) {
             XCTAssertEqual(point.x, expected.x, accuracy: 0.002)
             XCTAssertEqual(point.y, expected.y, accuracy: 0.002)

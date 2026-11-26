@@ -1,6 +1,7 @@
 import XCTest
 import CoreGraphics
 import Foundation
+import UIKit
 @testable import DocScanner
 
 /// PageFlattener（マスク輪郭追跡 + Coons パッチ矩形化）のテスト。ML には依存しない。
@@ -147,6 +148,96 @@ final class PageFlattenerTests: XCTestCase {
         let output = try flattener.flatten(image, corners: corners, mask: mask)
         XCTAssertEqual(Double(output.width), 1100, accuracy: 1100 * 0.02)
         XCTAssertEqual(Double(output.height), 1400, accuracy: 1400 * 0.02)
+    }
+
+    func testCornersOnlyPlanarFlatteningKeepsEqualGridSpacingInSkewedTrapezoid() throws {
+        let size = CGSize(width: 1000, height: 1200)
+        let sourceCorners = [
+            PagePoint(x: 180, y: 100), PagePoint(x: 850, y: 140),
+            PagePoint(x: 960, y: 1080), PagePoint(x: 80, y: 900)
+        ]
+        let flatCorners = [
+            PagePoint(x: 0, y: 0), PagePoint(x: 800, y: 0),
+            PagePoint(x: 800, y: 1000), PagePoint(x: 0, y: 1000)
+        ]
+        let projection = try PageGeometry.homography(from: flatCorners, to: sourceCorners)
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let image = UIGraphicsImageRenderer(size: size, format: format).image { context in
+            UIColor.white.setFill()
+            context.fill(CGRect(origin: .zero, size: size))
+            let canvas = context.cgContext
+            canvas.setStrokeColor(UIColor.black.cgColor)
+            canvas.setLineWidth(3)
+            for index in 1..<10 {
+                let position = Double(index) / 10
+                for sample in 0...100 {
+                    let point = PageGeometry.apply(projection, to: PagePoint(
+                        x: 800 * Double(sample) / 100, y: 1000 * position))
+                    if sample == 0 { canvas.move(to: CGPoint(x: CGFloat(point.x), y: CGFloat(point.y))) }
+                    else { canvas.addLine(to: CGPoint(x: CGFloat(point.x), y: CGFloat(point.y))) }
+                }
+                canvas.strokePath()
+                for sample in 0...100 {
+                    let point = PageGeometry.apply(projection, to: PagePoint(
+                        x: 800 * position, y: 1000 * Double(sample) / 100))
+                    if sample == 0 { canvas.move(to: CGPoint(x: CGFloat(point.x), y: CGFloat(point.y))) }
+                    else { canvas.addLine(to: CGPoint(x: CGFloat(point.x), y: CGFloat(point.y))) }
+                }
+                canvas.strokePath()
+            }
+        }
+        let cgImage = try XCTUnwrap(image.cgImage)
+        func normalizedEdge(_ start: PagePoint, _ end: PagePoint) -> [CGPoint] {
+            (0...32).map { index in
+                let t = Double(index) / 32
+                let point = start * (1 - t) + end * t
+                return CGPoint(x: point.x / Double(size.width),
+                               y: 1 - point.y / Double(size.height))
+            }
+        }
+        let sampledBoundary = DocumentBoundary(
+            top: normalizedEdge(sourceCorners[0], sourceCorners[1]),
+            right: normalizedEdge(sourceCorners[1], sourceCorners[2]),
+            bottom: normalizedEdge(sourceCorners[3], sourceCorners[2]),
+            left: normalizedEdge(sourceCorners[0], sourceCorners[3]))
+        XCTAssertTrue(sampledBoundary.hasStraightEdges(in: size))
+
+        let output = try flattener.flattenPlanar(cgImage, boundary: sampledBoundary)
+        let pixels = try PageBitmap(output)
+        let x = Double(output.width) * 0.45
+        var lineCenters = [Double](), runStart: Int?
+        for y in 0..<output.height {
+            if pixels.luminance(atX: x, y: Double(y)) < 100 {
+                if runStart == nil { runStart = y }
+            } else if let start = runStart {
+                lineCenters.append(Double(start + y - 1) / 2)
+                runStart = nil
+            }
+        }
+        if let start = runStart { lineCenters.append(Double(start + output.height - 1) / 2) }
+        guard lineCenters.count == 9 else {
+            XCTFail("expected 9 horizontal grid lines, found \(lineCenters.count)")
+            return
+        }
+        let gaps = zip(lineCenters, lineCenters.dropFirst()).map { $1 - $0 }
+        let meanGap = gaps.reduce(0, +) / Double(gaps.count)
+        for gap in gaps {
+            XCTAssertEqual(gap, meanGap, accuracy: meanGap * 0.05)
+        }
+    }
+
+    func testRefineBoundaryDoesNotInventSamplesWithoutAnObservedEdge() throws {
+        let size = CGSize(width: 800, height: 1000)
+        let image = try XCTUnwrap(TestImageFactory.solid(.white, size: size).cgImage)
+        let boundary = DocumentBoundary(corners: [CGPoint(x: 0.1, y: 0.9), CGPoint(x: 0.9, y: 0.9),
+                                                  CGPoint(x: 0.9, y: 0.1), CGPoint(x: 0.1, y: 0.1)])
+
+        let refined = try flattener.refineBoundary(image, boundary: boundary)
+
+        XCTAssertEqual(refined.top.count, 2)
+        XCTAssertFalse(refined.hasStraightEdges(in: size))
+        XCTAssertThrowsError(try flattener.flattenPlanar(image, boundary: refined))
     }
 
     /// 上原点 raw 画像とマスクで、ページ位置・上下マーカーを保って flatten することを検証する。

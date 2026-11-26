@@ -294,6 +294,7 @@ struct PageFlattener {
     }
 
     func refineBoundary(_ image: CGImage, boundary: DocumentBoundary) throws -> DocumentBoundary {
+        // 連続したエッジ測定が不足する辺は、生成した直線サンプルで補わず元の点列を保つ。
         guard boundary.isValid else { throw DocumentDetectionError.invalidImage }
         let w = Double(image.width), h = Double(image.height)
         let range = min(w, h) * 0.03
@@ -305,7 +306,7 @@ struct PageFlattener {
         func refine(_ points: [CGPoint]) throws -> [PagePoint] {
             let edge = pixels(points)
             let count = max(17, edge.count)
-            var offsets = [Double](), samples = [PagePoint](), normals = [PagePoint]()
+            var offsets = [Double](), samples = [PagePoint](), normals = [PagePoint](), measured = [Bool]()
             for i in 0..<count {
                 let t = Double(i) / Double(count - 1)
                 let p = PageGeometry.sample(edge, at: t)
@@ -314,7 +315,7 @@ struct PageFlattener {
                 var normal = PagePoint(x: -tangent.y, y: tangent.x) * (1 / max(tangent.length, 1e-6))
                 let toCenter = center - p
                 if normal.x * toCenter.x + normal.y * toCenter.y < 0 { normal = normal * -1 }
-                var offset = 0.0, distance = Double.infinity
+                var offset = 0.0, distance = Double.infinity, found = false
                 if i > 0, i < count - 1 {
                     let reach = range + gap * 6
                     let start = p - normal * reach, end = p + normal * reach
@@ -342,17 +343,22 @@ struct PageFlattener {
                         let tolerance = max(8, abs(inner - outer) * 0.25)
                         guard (b - a) * sign >= 6, (inside - outside) * sign >= 6,
                               abs(outside - outer) <= tolerance, abs(inside - inner) <= tolerance else { continue }
-                        if abs(d) < distance { distance = abs(d); offset = d }
+                        if abs(d) < distance { distance = abs(d); offset = d; found = true }
                     }
                 }
                 samples.append(p)
                 normals.append(normal)
                 offsets.append(offset)
+                measured.append(found)
             }
-            let interior = Array(offsets.dropFirst().dropLast())
-            let median = interior.sorted()[interior.count / 2]
-            guard interior.filter({ abs($0 - median) <= gap * 6 }).count * 3 >= interior.count * 2 else { return samples }
-            for i in 1..<(count - 1) where abs(offsets[i] - median) > gap * 6 { offsets[i] = median }
+            let interior = Array(1..<(count - 1))
+            let measuredOffsets = interior.compactMap { measured[$0] ? offsets[$0] : nil }
+            guard measuredOffsets.count * 3 >= interior.count * 2 else { return edge }
+            let median = measuredOffsets.sorted()[measuredOffsets.count / 2]
+            guard measuredOffsets.filter({ abs($0 - median) <= gap * 6 }).count * 3 >= interior.count * 2 else {
+                return edge
+            }
+            for i in interior where !measured[i] || abs(offsets[i] - median) > gap * 6 { offsets[i] = median }
             offsets[0] = median
             offsets[count - 1] = median
             return samples.indices.map { i in
@@ -393,6 +399,50 @@ struct PageFlattener {
         let result = DocumentBoundary(top: normalize(top), right: normalize(right),
                                       bottom: normalize(bottom), left: normalize(left))
         guard result.isValid else { throw DocumentDetectionError.correctionFailed }
+        return result
+    }
+
+    /// 実測された直線辺を四隅のホモグラフィで平面化する。
+    func flattenPlanar(_ image: CGImage, boundary: DocumentBoundary,
+                       camera: DocumentCamera? = nil) throws -> CGImage {
+        let imageSize = CGSize(width: CGFloat(image.width), height: CGFloat(image.height))
+        guard boundary.hasStraightEdges(in: imageSize) else { throw DocumentDetectionError.correctionFailed }
+        let planarBoundary = boundary.cornersOnly
+        let bitmap = try PageBitmap(image)
+        let corners = planarBoundary.corners.map {
+            PagePoint(x: $0.x * Double(bitmap.width), y: (1 - $0.y) * Double(bitmap.height))
+        }
+        let tl = corners[0], tr = corners[1], br = corners[2], bl = corners[3]
+        let rectW = ((tr - tl).length + (br - bl).length) / 2
+        let rectH = ((bl - tl).length + (br - tr).length) / 2
+        let rectangle = [PagePoint(x: 0, y: 0), PagePoint(x: rectW, y: 0),
+                         PagePoint(x: rectW, y: rectH), PagePoint(x: 0, y: rectH)]
+        let inverse = try PageGeometry.homography(from: rectangle, to: corners)
+        let size = try PageGeometry.outputSize(boundary: planarBoundary, imageSize: imageSize, camera: camera)
+        let outW = Int(size.width), outH = Int(size.height)
+        guard outW >= 2, outH >= 2 else { throw DocumentDetectionError.invalidImage }
+
+        var output = [UInt8](repeating: 255, count: outW * outH * 4)
+        for row in 0..<outH {
+            let v = (Double(row) + 0.5) / Double(outH)
+            for column in 0..<outW {
+                let u = (Double(column) + 0.5) / Double(outW)
+                let point = PageGeometry.apply(inverse, to: PagePoint(x: rectW * u, y: rectH * v))
+                let offset = (row * outW + column) * 4
+                output.withUnsafeMutableBufferPointer { pointer in
+                    bitmap.sampleRGB(atX: point.x - 0.5, y: point.y - 0.5,
+                                     into: pointer.baseAddress! + offset)
+                }
+            }
+        }
+        guard let context = CGContext(
+            data: &output, width: outW, height: outH, bitsPerComponent: 8,
+            bytesPerRow: outW * 4,
+            space: CGColorSpace(name: CGColorSpace.sRGB)!,
+            bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
+        ), let result = context.makeImage() else {
+            throw DocumentDetectionError.renderFailed
+        }
         return result
     }
 

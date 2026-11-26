@@ -107,8 +107,8 @@ final class UVDocUnwarper {
         let straightBoundary = boundary.hasStraightEdges(in: sourceSize)
         if straightBoundary {
             if try PageContentStraightener().textCurvature(in: crop) == .straight {
-                AppDiagnostics.selection("UVDoc skipped: straight text baselines and sampled straight boundaries; using planar correction")
-                return try PageFlattener().flatten(image, boundary: boundary, camera: camera)
+                AppDiagnostics.selection("UVDoc skipped: straight text baselines and sampled straight boundaries; using corner-only planar correction")
+                return try PageFlattener().flattenPlanar(image, boundary: boundary, camera: camera)
             }
         } else {
             AppDiagnostics.selection("UVDoc retained: boundary edges are curved or unsampled")

@@ -10,6 +10,7 @@ struct DocumentBoundary: Equatable {
 
     var corners: [CGPoint] { [top[0], top[top.count - 1], bottom[bottom.count - 1], bottom[0]] }
     var outline: [CGPoint] { top + right.dropFirst() + bottom.reversed().dropFirst() + left.reversed().dropFirst() }
+    var cornersOnly: DocumentBoundary { DocumentBoundary(corners: corners) }
 
     func edgeMaximumDeviationPixels(in imageSize: CGSize) -> [CGFloat]? {
         let edges = [top, right, bottom, left]
