@@ -66,7 +66,7 @@ struct DocumentImageProcessor {
         case .enhanced:
             // 陰影除去で平坦化 → 輝度レベル補正 → 輝度シャープ化
             let flat = try learned.map { CIImage(cgImage: $0) } ?? ShadingCorrector.flattened(ci)
-            let output = try ShadingCorrector.luminanceLevels(flat, black: 0.12, white: 0.92, gamma: 1.3)
+            let output = try ShadingCorrector.luminanceLevels(flat, black: 0, white: 0.92, gamma: 1.3)
             guard let sharpened = CIFilter(name: "CISharpenLuminance", parameters: [
                 kCIInputImageKey: output,
                 kCIInputSharpnessKey: 0.5,

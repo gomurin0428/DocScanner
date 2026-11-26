@@ -105,14 +105,14 @@ final class UVDocUnwarper {
         }
         let sourceSize = CGSize(width: CGFloat(image.width), height: CGFloat(image.height))
         let hasMeasuredCurvature = boundary.hasMeasuredCurvedEdges(in: sourceSize)
-        let hasStraightText = try PageContentStraightener().textCurvature(in: crop) == .straight
-        if hasStraightText && !hasMeasuredCurvature {
-            AppDiagnostics.selection("UVDoc skipped: straight text and no measured curved boundary; using corner-only planar correction")
-            return try PageFlattener().flattenPlanar(image, boundary: boundary, camera: camera)
-        }
         if hasMeasuredCurvature {
             AppDiagnostics.selection("UVDoc retained: measured curved boundary")
-        } else if !hasStraightText {
+        } else {
+            let hasStraightText = try PageContentStraightener().textCurvature(in: crop) == .straight
+            if hasStraightText {
+                AppDiagnostics.selection("UVDoc skipped: straight text and no measured curved boundary; using corner-only planar correction")
+                return try PageFlattener().flattenPlanar(image, boundary: boundary, camera: camera)
+            }
             AppDiagnostics.selection("UVDoc retained: text baselines are not straight")
         }
         try ensureModel()

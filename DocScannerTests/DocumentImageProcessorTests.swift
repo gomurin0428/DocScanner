@@ -552,6 +552,28 @@ final class DocumentImageProcessorTests: XCTestCase {
         XCTAssertGreaterThan(abs(outputPink.0 - outputPaper.0), 0.02)
     }
 
+    func testEnhancedKeepsDarkBlueDistinctFromBlack() throws {
+        let size = CGSize(width: 128, height: 80)
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let darkBlue = UIColor(red: 0.015, green: 0.035, blue: 0.14, alpha: 1)
+        let image = UIGraphicsImageRenderer(size: size, format: format).image { context in
+            UIColor.black.setFill()
+            context.fill(CGRect(origin: .zero, size: size))
+            darkBlue.setFill()
+            context.fill(CGRect(x: 64, y: 0, width: 64, height: size.height))
+        }
+        let enhanced = try DocumentImageProcessor(enhancer: DocResEnhancer(model: nil))
+            .apply(.enhanced, to: image)
+        let black = colorComponents(try XCTUnwrap(TestImageFactory.pixelColor(of: enhanced, x: 32, y: 40)))
+        let blue = colorComponents(try XCTUnwrap(TestImageFactory.pixelColor(of: enhanced, x: 96, y: 40)))
+
+        XCTAssertLessThan(black.red + black.green + black.blue, 0.02)
+        XCTAssertGreaterThan(blue.blue, blue.red + 0.02)
+        XCTAssertGreaterThan(blue.red + blue.green + blue.blue,
+                             black.red + black.green + black.blue + 0.03)
+    }
+
     func testBlackAndWhitePreservesYellowContrastAcrossGrayAndLightBlueBackgrounds() throws {
         let size = CGSize(width: 450, height: 150)
         let format = UIGraphicsImageRendererFormat.default()
@@ -605,6 +627,45 @@ final class DocumentImageProcessorTests: XCTestCase {
                 XCTAssertLessThan(difference, -20, "light-blue print should retain its dark B&W separation")
             }
         }
+    }
+
+    func testBlackAndWhiteKeepsNearEqualLumaColoredInkDark() throws {
+        let size = CGSize(width: 180, height: 120)
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let ink = UIColor(red: 0.10, green: 0.29, blue: 0.95, alpha: 1)
+        let font = UIFont.systemFont(ofSize: 28)
+        let image = UIGraphicsImageRenderer(size: size, format: format).image { context in
+            UIColor(white: 0.30, alpha: 1).setFill()
+            context.fill(CGRect(origin: .zero, size: size))
+            ("Y" as NSString).draw(at: CGPoint(x: 70, y: 35),
+                                   withAttributes: [.font: font, .foregroundColor: ink])
+        }
+        let mask = UIGraphicsImageRenderer(size: size, format: format).image { context in
+            UIColor.black.setFill()
+            context.fill(CGRect(origin: .zero, size: size))
+            ("Y" as NSString).draw(at: CGPoint(x: 70, y: 35),
+                withAttributes: [.font: font, .foregroundColor: UIColor.white])
+        }
+        let result = try processor.apply(.blackAndWhite, to: image)
+        let pixels = try PageBitmap(XCTUnwrap(result.cgImage))
+        let maskPixels = try PageBitmap(XCTUnwrap(mask.cgImage))
+        var glyph = [Double](), backdrop = [Double]()
+        for y in 32..<82 {
+            for x in 60..<120 where maskPixels.luminance(atX: Double(x), y: Double(y)) > 220 {
+                glyph.append(pixels.luminance(atX: Double(x), y: Double(y)))
+            }
+        }
+        for y in 92..<112 {
+            for x in 40..<140 {
+                backdrop.append(pixels.luminance(atX: Double(x), y: Double(y)))
+            }
+        }
+
+        XCTAssertGreaterThan(glyph.count, 5)
+        let separation = backdrop.reduce(0, +) / Double(backdrop.count) -
+            glyph.reduce(0, +) / Double(glyph.count)
+        XCTAssertGreaterThan(separation, 20, "near-equal-luma colored ink should retain its dark separation")
     }
 
     /// grayscale で R==G==B を保ち暗い下部の紙が明るくなることを検証する。

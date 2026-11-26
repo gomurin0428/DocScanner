@@ -35,10 +35,13 @@ enum ShadingCorrector {
         float minimumOutput = clamp(localOutput + brightContrast, 0.0, 1.0);
         float value = output.r;
         float currentSeparation = abs(output.r - localOutput);
+        float candidateOutput = max(output.r, minimumOutput);
+        float candidateSeparation = abs(candidateOutput - localOutput);
         float requiredSeparation = 0.25 * chromatic.r;
         if (localOutput < 0.5 && sourceLuma > localLuma && chromatic.r > 0.0
-            && currentSeparation < requiredSeparation) {
-            value = max(value, minimumOutput);
+            && candidateSeparation > currentSeparation
+            && candidateSeparation >= requiredSeparation) {
+            value = candidateOutput;
         }
         return vec4(value, value, value, 1.0);
     }
