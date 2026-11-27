@@ -247,6 +247,35 @@ final class PageContentStraightenerTests: XCTestCase {
         XCTAssertTrue(try PageBitmap(abstainedCoons).data == PageBitmap(unrotated).data)
     }
 
+    func testSupportedPhotoCoonsStraightensWhenUVDocDeclinesExtremeAspect() throws {
+        let size = CGSize(width: 120, height: 400)
+        let source = try XCTUnwrap(TestImageFactory.gradient(size: size).cgImage)
+        let samples = (0...8).map { Double($0) / 8 }
+        func bow(_ v: Double) -> Double { 0.04 * sin(.pi * v) }
+        let boundary = DocumentBoundary(top: samples.map { CGPoint(x: $0, y: 1) },
+            right: samples.map { CGPoint(x: 1 - bow($0), y: 1 - $0) },
+            bottom: samples.map { CGPoint(x: $0, y: 0) },
+            left: samples.map { CGPoint(x: bow($0), y: 1 - $0) })
+        let flattened = try PageFlattener().flatten(source, boundary: boundary)
+        let outputSize = CGSize(width: flattened.width, height: flattened.height)
+        let straightened = try XCTUnwrap(TestImageFactory.solid(.white, size: outputSize).cgImage)
+        let unwarper = UVDocUnwarper(modelLoader: {
+            XCTFail("Extreme-aspect crop must be declined before model loading")
+            throw UVDocModelLoadingError.missingResource
+        })
+        let output = try XCTUnwrap(DocumentDetector.correctSupportedPhotoCoons(
+            source, boundary: boundary, analysisSize: size,
+            straightenFallback: { image in
+                XCTAssertTrue(try PageBitmap(image).data == PageBitmap(flattened).data)
+                return straightened
+            }, uvdocReference: {
+                let reference = try unwarper.unwarp(source, boundary: boundary)
+                XCTAssertNil(reference)
+                return reference
+            }))
+        XCTAssertTrue(try PageBitmap(output).data == PageBitmap(straightened).data)
+    }
+
     private func curvedLines() -> [[PagePoint]] {
         (0..<10).map { row in
             let y = 0.15 + Double(row) * 0.07

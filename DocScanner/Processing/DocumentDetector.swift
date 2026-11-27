@@ -224,13 +224,19 @@ struct DocumentDetector {
 
     static func correctSupportedPhotoCoons(_ source: CGImage, boundary: DocumentBoundary, analysisSize: CGSize,
                                            camera: DocumentCamera? = nil,
+                                           straightenFallback: (CGImage) throws -> CGImage = {
+                                               try PageContentStraightener().straighten($0)
+                                           },
                                            uvdocReference: () throws -> CGImage?) throws -> CGImage? {
         guard [boundary.top, boundary.right, boundary.bottom, boundary.left].allSatisfy({ $0.count > 2 }),
               boundary.hasMeasuredCurvedEdges(in: analysisSize) else { return nil }
         AppDiagnostics.selection("Photo Coons selected: measured curvature and all four edges supported")
         let flattened = try PageFlattener().flatten(source, boundary: boundary, camera: camera)
-        let reference = try uvdocReference()
-        return try PageTextOrientationCorrector().correct(flattened, scoring: reference)
+        let orientation = PageTextOrientationCorrector()
+        if let reference = try uvdocReference() {
+            return try orientation.correct(flattened, scoring: reference)
+        }
+        return try orientation.correct(straightenFallback(flattened))
     }
 
     /// セグメンテーション四角形と矩形検出四角形が十分一致するかを判定する。
