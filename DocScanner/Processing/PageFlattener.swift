@@ -710,7 +710,80 @@ struct PageFlattener {
                                 bottom: normalize(bottom), left: normalize(left))
     }
 
-    func refineBoundary(_ image: CGImage, boundary: DocumentBoundary) throws -> DocumentBoundary {
+    enum LocalPhotoBandDecision: String {
+        case anchored, local
+        case weakOrInconsistentContrast, unstableLocalTone, noIndependentAnchor
+        case insufficientContext, oppositeToneReturns
+
+        var accepts: Bool { self == .anchored || self == .local }
+    }
+
+    static func localPhotoBandDecision(outer: Double, inner: Double,
+                                       outside: Double, inside: Double, farOutside: Double, farInside: Double,
+                                       gradient: Double, offset: Double, range: Double, gap: Double,
+                                       luminance: (Double) -> Double?) -> LocalPhotoBandDecision {
+        let contrast = inside - outside
+        let sign = contrast > 0 ? 1.0 : -1.0
+        let sustainedContrast = min(contrast * sign, (farInside - farOutside) * sign)
+        guard sustainedContrast >= 6, gradient * sign >= max(6, sustainedContrast * 0.25) else {
+            return .weakOrInconsistentContrast
+        }
+        let anchorContrast = inner - outer
+        let anchorTolerance = max(8, abs(anchorContrast) * 0.25)
+        if anchorContrast * sign >= 6, abs(outside - outer) <= anchorTolerance,
+           abs(farOutside - outer) <= anchorTolerance, abs(inside - inner) <= anchorTolerance,
+           abs(farInside - inner) <= anchorTolerance {
+            return .anchored
+        }
+
+        let tolerance = max(8, sustainedContrast * 0.25)
+        guard abs(outside - farOutside) <= tolerance, abs(inside - farInside) <= tolerance else {
+            return .unstableLocalTone
+        }
+        let outsideMatches = abs(outside - outer) <= tolerance && abs(farOutside - outer) <= tolerance
+        let insideMatches = abs(inside - inner) <= tolerance && abs(farInside - inner) <= tolerance
+        guard outsideMatches != insideMatches else { return .noIndependentAnchor }
+
+        let sides = [(-1.0, farOutside, inside, outsideMatches), (1.0, farInside, outside, insideMatches)]
+        // Stop before the distant anchor; scan the intervening region for a return to the opposite tone.
+        for (direction, expected, opposite, anchorMatches) in sides {
+            var count = 0, matches = 0, oppositeRun = 0
+            for distance in stride(from: 12 * gap, through: range - direction * offset, by: gap) {
+                guard let value = luminance(offset + direction * distance) else { break }
+                count += 1
+                if abs(value - expected) <= tolerance { matches += 1 }
+                oppositeRun = abs(value - opposite) <= tolerance ? oppositeRun + 1 : 0
+                if oppositeRun >= 5 { return .oppositeToneReturns }
+            }
+            if !anchorMatches, count < 5 || matches * 2 <= count { return .insufficientContext }
+        }
+        return .local
+    }
+
+    func refineLegacyBoundary(_ image: CGImage, boundary: DocumentBoundary) throws -> DocumentBoundary {
+        try refineBoundary(image, boundary: boundary, requiresSustainedEvidence: false)
+    }
+
+    func refineBoundary(_ image: CGImage, boundary: DocumentBoundary,
+                        legacy: DocumentBoundary? = nil) throws -> DocumentBoundary {
+        let sustained = try refineBoundary(image, boundary: boundary, requiresSustainedEvidence: true)
+        let sustainedCounts = [sustained.top, sustained.right, sustained.bottom, sustained.left].map(\.count)
+        if sustainedCounts.allSatisfy({ $0 > 2 }) { return sustained }
+
+        let legacy = try legacy ?? refineLegacyBoundary(image, boundary: boundary)
+        let legacyCounts = [legacy.top, legacy.right, legacy.bottom, legacy.left].map(\.count)
+        let sides = ["top", "right", "bottom", "left"]
+        let lost = sides.indices.filter { legacyCounts[$0] > 2 && sustainedCounts[$0] <= 2 }
+        guard lost.isEmpty else {
+            AppDiagnostics.selection("Photo boundary refinement kept previous measurements: " +
+                                     "sustained evidence inconclusive on [\(lost.map { sides[$0] }.joined(separator: ","))]")
+            return legacy
+        }
+        return sustained
+    }
+
+    private func refineBoundary(_ image: CGImage, boundary: DocumentBoundary,
+                                requiresSustainedEvidence: Bool) throws -> DocumentBoundary {
         // 連続したエッジ測定が不足する辺は、生成した直線サンプルで補わず元の点列を保つ。
         guard boundary.isValid else { throw DocumentDetectionError.invalidImage }
         let w = Double(image.width), h = Double(image.height)
@@ -732,9 +805,10 @@ struct PageFlattener {
                 var normal = PagePoint(x: -tangent.y, y: tangent.x) * (1 / max(tangent.length, 1e-6))
                 let toCenter = center - p
                 if normal.x * toCenter.x + normal.y * toCenter.y < 0 { normal = normal * -1 }
-                var offset = 0.0, distance = Double.infinity, found = false
+                var offset = 0.0, strongest = 0.0
+                var firstTransition: Double?
                 if i > 0, i < count - 1 {
-                    let reach = range + gap * 6
+                    let reach = range + gap * (requiresSustainedEvidence ? 11 : 6)
                     let start = p - normal * reach, end = p + normal * reach
                     let bounds = CGRect(x: min(start.x, end.x) - 1, y: min(start.y, end.y) - 1,
                                         width: abs(end.x - start.x) + 3, height: abs(end.y - start.y) + 3)
@@ -746,38 +820,69 @@ struct PageFlattener {
                         guard q.x >= 0, q.x < w, q.y >= 0, q.y < h else { return nil }
                         return bitmap.luminance(atX: q.x - bounds.minX, y: q.y - bounds.minY)
                     }
-                    func band(_ d: Double, direction: Double) -> Double? {
-                        let values = (2...6).compactMap { luminance(d + direction * Double($0) * gap) }.sorted()
+                    func band(_ d: Double, direction: Double, samples: ClosedRange<Int> = 2...6) -> Double? {
+                        let values = samples.compactMap { luminance(d + direction * Double($0) * gap) }.sorted()
                         guard values.count == 5 else { return nil }
                         return values[values.count / 2]
                     }
                     let outer = band(-range, direction: -1), inner = band(range, direction: 1)
                     for d in stride(from: -range, through: range, by: step) {
-                        guard let outer, let inner, abs(inner - outer) >= 6,
+                        guard let outer, let inner,
                               let a = luminance(d - gap), let b = luminance(d + gap),
                               let outside = band(d, direction: -1), let inside = band(d, direction: 1) else { continue }
-                        let sign = inner > outer ? 1.0 : -1.0
-                        let tolerance = max(8, abs(inner - outer) * 0.25)
-                        guard (b - a) * sign >= 6, (inside - outside) * sign >= 6,
-                              abs(outside - outer) <= tolerance, abs(inside - inner) <= tolerance else { continue }
-                        if abs(d) < distance { distance = abs(d); offset = d; found = true }
+                        if !requiresSustainedEvidence {
+                            let sign = inner > outer ? 1.0 : -1.0
+                            let tolerance = max(8, abs(inner - outer) * 0.25)
+                            guard abs(inner - outer) >= 6, (b - a) * sign >= 6, (inside - outside) * sign >= 6,
+                                  abs(outside - outer) <= tolerance, abs(inside - inner) <= tolerance else { continue }
+                            if firstTransition == nil || abs(d) < abs(offset) { offset = d }
+                            firstTransition = firstTransition ?? d
+                            continue
+                        }
+                        guard let farOutside = band(d, direction: -1, samples: 7...11),
+                              let farInside = band(d, direction: 1, samples: 7...11) else { continue }
+                        let decision = Self.localPhotoBandDecision(
+                            outer: outer, inner: inner, outside: outside, inside: inside,
+                            farOutside: farOutside, farInside: farInside, gradient: b - a,
+                            offset: d, range: range, gap: gap, luminance: luminance)
+                        guard decision.accepts else { continue }
+                        let strength = abs(b - a)
+                        let first = firstTransition ?? d
+                        firstTransition = first
+                        guard d - first <= gap * 2 else { continue }
+                        if strength > strongest || (strength == strongest && abs(d) < abs(offset)) {
+                            offset = d
+                            strongest = strength
+                        }
                     }
                 }
                 samples.append(p)
                 normals.append(normal)
                 offsets.append(offset)
-                measured.append(found)
+                measured.append(firstTransition != nil)
             }
             let interior = Array(1..<(count - 1))
             let measuredOffsets = interior.compactMap { measured[$0] ? offsets[$0] : nil }
             guard measuredOffsets.count * 3 >= interior.count * 2 else { return edge }
             let median = measuredOffsets.sorted()[measuredOffsets.count / 2]
-            guard measuredOffsets.filter({ abs($0 - median) <= gap * 6 }).count * 3 >= interior.count * 2 else {
-                return edge
+            let supported = interior.filter { measured[$0] && abs(offsets[$0] - median) <= gap * 6 }
+            guard supported.count * 3 >= interior.count * 2,
+                  let first = supported.first, let last = supported.last else { return edge }
+            if requiresSustainedEvidence {
+                for i in 0..<first { offsets[i] = offsets[first] }
+                for (start, end) in zip(supported, supported.dropFirst()) {
+                    for i in (start + 1)..<end {
+                        let t = Double(i - start) / Double(end - start)
+                        offsets[i] = offsets[start] + t * (offsets[end] - offsets[start])
+                    }
+                }
+                for i in (last + 1)..<count { offsets[i] = offsets[last] }
+            } else {
+                for i in offsets.indices where i == 0 || i == count - 1 ||
+                    !measured[i] || abs(offsets[i] - median) > gap * 6 {
+                    offsets[i] = median
+                }
             }
-            for i in interior where !measured[i] || abs(offsets[i] - median) > gap * 6 { offsets[i] = median }
-            offsets[0] = median
-            offsets[count - 1] = median
             return samples.indices.map { i in
                 let start = max(0, i - 1), end = min(count - 1, i + 1)
                 let local = offsets[start...end].sorted()

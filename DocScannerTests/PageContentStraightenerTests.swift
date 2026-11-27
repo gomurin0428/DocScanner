@@ -1,6 +1,7 @@
 import CoreGraphics
 import CoreImage
 import UIKit
+import Vision
 import XCTest
 @testable import DocScanner
 
@@ -141,6 +142,52 @@ final class PageContentStraightenerTests: XCTestCase {
         XCTAssertNil(PageTextOrientationCorrector.preferredOrientation(scores: [30, 29, 28, 27]))
         XCTAssertNil(PageTextOrientationCorrector.preferredOrientation(scores: [30, 32, 31, 29]))
         XCTAssertNil(PageTextOrientationCorrector.preferredOrientation(scores: [0, 0, 0, 0]))
+    }
+
+    func testAmbiguousCoonsOrientationRequiresAccurateQuarterTurnAgreement() throws {
+        let (image, reference) = try sidewaysTextFixture()
+        let corrector = PageTextOrientationCorrector()
+        let fast = [2.0, 39, 1, 40]
+        let left = [1.0, 12, 2, 38]
+        let right = [1.0, 38, 2, 12]
+        let abstains = [2.0, 27, 1, 28]
+        for (referenceScores, coonsScores, accepts) in [(left, left, true), (left, right, false),
+                                                        (left, abstains, false), (abstains, left, false)] {
+            var passes = [VNRequestTextRecognitionLevel]()
+            let corrected = try corrector.correctCoons(image, reference: reference) { raster, level in
+                passes.append(level)
+                if level == .fast {
+                    XCTAssertTrue(raster === reference)
+                    return fast
+                }
+                return raster === reference ? referenceScores : coonsScores
+            }
+            XCTAssertEqual(passes, [.fast, .accurate, .accurate])
+            if accepts {
+                let expectedCI = CIImage(cgImage: image).oriented(.left)
+                let expected = try XCTUnwrap(ImageRendering.context.createCGImage(expectedCI, from: expectedCI.extent))
+                XCTAssertEqual(corrected.width, expected.width)
+                XCTAssertEqual(corrected.height, expected.height)
+                XCTAssertEqual(try PageBitmap(corrected).data, try PageBitmap(expected).data)
+            } else {
+                XCTAssertTrue(corrected === image)
+            }
+        }
+    }
+
+    func testCoonsOrientationOnlyRetriesAnAmbiguousQuarterTurn() throws {
+        let (image, reference) = try sidewaysTextFixture()
+        for fast in [[1.0, 15, 2, 35], [0, 0, 0, 0], [30, 31, 5, 32], [5, 7, 30, 31]] {
+            var passes = [VNRequestTextRecognitionLevel]()
+            let corrected = try PageTextOrientationCorrector().correctCoons(image, reference: reference) { _, level in
+                passes.append(level)
+                return fast
+            }
+            XCTAssertEqual(passes, [.fast])
+            if PageTextOrientationCorrector.preferredOrientation(scores: fast) == nil {
+                XCTAssertTrue(corrected === image)
+            }
+        }
     }
 
     func testTextCurvatureKeepsFlatRowsOutOfUVDocAndRetainsCurvedRows() {

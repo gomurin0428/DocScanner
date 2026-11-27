@@ -184,6 +184,39 @@ final class UVDocTests: XCTestCase {
         XCTAssertGreaterThan(planar.height, 0)
     }
 
+    func testNewCurvedMeasurementsUseLegacyPlanarRouteAndRefinedCorners() throws {
+        let size = CGSize(width: 700, height: 900)
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let text = (0..<14).map { "DOCUMENT LINE \($0 + 1) 123456789" }.joined(separator: "\n")
+        let image = UIGraphicsImageRenderer(size: size, format: format).image { _ in
+            UIColor.white.setFill()
+            UIRectFill(CGRect(origin: .zero, size: size))
+            text.draw(in: CGRect(x: 45, y: 35, width: 610, height: 650), withAttributes: [
+                .font: UIFont.systemFont(ofSize: 24), .foregroundColor: UIColor.black
+            ])
+        }
+        let cgImage = try XCTUnwrap(image.cgImage)
+        let routing = DocumentBoundary(corners: sampledStraightBoundary.corners)
+        let refined = curvedSampledBoundary.map { CGPoint(x: $0.x, y: $0.y * 0.98 + 0.02) }
+        XCTAssertTrue(refined.hasMeasuredCurvedEdges(in: size))
+        XCTAssertNotEqual(refined.corners, routing.corners)
+        XCTAssertNil(try DocumentDetector.correctSupportedPhotoCoons(
+            cgImage, boundary: refined, analysisSize: size, routingBoundary: routing, uvdocReference: {
+                XCTFail("New local curvature must not qualify the legacy planar page for Coons")
+                return nil
+            }))
+        let unwarper = UVDocUnwarper(modelLoader: {
+            XCTFail("New local curvature must not send the legacy planar page to the model")
+            throw UVDocModelLoadingError.missingResource
+        })
+        let actual = try XCTUnwrap(unwarper.unwarp(cgImage, boundary: refined, routingBoundary: routing))
+        let expected = try PageFlattener().flattenPlanar(cgImage, boundary: refined.cornersOnly)
+        XCTAssertEqual(actual.width, expected.width)
+        XCTAssertEqual(actual.height, expected.height)
+        XCTAssertEqual(try PageBitmap(actual).data, try PageBitmap(expected).data)
+    }
+
     func testStraightTextKeepsCurvedSampledBoundaryOnUVDocPath() throws {
         let size = CGSize(width: 700, height: 900)
         let format = UIGraphicsImageRendererFormat.default()

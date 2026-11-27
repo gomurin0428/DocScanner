@@ -69,15 +69,20 @@ final class UVDocUnwarper {
         return try MLModel(contentsOf: url, configuration: configuration)
     }
 
-    func unwarp(_ image: CGImage, boundary: DocumentBoundary, camera: DocumentCamera? = nil) throws -> CGImage? {
-        guard boundary.isValid else {
+    func unwarp(_ image: CGImage, boundary: DocumentBoundary, camera: DocumentCamera? = nil,
+                routingBoundary: DocumentBoundary? = nil) throws -> CGImage? {
+        let evidence = routingBoundary ?? boundary
+        guard boundary.isValid, evidence.isValid else {
             throw DocumentDetectionError.invalidImage
         }
-        let xs = boundary.outline.map(\.x), ys = boundary.outline.map(\.y)
-        let bounds = CGRect(x: xs.min()! * Double(image.width), y: (1 - ys.max()!) * Double(image.height),
-                            width: (xs.max()! - xs.min()!) * Double(image.width),
-                            height: (ys.max()! - ys.min()!) * Double(image.height)).integral
-            .intersection(CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        func cropBounds(_ outline: DocumentBoundary) -> CGRect {
+            let xs = outline.outline.map(\.x), ys = outline.outline.map(\.y)
+            return CGRect(x: xs.min()! * Double(image.width), y: (1 - ys.max()!) * Double(image.height),
+                          width: (xs.max()! - xs.min()!) * Double(image.width),
+                          height: (ys.max()! - ys.min()!) * Double(image.height)).integral
+                .intersection(CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        }
+        let bounds = cropBounds(boundary)
         guard min(bounds.width, bounds.height) >= 64 else {
             AppDiagnostics.selection("UVDoc skipped: small document crop")
             return nil
@@ -104,14 +109,24 @@ final class UVDocUnwarper {
             return nil
         }
         let sourceSize = CGSize(width: CGFloat(image.width), height: CGFloat(image.height))
-        let hasMeasuredCurvature = boundary.hasMeasuredCurvedEdges(in: sourceSize)
+        let hasMeasuredCurvature = evidence.hasMeasuredCurvedEdges(in: sourceSize)
         if hasMeasuredCurvature {
             AppDiagnostics.selection("UVDoc retained: measured curved boundary")
         } else {
-            let hasStraightText = try PageContentStraightener().textCurvature(in: crop) == .straight
+            let evidenceBounds = cropBounds(evidence)
+            let evidenceCrop: CGImage
+            if evidenceBounds == bounds {
+                evidenceCrop = crop
+            } else {
+                guard let legacyCrop = image.cropping(to: evidenceBounds) else {
+                    throw DocumentDetectionError.correctionFailed
+                }
+                evidenceCrop = legacyCrop.width > legacyCrop.height ? try rotate(legacyCrop, right: true) : legacyCrop
+            }
+            let hasStraightText = try PageContentStraightener().textCurvature(in: evidenceCrop) == .straight
             if hasStraightText {
                 AppDiagnostics.selection("UVDoc skipped: straight text and no measured curved boundary; using corner-only planar correction")
-                return try PageFlattener().flattenPlanar(image, boundary: boundary, camera: camera)
+                return try PageFlattener().flattenPlanar(image, boundary: boundary.cornersOnly, camera: camera)
             }
             AppDiagnostics.selection("UVDoc retained: text baselines are not straight")
         }

@@ -240,6 +240,133 @@ final class PageFlattenerTests: XCTestCase {
         XCTAssertNoThrow(try flattener.flattenPlanar(image, boundary: refined))
     }
 
+    func testRefineBoundaryPrefersSustainedPaperEdgeToWeakNearbyTransition() throws {
+        let (image, seed) = try refinementPhoto(seedTop: 144) { context in
+            UIColor(white: 0.24, alpha: 1).setFill()
+            context.fill(CGRect(x: 0, y: 151, width: 800, height: 1))
+            UIColor(white: 0.7, alpha: 1).setFill()
+            context.fill(CGRect(x: 140, y: 152, width: 520, height: 648))
+        }
+        let refined = try flattener.refineBoundary(image, boundary: seed)
+        XCTAssertEqual(refined.top.count, 17)
+        for point in refined.top {
+            XCTAssertEqual((1 - point.y) * Double(image.height), 152, accuracy: 1.25)
+        }
+    }
+
+    func testRefineBoundaryInterpolatesMissingRowsFromAdjacentPaperEdge() throws {
+        let (image, seed) = try refinementPhoto(seedTop: 144) { context in
+            UIColor(white: 0.7, alpha: 1).setFill()
+            context.fill(CGRect(x: 140, y: 144, width: 520, height: 656))
+            UIColor(white: 0.2, alpha: 1).setFill()
+            context.fill(CGRect(x: 325, y: 144, width: 150, height: 5))
+            UIColor(white: 0.7, alpha: 1).setFill()
+            context.fill(CGRect(x: 360, y: 112, width: 50, height: 9))
+        }
+        let refined = try flattener.refineBoundary(image, boundary: seed)
+        XCTAssertEqual(refined.top.count, 17)
+        let rows = refined.top.map { (1 - $0.y) * Double(image.height) }
+        guard rows.count == 17 else { return }
+        XCTAssertEqual(rows[4], 144, accuracy: 1)
+        XCTAssertEqual(rows[7], 149, accuracy: 1.25)
+        XCTAssertEqual(rows[8], 149, accuracy: 1.25)
+    }
+
+    func testRefineBoundaryRejectsStrongerPrintedRuleInsidePaper() throws {
+        let (image, seed) = try refinementPhoto(seedTop: 153) { context in
+            UIColor(white: 0.5, alpha: 1).setFill()
+            context.fill(CGRect(x: 140, y: 146, width: 520, height: 654))
+            UIColor.black.setFill()
+            context.fill(CGRect(x: 145, y: 156, width: 510, height: 4))
+        }
+        let refined = try flattener.refineBoundary(image, boundary: seed)
+        XCTAssertEqual(refined.top.count, 17)
+        for point in refined.top {
+            XCTAssertEqual((1 - point.y) * Double(image.height), 146, accuracy: 1.25)
+        }
+    }
+
+    func testRefineBoundaryKeepsMeasuredEdgeAcrossTwoSamePolarityTransitions() throws {
+        for obscureFarPaperTone in [false, true] {
+            let (image, seed) = try refinementPhoto(seedTop: 144) { context in
+                UIColor(white: 0.29, alpha: 1).setFill()
+                context.fill(CGRect(x: 140, y: 142, width: 520, height: 8))
+                UIColor(white: 0.58, alpha: 1).setFill()
+                context.fill(CGRect(x: 140, y: 150, width: 520, height: 650))
+                if obscureFarPaperTone {
+                    UIColor.black.setFill()
+                    context.fill(CGRect(x: 145, y: 157, width: 510, height: 8))
+                }
+            }
+            let refined = try flattener.refineBoundary(image, boundary: seed)
+            XCTAssertEqual(refined.top.count, 17)
+            for point in refined.top {
+                XCTAssertEqual((1 - point.y) * Double(image.height), 150, accuracy: 1.25)
+            }
+        }
+    }
+
+    func testRefineBoundaryUsesCleanLocalBandsWhenDistantAnchorIsContaminated() throws {
+        for contaminateInside in [false, true] {
+            let (image, seed) = try refinementPhoto(seedTop: 144) { context in
+                UIColor(white: 0.7, alpha: 1).setFill()
+                context.fill(CGRect(x: 140, y: 150, width: 520, height: 650))
+                UIColor(white: contaminateInside ? 0.1 : 0.63, alpha: 1).setFill()
+                context.fill(CGRect(x: 145, y: contaminateInside ? 170 : 112,
+                                    width: 510, height: 8))
+            }
+            let refined = try flattener.refineBoundary(image, boundary: seed)
+            XCTAssertEqual(refined.top.count, 17)
+            for point in refined.top {
+                XCTAssertEqual((1 - point.y) * Double(image.height), 150, accuracy: 1.25)
+            }
+        }
+    }
+
+    func testRefineBoundaryRejectsWidePrintedRuleWithPaperOnBothSides() throws {
+        let (image, seed) = try refinementPhoto(seedTop: 144) { context in
+            UIColor.white.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 800, height: 900))
+            UIColor.black.setFill()
+            context.fill(CGRect(x: 145, y: 138, width: 510, height: 14))
+        }
+        let refined = try flattener.refineBoundary(image, boundary: seed)
+        XCTAssertEqual(refined, seed)
+    }
+
+    func testRefineBoundaryKeepsAnAlignedPlanarPageInPlace() throws {
+        let (image, seed) = try refinementPhoto(seedTop: 144) { context in
+            UIColor(white: 0.7, alpha: 1).setFill()
+            context.fill(CGRect(x: 140, y: 144, width: 520, height: 656))
+        }
+        let refined = try flattener.refineBoundary(image, boundary: seed)
+        XCTAssertEqual(refined.corners, seed.corners)
+        let size = CGSize(width: image.width, height: image.height)
+        XCTAssertTrue(refined.hasStraightEdges(in: size))
+        let before = try flattener.flattenPlanar(image, boundary: seed)
+        let after = try flattener.flattenPlanar(image, boundary: refined)
+        XCTAssertEqual(before.width, after.width)
+        XCTAssertEqual(before.height, after.height)
+        XCTAssertTrue(try PageBitmap(before).data == PageBitmap(after).data)
+    }
+
+    private func refinementPhoto(seedTop: Double, draw: (UIGraphicsImageRendererContext) -> Void)
+        throws -> (CGImage, DocumentBoundary) {
+        let size = CGSize(width: 800, height: 900)
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let image = UIGraphicsImageRenderer(size: size, format: format).image { context in
+            UIColor(white: 0.2, alpha: 1).setFill()
+            context.fill(CGRect(origin: .zero, size: size))
+            draw(context)
+        }
+        let corners = [CGPoint(x: 140, y: seedTop), CGPoint(x: 660, y: seedTop),
+                       CGPoint(x: 660, y: 800), CGPoint(x: 140, y: 800)]
+        return (try XCTUnwrap(image.cgImage), DocumentBoundary(corners: corners.map {
+            CGPoint(x: $0.x / size.width, y: 1 - $0.y / size.height)
+        }))
+    }
+
     func testRefineBoundaryDeclinesAcuteCornerShiftBeyondLocalRange() throws {
         let size = CGSize(width: 1000, height: 1000)
         let format = UIGraphicsImageRendererFormat.default()

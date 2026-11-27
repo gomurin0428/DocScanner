@@ -192,32 +192,59 @@ struct PageContentStraightener {
 struct PageTextOrientationCorrector {
     private let context = ImageRendering.context
     private static let orientations: [CGImagePropertyOrientation] = [.up, .right, .down, .left]
-    private static let maximumAnalysisDimension: CGFloat = 1024
-
     func correct(_ image: CGImage, scoring reference: CGImage? = nil) throws -> CGImage {
         let scores = try orientationScores(of: reference ?? image)
-        guard let orientation = Self.preferredOrientation(scores: scores) else {
-            AppDiagnostics.selection("Photo text orientation unchanged: scores=\(Self.summary(scores))")
+        return try apply(Self.preferredOrientation(scores: scores), to: image, fastScores: scores)
+    }
+
+    func correctCoons(_ image: CGImage, reference: CGImage,
+                      scorer: ((CGImage, VNRequestTextRecognitionLevel) throws -> [Double])? = nil) throws -> CGImage {
+        let score = scorer ?? { try orientationScores(of: $0, level: $1) }
+        let fast = try score(reference, .fast)
+        var turn = Self.preferredOrientation(scores: fast)
+        if turn == nil, Self.hasAmbiguousQuarterTurn(scores: fast) {
+            do {
+                let accurateReference = try score(reference, .accurate)
+                let accurateCoons = try score(image, .accurate)
+                let referenceTurn = Self.preferredOrientation(scores: accurateReference)
+                let coonsTurn = Self.preferredOrientation(scores: accurateCoons)
+                if let referenceTurn, referenceTurn == coonsTurn,
+                   referenceTurn == .left || referenceTurn == .right {
+                    turn = referenceTurn
+                }
+                AppDiagnostics.selection("Photo Coons orientation retry: accurateReference=\(Self.summary(accurateReference)), " +
+                                         "accurateCoons=\(Self.summary(accurateCoons)), accepted=\(turn != nil)")
+            } catch {
+                AppDiagnostics.selection("Photo Coons orientation retry unavailable; preserving input orientation")
+            }
+        }
+        return try apply(turn, to: image, fastScores: fast)
+    }
+
+    private func apply(_ turn: CGImagePropertyOrientation?, to image: CGImage, fastScores: [Double]) throws -> CGImage {
+        guard let orientation = turn else {
+            AppDiagnostics.selection("Photo text orientation unchanged: scores=\(Self.summary(fastScores))")
             return image
         }
         let oriented = CIImage(cgImage: image).oriented(forExifOrientation: Int32(orientation.rawValue))
         guard let result = context.createCGImage(oriented, from: oriented.extent.integral) else {
             throw DocumentDetectionError.renderFailed
         }
-        AppDiagnostics.selection("Photo text orientation corrected: \(orientation), scores=\(Self.summary(scores))")
+        AppDiagnostics.selection("Photo text orientation corrected: \(orientation), scores=\(Self.summary(fastScores))")
         return result
     }
 
-    func orientationScores(of image: CGImage) throws -> [Double] {
+    func orientationScores(of image: CGImage, level: VNRequestTextRecognitionLevel = .fast) throws -> [Double] {
         let source = CIImage(cgImage: image)
-        let scale = min(1, Self.maximumAnalysisDimension / max(CGFloat(image.width), CGFloat(image.height)))
+        let maximumDimension: CGFloat = level == .accurate ? 2048 : 1024
+        let scale = min(1, maximumDimension / max(CGFloat(image.width), CGFloat(image.height)))
         let scaled = source.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
         guard let analysisImage = context.createCGImage(scaled, from: scaled.extent.integral) else {
             throw DocumentDetectionError.renderFailed
         }
         return try Self.orientations.map { orientation in
             let request = VNRecognizeTextRequest()
-            request.recognitionLevel = .fast
+            request.recognitionLevel = level
             request.usesLanguageCorrection = false
             request.automaticallyDetectsLanguage = true
             do {
@@ -242,11 +269,26 @@ struct PageTextOrientationCorrector {
               best != 0 else { return nil }
         let bestScore = scores[best]
         let nextBest = scores.indices.filter { $0 != best }.map { scores[$0] }.max() ?? 0
-        guard bestScore >= 12,
-              bestScore >= scores[0] * 1.08 + 4,
-              bestScore - nextBest >= max(4, bestScore * 0.08) else { return nil }
+        guard clearsUprightGate(bestScore, upright: scores[0]),
+              bestScore - nextBest >= margin(for: bestScore) else { return nil }
         return orientations[best]
     }
+
+    private static func hasAmbiguousQuarterTurn(scores: [Double]) -> Bool {
+        guard scores.count == orientations.count, scores.allSatisfy({ $0.isFinite && $0 >= 0 }) else { return false }
+        let best = max(scores[1], scores[3])
+        let runnerUp = min(scores[1], scores[3])
+        return clearsUprightGate(best, upright: scores[0]) &&
+            runnerUp > max(scores[0], scores[2]) &&
+            best - max(scores[0], scores[2]) >= margin(for: best) &&
+            best - runnerUp < margin(for: best)
+    }
+
+    private static func clearsUprightGate(_ score: Double, upright: Double) -> Bool {
+        score >= 12 && score >= upright * 1.08 + 4
+    }
+
+    private static func margin(for score: Double) -> Double { max(4, score * 0.08) }
 
     private static func summary(_ scores: [Double]) -> String {
         scores.map { String(format: "%.1f", $0) }.joined(separator: ",")
