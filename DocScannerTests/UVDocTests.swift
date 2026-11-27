@@ -184,6 +184,70 @@ final class UVDocTests: XCTestCase {
         XCTAssertGreaterThan(planar.height, 0)
     }
 
+    func testBothPhotoCropsMustPassUVDocAspectGate() throws {
+        let image = try XCTUnwrap(TestImageFactory.gradient(size: CGSize(width: 1024, height: 1024)).cgImage)
+        func outline(width: CGFloat) -> DocumentBoundary {
+            let x = width / 1024
+            let bottom = 324.0 / 1024
+            return DocumentBoundary(top: [CGPoint(x: 0, y: 1), CGPoint(x: x / 2, y: 0.99), CGPoint(x: x, y: 1)],
+                                    right: [CGPoint(x: x, y: 1), CGPoint(x: x, y: bottom)],
+                                    bottom: [CGPoint(x: 0, y: bottom), CGPoint(x: x, y: bottom)],
+                                    left: [CGPoint(x: 0, y: 1), CGPoint(x: 0, y: bottom)])
+        }
+        let legacy = outline(width: 239)
+        let refined = outline(width: 248)
+        let size = CGSize(width: image.width, height: image.height)
+        XCTAssertTrue(legacy.hasMeasuredCurvedEdges(in: size))
+        XCTAssertNil(try DocumentDetector.correctSupportedPhotoCoons(
+            image, boundary: refined, analysisSize: size, routingBoundary: legacy, uvdocReference: { _ in
+                XCTFail("The outline does not have all four sides sampled")
+                return nil
+            }))
+
+        var modelLoadCount = 0
+        let unwarper = UVDocUnwarper(modelLoader: {
+            modelLoadCount += 1
+            throw UVDocModelLoadingError.missingResource
+        })
+        XCTAssertNil(try unwarper.unwarp(image, boundary: legacy))
+        XCTAssertEqual(modelLoadCount, 0)
+        XCTAssertNil(try unwarper.unwarp(image, boundary: refined, routingBoundary: legacy))
+        XCTAssertNil(try unwarper.unwarp(image, boundary: legacy, routingBoundary: refined))
+        XCTAssertEqual(modelLoadCount, 0)
+        XCTAssertThrowsError(try unwarper.unwarp(image, boundary: refined))
+        XCTAssertEqual(modelLoadCount, 1)
+    }
+
+    func testBothPhotoCropsMustPassUVDocContrastGate() throws {
+        let size = CGSize(width: 512, height: 512)
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let image = try XCTUnwrap(UIGraphicsImageRenderer(size: size, format: format).image { context in
+            UIColor.white.setFill()
+            context.fill(CGRect(origin: .zero, size: size))
+            UIColor.black.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 32, height: size.height))
+        }.cgImage)
+        func outline(left: CGFloat) -> DocumentBoundary {
+            DocumentBoundary(top: [CGPoint(x: left, y: 1), CGPoint(x: 0.5, y: 0.96), CGPoint(x: 1, y: 1)],
+                             right: [CGPoint(x: 1, y: 1), CGPoint(x: 1, y: 0)],
+                             bottom: [CGPoint(x: left, y: 0), CGPoint(x: 1, y: 0)],
+                             left: [CGPoint(x: left, y: 1), CGPoint(x: left, y: 0)])
+        }
+        let lowContrast = outline(left: 0.125)
+        let highContrast = outline(left: 0)
+        var modelLoadCount = 0
+        let unwarper = UVDocUnwarper(modelLoader: {
+            modelLoadCount += 1
+            throw UVDocModelLoadingError.missingResource
+        })
+        XCTAssertNil(try unwarper.unwarp(image, boundary: highContrast, routingBoundary: lowContrast))
+        XCTAssertNil(try unwarper.unwarp(image, boundary: lowContrast, routingBoundary: highContrast))
+        XCTAssertEqual(modelLoadCount, 0)
+        XCTAssertThrowsError(try unwarper.unwarp(image, boundary: highContrast))
+        XCTAssertEqual(modelLoadCount, 1)
+    }
+
     func testNewCurvedMeasurementsUseLegacyPlanarRouteAndRefinedCorners() throws {
         let size = CGSize(width: 700, height: 900)
         let format = UIGraphicsImageRendererFormat.default()

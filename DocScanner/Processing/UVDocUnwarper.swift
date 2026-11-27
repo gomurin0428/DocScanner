@@ -82,15 +82,21 @@ final class UVDocUnwarper {
                           height: (ys.max()! - ys.min()!) * Double(image.height)).integral
                 .intersection(CGRect(x: 0, y: 0, width: image.width, height: image.height))
         }
+        func eligibleSize(_ bounds: CGRect, cropName: String) -> Bool {
+            guard min(bounds.width, bounds.height) >= 64 else {
+                AppDiagnostics.selection("UVDoc skipped: small document crop (\(cropName))")
+                return false
+            }
+            guard min(bounds.width, bounds.height) / max(bounds.width, bounds.height) >= 0.35 else {
+                AppDiagnostics.selection("UVDoc skipped: extreme document aspect ratio (\(cropName))")
+                return false
+            }
+            return true
+        }
         let bounds = cropBounds(boundary)
-        guard min(bounds.width, bounds.height) >= 64 else {
-            AppDiagnostics.selection("UVDoc skipped: small document crop")
-            return nil
-        }
-        guard min(bounds.width, bounds.height) / max(bounds.width, bounds.height) >= 0.35 else {
-            AppDiagnostics.selection("UVDoc skipped: extreme document aspect ratio")
-            return nil
-        }
+        let evidenceBounds = cropBounds(evidence)
+        guard eligibleSize(bounds, cropName: "rendering"),
+              evidenceBounds == bounds || eligibleSize(evidenceBounds, cropName: "routing") else { return nil }
         guard var crop = image.cropping(to: bounds) else {
             throw DocumentDetectionError.correctionFailed
         }
@@ -105,24 +111,27 @@ final class UVDocUnwarper {
         }
         let input = try Self.input(for: crop)
         guard Self.hasContrast(input) else {
-            AppDiagnostics.selection("UVDoc skipped: low contrast document crop")
+            AppDiagnostics.selection("UVDoc skipped: low contrast document crop (rendering)")
             return nil
+        }
+        let evidenceCrop: CGImage
+        if evidenceBounds == bounds {
+            evidenceCrop = crop
+        } else {
+            guard let legacyCrop = image.cropping(to: evidenceBounds) else {
+                throw DocumentDetectionError.correctionFailed
+            }
+            evidenceCrop = legacyCrop.width > legacyCrop.height ? try rotate(legacyCrop, right: true) : legacyCrop
+            guard Self.hasContrast(try Self.input(for: evidenceCrop)) else {
+                AppDiagnostics.selection("UVDoc skipped: low contrast document crop (routing)")
+                return nil
+            }
         }
         let sourceSize = CGSize(width: CGFloat(image.width), height: CGFloat(image.height))
         let hasMeasuredCurvature = evidence.hasMeasuredCurvedEdges(in: sourceSize)
         if hasMeasuredCurvature {
             AppDiagnostics.selection("UVDoc retained: measured curved boundary")
         } else {
-            let evidenceBounds = cropBounds(evidence)
-            let evidenceCrop: CGImage
-            if evidenceBounds == bounds {
-                evidenceCrop = crop
-            } else {
-                guard let legacyCrop = image.cropping(to: evidenceBounds) else {
-                    throw DocumentDetectionError.correctionFailed
-                }
-                evidenceCrop = legacyCrop.width > legacyCrop.height ? try rotate(legacyCrop, right: true) : legacyCrop
-            }
             let hasStraightText = try PageContentStraightener().textCurvature(in: evidenceCrop) == .straight
             if hasStraightText {
                 AppDiagnostics.selection("UVDoc skipped: straight text and no measured curved boundary; using corner-only planar correction")
