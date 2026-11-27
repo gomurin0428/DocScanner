@@ -194,8 +194,8 @@ struct PageTextOrientationCorrector {
     private static let orientations: [CGImagePropertyOrientation] = [.up, .right, .down, .left]
     private static let maximumAnalysisDimension: CGFloat = 1024
 
-    func correct(_ image: CGImage) throws -> CGImage {
-        let scores = try orientationScores(of: image)
+    func correct(_ image: CGImage, scoring reference: CGImage? = nil) throws -> CGImage {
+        let scores = try orientationScores(of: reference ?? image)
         guard let orientation = Self.preferredOrientation(scores: scores) else {
             AppDiagnostics.selection("Photo text orientation unchanged: scores=\(Self.summary(scores))")
             return image
