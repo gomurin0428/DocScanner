@@ -23,9 +23,9 @@ Core Image / Vision を使った画像処理（フィルタ・回転・書類検
 | `DocumentRectangleDetector` | `makeRequest()` / `preferred(in:)` (static) | 共通設定（信頼度 0.6・最小サイズ 0.1・縦横比 0.15・角度許容 45°・最大 8 候補）で検出し、実面積×信頼度で優先候補を選択。カメラと静止画で共通利用 |
 | `DocumentRectangleDetector` | `confirmedDocument(in:document:size:)` (static) | 優先矩形が信頼度 0.8 以上の書類領域と一致する場合だけ返す |
 | `DocumentRectangleDetector` | `liveDocument(in:document:size:)` (static) | confidence ≥ 0.6・画像内四隅・凸形状・辺長を検証した書類領域を優先し、領域が無効なら有効な矩形を使用。画面端に近いことだけでは除外しない |
-| `DocumentDetector` | `correct(_:boundary:camera:refineBoundary:)` | 保存済み輪郭を必要に応じて近傍だけで調整し、カメラ情報とともに元画像を補正。対象を全画面から再検出しない（throws） |
+| `DocumentDetector` | `correct(_:boundary:camera:refineBoundary:routingBoundary:)` | 保存済み輪郭を必要に応じて近傍だけで調整し、カメラ情報とともに元画像を補正。指定された場合は補正経路の判定に別の輪郭を使う。対象を全画面から再検出しない（throws） |
 | `DocumentBoundary` | `init(top:right:bottom:left:)` / `init(corners:)` / `corners` / `outline` / `map(_:)` / `isValid` | 左下原点の正規化四辺。表示・座標変換・補正で共有し、有限性・範囲・凸な四隅を検証 |
-| `DocumentDetector` | `detectAndCorrect(_:camera:)` | 長辺1600pxの解析画像で矩形・書類領域を検出し、候補不在時は矩形検出のみを緩和して再試行。矩形候補の未測定辺は写真経路だけで分散した輝度差から実測直線を復元し、支持不足なら明示的に失敗する。保存輪郭のライブカメラ補正は近傍調整のみ。写真の矩形検出経路で四辺に支持点があり実測曲線辺があるときは Coons で出力画像を生成し、UVDoc の出力は向きの判定にだけ使う。UVDoc が出力を返さない場合は Coons 出力の文字行を補正してから向きを判定する。それ以外は従来の UVDoc 経路を使い、実測曲線辺がなく十分な文字行が直線なら平面補正に切り替える（throws） |
+| `DocumentDetector` | `detectAndCorrect(_:camera:)` | 長辺1600pxの解析画像で矩形・書類領域を検出し、候補不在時は矩形検出のみを緩和して再試行。写真の矩形検出経路では未測定辺を分散した輝度差から復元し、支持不足なら明示的に失敗する。従来方式で復元した輪郭を経路判定に使い、補正画像は近傍調整後の輪郭で生成する。保存輪郭のライブカメラ補正は近傍調整のみ（throws） |
 | `DocumentDetector` | `quadsAgree(_:_:width:height:)` (static) | seg 四角形と優先候補の 4 隅距離が max(W,H)×8% 以内か判定 |
 | `DocumentDetector` | `normalizedCGImage(of:)` (private) | UIImage の向きを .up に正規化 |
 | `SegmentationMask` | `init(pixelBuffer:imageWidth:imageHeight:)` | Vision Float32 マスクを読み込む（形式不一致は throw） |
@@ -35,7 +35,7 @@ Core Image / Vision を使った画像処理（フィルタ・回転・書類検
 | `PageBitmap` | `luminance(atX:y:)` / `sampleRGB(atX:y:into:)` | 最近傍輝度 / 双線形 RGB サンプル |
 | `PageFlattener` | `flatten(_:corners:mask:)` | マスク輪郭追跡 + Coons パッチで湾曲辺を矩形化（throws） |
 | `PageFlattener` | `traceBoundary(_:corners:mask:)` / `flatten(_:boundary:camera:)` | 輪郭抽出と補正を分離。ライブ画像から曲線を抽出し、別解像度の写真にも同じ正規化輪郭を使える |
-| `PageFlattener` | `refineBoundary(_:boundary:)` | 短辺の±3%以内で明暗方向・持続した段差・辺全体の移動の一貫性を確認し、保存した紙の四辺だけを調整。細い文字線の一過性の段差や周囲と明暗が合わない候補を除外 |
+| `PageFlattener` | `refineBoundary(_:boundary:legacy:)` | 短辺の±3%以内で、段差の両側に持続する明暗と辺全体の移動の一貫性を確認する。遠方の参照輝度が片側だけ合わない場合は、反対側の参照値と近傍の持続した輝度で裏付けられる候補を採用できる。従来方式で測定できた辺が失われる場合は従来の輪郭全体を保持する |
 | `DocumentCamera` | `from(data:)` / `oriented(_:)` / `scaled(to:)` | EXIFの35mm換算焦点距離から内部パラメータを近似し、向き・解像度に合わせる。撮影写真の校正データも同じ型で保持 |
 | `PagePoint` | `+` / `-` / `*` / `length` | Double 精度 2D 点（左上原点） |
 | `PageContentStraightener` | `straighten(_:)` / `render(_:model:rotated:)` | 輪郭補正後に Vision の文字中心点から平面化。横向き写真も解析座標を回転し、出力の向き・サイズは保持 |
@@ -49,6 +49,10 @@ Core Image / Vision を使った画像処理（フィルタ・回転・書類検
 | `PageImporter` | `loadSources(from:)` (static) | PhotosPickerItem → 画像とカメラ情報を保持したPageSource（失敗は throw、非同期） |
 | `PageSource` | `photo(UIImage, camera:)` / `camera(UIImage, boundary:camera:)` / `image` | 写真の自動検出と、シャッター時の固定輪郭を区別。カメラの nil 境界は未検出として確認に回す |
 | `PageImporter` | `makePages(from:)`（UIImage / PageSource 配列） | 写真なら縮小画像で検出して元画像を補正、カメラなら固定輪郭を局所調整して元画像を補正。検出済みページは Enhanced 初期選択で ImportResult.entries へ入力順に追加（throws） |
+
+写真の矩形検出経路では、従来方式で復元した輪郭に四辺の支持点と実測曲線辺があれば、調整後の輪郭で Coons 補正する。従来の輪郭に実測曲線辺がなく、同じ範囲の文字行が直線なら、調整後の四隅で平面補正する。それ以外の UVDoc 補正にも調整後の輪郭を使う。
+
+Coons 経路では、従来の輪郭から生成した UVDoc 画像を向きの判定にだけ使い、判定した回転を調整後の Coons 画像に適用する。高速 OCR が90°回転を強く支持するものの左右を区別できない場合は、UVDoc 画像と回転前の Coons 画像の両方を高解像度の精密 OCR で再判定し、同じ90°回転がそれぞれ既存の基準を満たす場合だけ適用する。UVDoc が画像を返さない場合は Coons 画像の文字行を補正してから向きを判定する。
 
 文字行補正は最低6行、横幅45%・高さ25%以上に分布する文字を要求し、行内残差の中央値が30%以上改善する安全なモデルだけを適用する。空白・写真・文字が少ない紙や過大な変形は輪郭補正の結果を保持する。カメラの保存済み輪郭は近傍の同じ辺だけを調整し、対象を再選択しない。文字行補正だけでQRの全辺や大きなロゴの形状まで完全な長方形へ復元する保証はない。
 
