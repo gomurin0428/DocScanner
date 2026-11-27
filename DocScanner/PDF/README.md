@@ -6,10 +6,10 @@
 
 | 型 | メソッド / プロパティ | 役割 |
 | --- | --- | --- |
-| `PDFBuilderError` | `noPages` / `jpegEncodingFailed` | PDF 生成失敗の LocalizedError |
+| `PDFBuilderError` | `noPages` / `rasterizationFailed` | PDF 生成失敗の LocalizedError |
 | `PDFBuilder` | `init()` | ビルダー生成（状態なし） |
-| `PDFBuilder` | `makePDF(from:pageSize:jpegQuality:)` | 画像配列 → PDF Data（1 画像 1 ページ、JPEG 再エンコード、throws） |
-| `PDFBuilder` | `writePDF(pageCount:to:pageSize:jpegQuality:imageForPage:progress:)` | ページを一枚ずつレンダリングし、一時 PDF ファイルへストリーム出力。失敗・キャンセル時は部分ファイルを削除 |
+| `PDFBuilder` | `makePDF(from:pageSize:)` | 画像配列 → PDF Data（1 画像 1 ページ、lossless raster、throws） |
+| `PDFBuilder` | `writePDF(pageCount:to:pageSize:imageForPage:progress:)` | ページを一枚ずつレンダリングし、ラスターを再圧縮せず一時 PDF ファイルへストリーム出力。失敗・キャンセル時は部分ファイルを削除 |
 | `PDFBuilder` | `pageBounds(for:pageSize:)` (private) | ページ境界計算（固定サイズ or 300 DPI のピクセル寸法） |
 | `PDFBuilder` | `contentRect(for:in:pageSize:)` (private) | 固定 A4/Letter は aspect-fit・18pt マージン中央配置、`.fitImage` のみページ端まで描画 |
 
@@ -21,7 +21,7 @@
 classDiagram
     class PDFBuilder {
         -pageMargin: CGFloat = 18
-        +makePDF(from, pageSize, jpegQuality) Data
+        +makePDF(from, pageSize) Data
         +writePDF(pageCount, to, pageSize, imageForPage, progress)
     }
     PDFBuilder ..> PDFPageSize : ページサイズ決定

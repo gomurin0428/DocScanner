@@ -91,9 +91,12 @@ struct PageBitmap {
     /// - 出力: ビットマップ
     /// - 処理: sRGB premultipliedLast コンテキストへ全体を描く
     /// - Throws: コンテキスト生成失敗時 DocumentDetectionError.bitmapContextFailed
-    init(_ image: CGImage, background: CGColor? = nil) throws {
-        width = image.width
-        height = image.height
+    init(_ image: CGImage, background: CGColor? = nil, maximumPixelDimension: Int? = nil) throws {
+        let scale = maximumPixelDimension.map {
+            min(1, CGFloat(max(1, $0)) / CGFloat(max(image.width, image.height)))
+        } ?? 1
+        width = max(1, Int((CGFloat(image.width) * scale).rounded()))
+        height = max(1, Int((CGFloat(image.height) * scale).rounded()))
         var buffer = [UInt8](repeating: 0, count: width * height * 4)
         guard let context = CGContext(
             data: &buffer, width: width, height: height, bitsPerComponent: 8,
@@ -146,18 +149,460 @@ struct PageBitmap {
 /// 直線化してページを矩形に引き伸ばすフラットナ。
 struct PageFlattener {
 
+    private struct PhotoEdgeCandidate {
+        let sampleIndex: Int
+        let t: Double
+        let offset: Double
+        let point: PagePoint
+        let contrast: Double
+        let polarity: Int
+    }
+
+    private struct PhotoEdgeFit {
+        let start: PagePoint
+        let end: PagePoint
+        let samples: [PagePoint]
+        let support: Int
+        let medianContrast: Double
+    }
+
+    private enum PhotoEdgeFitResult {
+        case fitted(PhotoEdgeFit)
+        case noCoherentFit
+        case ambiguous
+        case invalid
+    }
+
+    private enum PhotoEdgeSource: String, Equatable {
+        case measured
+        case fit
+        case retained
+    }
+
+    private struct PhotoEdgeHypothesis {
+        let hits: [PhotoEdgeCandidate]
+        let score: Double
+        let polarity: Int
+        let intercept: Double
+        let slope: Double
+        let startOffset: Double
+        let middleOffset: Double
+        let endOffset: Double
+    }
+
     /// 辺トレースのサンプル数（各辺 N+1 点）。
     private static let edgeSamples = 64
     /// Coons パッチのグリッド分割数。
     private static let coonsGrid = 32
     /// 定数スケールの基準解像度（プロトタイプ動作サイズ）。
     private static let referenceSize = 3000.0
+    private static let photoEdgeResidualFraction = 0.0067
 
     /// フラットナを初期化する。
     /// - 入力: なし
     /// - 出力: 初期化済み PageFlattener
     /// - 処理: 状態を持たないため空
     init() {}
+
+    func recoverPhotoBoundary(_ image: CGImage, boundary: DocumentBoundary,
+                              preservingMeasuredEdges: DocumentBoundary? = nil,
+                              refineFittedSides: Bool = false) throws -> DocumentBoundary? {
+        guard boundary.isValid, preservingMeasuredEdges?.isValid != false else {
+            throw DocumentDetectionError.invalidImage
+        }
+        let imageSize = CGSize(width: CGFloat(image.width), height: CGFloat(image.height))
+        if preservingMeasuredEdges == nil, boundary.hasMeasuredCurvedEdges(in: imageSize) {
+            AppDiagnostics.selection("Photo edge recovery skipped: measured curved boundary retained")
+            return boundary
+        }
+        guard [boundary.top, boundary.right, boundary.bottom, boundary.left].allSatisfy({ $0.count == 2 }) else {
+            return boundary
+        }
+        let bitmap = try PageBitmap(image)
+        let width = Double(bitmap.width), height = Double(bitmap.height)
+        let movementLimit = min(width, height) * 0.21
+        let corners = boundary.corners.map { PagePoint(x: $0.x * width, y: (1 - $0.y) * height) }
+        let center = corners.reduce(PagePoint(x: 0, y: 0), +) * 0.25
+        let measuredEdges: [[CGPoint]?] = [preservingMeasuredEdges?.top, preservingMeasuredEdges?.right,
+                                            preservingMeasuredEdges?.bottom, preservingMeasuredEdges?.left]
+        let measured = measuredEdges.map { ($0?.count ?? 0) > 2 }
+        let edgeNames = ["top", "right", "bottom", "left"]
+        let starts = [corners[0], corners[1], corners[3], corners[0]]
+        let ends = [corners[1], corners[2], corners[2], corners[3]]
+        if measured.allSatisfy({ $0 }) {
+            AppDiagnostics.selection("Photo edge recovery skipped: all four local edges measured")
+            return preservingMeasuredEdges ?? boundary
+        }
+        var fits = [PhotoEdgeFit]()
+        var edgeSources = [PhotoEdgeSource]()
+        for index in edgeNames.indices {
+            if let edge = measuredEdges[index], measured[index] {
+                let points = edge.map { PagePoint(x: $0.x * width, y: (1 - $0.y) * height) }
+                guard let start = points.first, let end = points.last, (end - start).length > 1 else {
+                    AppDiagnostics.selection("Photo edge recovery rejected: invalid measured edge on \(edgeNames[index])")
+                    return nil
+                }
+                fits.append(PhotoEdgeFit(start: start, end: end, samples: [], support: edge.count,
+                                         medianContrast: 0))
+                edgeSources.append(.measured)
+                continue
+            }
+            switch fitPhotoEdge(starts[index], ends[index], center: center, edgeName: edgeNames[index],
+                                bitmap: bitmap, movementLimit: movementLimit) {
+            case .fitted(let fit):
+                fits.append(fit)
+                edgeSources.append(.fit)
+            case .noCoherentFit:
+                fits.append(PhotoEdgeFit(start: starts[index], end: ends[index], samples: [], support: 0,
+                                         medianContrast: 0))
+                edgeSources.append(.retained)
+            case .ambiguous:
+                AppDiagnostics.selection("Photo edge recovery rejected: ambiguous edge evidence on \(edgeNames[index])")
+                return nil
+            case .invalid:
+                AppDiagnostics.selection("Photo edge recovery rejected: invalid edge geometry on \(edgeNames[index])")
+                return nil
+            }
+        }
+        let retainedEdges = edgeSources.indices.filter { edgeSources[$0] == .retained }
+        guard retainedEdges.count <= 1,
+              edgeSources.filter({ $0 != .retained }).count >= 3 else {
+            let retainedNames = retainedEdges.map { edgeNames[$0] }.joined(separator: ",")
+            AppDiagnostics.selection("Photo edge recovery rejected: insufficient supported sides; " +
+                                     "retained=[\(retainedNames)]")
+            return nil
+        }
+        let top = fits[0], right = fits[1], bottom = fits[2], left = fits[3]
+        func intersection(_ first: PhotoEdgeFit, _ second: PhotoEdgeFit) -> PagePoint? {
+            let u = first.end - first.start, v = second.end - second.start
+            let delta = second.start - first.start
+            let denominator = u.x * v.y - u.y * v.x
+            guard denominator.isFinite, abs(denominator) > 1e-6 else { return nil }
+            let t = (delta.x * v.y - delta.y * v.x) / denominator
+            return first.start + u * t
+        }
+        guard let topLeft = intersection(top, left), let topRight = intersection(top, right),
+              let bottomRight = intersection(right, bottom), let bottomLeft = intersection(bottom, left) else {
+            AppDiagnostics.selection("Photo edge recovery rejected: fitted edges do not intersect safely")
+            return nil
+        }
+        let recoveredCorners = [topLeft, topRight, bottomRight, bottomLeft]
+        let movements = zip(recoveredCorners, corners).map { ($0 - $1).length }
+        let edgeCornerIndices = [[0, 1], [1, 2], [3, 2], [0, 3]]
+        let retainedCornerIndices = Set(retainedEdges.flatMap { edgeCornerIndices[$0] })
+        let retainedCornerLimit = min(width, height) * Self.photoEdgeResidualFraction
+        guard retainedCornerIndices.allSatisfy({
+            movements[$0].isFinite && movements[$0] <= retainedCornerLimit
+        }) else {
+            AppDiagnostics.selection("Photo edge recovery rejected: retained edge corners moved beyond fit tolerance")
+            return nil
+        }
+        func area(_ points: [PagePoint]) -> Double {
+            abs(points.indices.reduce(0.0) { result, index in
+                let a = points[index], b = points[(index + 1) % points.count]
+                return result + a.x * b.y - a.y * b.x
+            } / 2)
+        }
+        let areaRatio = area(recoveredCorners) / area(corners)
+        let normalizedCorners = recoveredCorners.map {
+            CGPoint(x: $0.x / width, y: 1 - $0.y / height)
+        }
+        guard movements.allSatisfy({ $0.isFinite && $0 <= movementLimit }),
+              areaRatio.isFinite, (0.5...2.5).contains(areaRatio),
+              DocumentBoundary(corners: normalizedCorners).isValid else {
+            AppDiagnostics.selection("Photo edge recovery rejected: corner movement, area, or convexity validation failed")
+            return nil
+        }
+        func normalized(_ point: PagePoint) -> CGPoint {
+            CGPoint(x: point.x / width, y: 1 - point.y / height)
+        }
+        func edge(_ fit: PhotoEdgeFit, from start: PagePoint, to end: PagePoint,
+                  measured: [CGPoint]?) -> [CGPoint]? {
+            guard let measured, measured.count > 2 else {
+                return ([start] + fit.samples + [end]).map(normalized)
+            }
+            let measuredStart = PagePoint(x: measured[0].x * width, y: (1 - measured[0].y) * height)
+            let measuredEnd = PagePoint(x: measured[measured.count - 1].x * width,
+                                        y: (1 - measured[measured.count - 1].y) * height)
+            let direction = end - start
+            let lengthSquared = direction.x * direction.x + direction.y * direction.y
+            let measuredDirection = measuredEnd - measuredStart
+            guard lengthSquared.isFinite, lengthSquared > 1,
+                  direction.x * measuredDirection.x + direction.y * measuredDirection.y > 0 else {
+                return nil
+            }
+            let interior = Array(measured.dropFirst().dropLast())
+            let positions = interior.map { point in
+                let pixel = PagePoint(x: point.x * width, y: (1 - point.y) * height)
+                let relative = pixel - start
+                return (relative.x * direction.x + relative.y * direction.y) / lengthSquared
+            }
+            var first = 0
+            while first < positions.count, positions[first] <= 0 { first += 1 }
+            var last = positions.count - 1
+            while last >= first, positions[last] >= 1 { last -= 1 }
+            guard first <= last else { return nil }
+            let retainedPositions = Array(positions[first...last])
+            guard retainedPositions.allSatisfy({ $0 > 0 && $0 < 1 }),
+                  zip(retainedPositions, retainedPositions.dropFirst()).allSatisfy({ $0.1 > $0.0 }) else {
+                return nil
+            }
+            let retained = Array(interior[first...last])
+            return [normalized(start)] + retained + [normalized(end)]
+        }
+        guard let recoveredTop = edge(top, from: topLeft, to: topRight, measured: measuredEdges[0]),
+              let recoveredRight = edge(right, from: topRight, to: bottomRight, measured: measuredEdges[1]),
+              let recoveredBottom = edge(bottom, from: bottomLeft, to: bottomRight, measured: measuredEdges[2]),
+              let recoveredLeft = edge(left, from: topLeft, to: bottomLeft, measured: measuredEdges[3]) else {
+            AppDiagnostics.selection("Photo edge recovery rejected: measured samples do not fit recovered spans")
+            return nil
+        }
+        let recovered = DocumentBoundary(top: recoveredTop, right: recoveredRight,
+                                         bottom: recoveredBottom, left: recoveredLeft)
+        guard recovered.isValid else {
+            AppDiagnostics.selection("Photo edge recovery rejected: measured outline is invalid")
+            return nil
+        }
+        let edgeSourceNames = edgeSources.map(\.rawValue).joined(separator: ",")
+        let support = fits.indices.map { index in
+            switch edgeSources[index] {
+            case .measured: return "m\(measuredEdges[index]!.count)"
+            case .fit: return String(fits[index].support)
+            case .retained: return "none"
+            }
+        }.joined(separator: ",")
+        let contrast = fits.indices.map { index in
+            switch edgeSources[index] {
+            case .measured: return "preserved"
+            case .fit: return String(format: "%.0f", fits[index].medianContrast)
+            case .retained: return "none"
+            }
+        }.joined(separator: ",")
+        AppDiagnostics.selection("Photo edge recovery accepted: edgeSources=[\(edgeSourceNames)], support=[\(support)], " +
+            "contrast=[\(contrast)], maxCornerMove=\(String(format: "%.1f", movements.max() ?? 0))px")
+        guard refineFittedSides, retainedEdges.isEmpty, edgeSources.contains(.fit) else { return recovered }
+        let fittedSides = edgeSources.map { $0 == .fit }
+        guard let rescanned = try? refineBoundary(image, boundary: recovered.cornersOnly,
+                                                  requiresSustainedEvidence: true, selectedSides: fittedSides) else {
+            return recovered
+        }
+        let rescannedEdges = [rescanned.top, rescanned.right, rescanned.bottom, rescanned.left]
+        guard fittedSides.indices.contains(where: { fittedSides[$0] && rescannedEdges[$0].count > 2 }) else {
+            return recovered
+        }
+        let newCorners = rescanned.corners.map { PagePoint(x: $0.x * width, y: (1 - $0.y) * height) }
+        let newMovement = zip(newCorners, corners).map { ($0 - $1).length }
+        guard newMovement.allSatisfy({ $0.isFinite && $0 <= movementLimit }),
+              (0.5...2.5).contains(area(newCorners) / area(corners)) else { return recovered }
+        let oldEdges = [recovered.top, recovered.right, recovered.bottom, recovered.left]
+        var updated = rescannedEdges
+        for index in oldEdges.indices where !fittedSides[index] || rescannedEdges[index].count == 2 {
+            let pair = edgeCornerIndices[index]
+            guard let retained = edge(fits[index], from: newCorners[pair[0]], to: newCorners[pair[1]],
+                                      measured: oldEdges[index]),
+                  retained.count == oldEdges[index].count else { return recovered }
+            updated[index] = retained
+        }
+        let refined = DocumentBoundary(top: updated[0], right: updated[1], bottom: updated[2], left: updated[3])
+        return refined.isValid ? refined : recovered
+    }
+
+    private func fitPhotoEdge(_ start: PagePoint, _ end: PagePoint, center: PagePoint, edgeName: String,
+                              bitmap: PageBitmap, movementLimit: Double) -> PhotoEdgeFitResult {
+        let direction = end - start
+        guard direction.length > 1 else { return .invalid }
+        var normal = PagePoint(x: -direction.y, y: direction.x) * (1 / direction.length)
+        if normal.x * (center.x - (start.x + end.x) / 2)
+            + normal.y * (center.y - (start.y + end.y) / 2) < 0 {
+            normal = normal * -1
+        }
+        let sampleCount = 21
+        let minimumContrast = 25.0
+        let residualLimit = min(Double(bitmap.width), Double(bitmap.height)) * Self.photoEdgeResidualFraction
+        func median(_ values: [Double]) -> Double {
+            let sorted = values.sorted()
+            return sorted[sorted.count / 2]
+        }
+        var rows = [[PhotoEdgeCandidate]](repeating: [], count: sampleCount)
+        let maximumOffset = Int(movementLimit.rounded())
+        func hasDistributedSupport(_ candidates: [PhotoEdgeCandidate]) -> Bool {
+            guard candidates.count >= 15 else { return false }
+            let distribution = (0..<5).map { group in
+                candidates.filter { min(4, Int($0.t * 5)) == group }.count
+            }
+            return distribution.filter { $0 > 0 }.count >= 4
+                && distribution[1..<4].allSatisfy { $0 > 0 }
+        }
+        for sampleIndex in 0..<sampleCount {
+            let t = (Double(sampleIndex) + 0.5) / Double(sampleCount)
+            let point = start + direction * t
+            var profile = [Double](repeating: -.infinity, count: maximumOffset * 2 + 1)
+            var polarities = [Int](repeating: 0, count: maximumOffset * 2 + 1)
+            for offset in -maximumOffset...maximumOffset {
+                var outside = [Double](), inside = [Double]()
+                for distance in stride(from: 3.0, through: 9.0, by: 2.0) {
+                    let outer = point + normal * (Double(offset) - distance)
+                    let inner = point + normal * (Double(offset) + distance)
+                    guard outer.x >= 0, outer.x < Double(bitmap.width),
+                          outer.y >= 0, outer.y < Double(bitmap.height),
+                          inner.x >= 0, inner.x < Double(bitmap.width),
+                          inner.y >= 0, inner.y < Double(bitmap.height) else { continue }
+                    outside.append(bitmap.luminance(atX: outer.x, y: outer.y))
+                    inside.append(bitmap.luminance(atX: inner.x, y: inner.y))
+                }
+                if outside.count == 4, inside.count == 4 {
+                    let signedContrast = median(inside) - median(outside)
+                    profile[offset + maximumOffset] = abs(signedContrast)
+                    polarities[offset + maximumOffset] = signedContrast >= 0 ? 1 : -1
+                }
+            }
+            var peaks = [PhotoEdgeCandidate]()
+            for index in 1..<(profile.count - 1) {
+                let contrast = profile[index]
+                guard contrast >= minimumContrast, contrast >= profile[index - 1],
+                      contrast > profile[index + 1] else { continue }
+                let offset = Double(index - maximumOffset)
+                peaks.append(PhotoEdgeCandidate(sampleIndex: sampleIndex, t: t, offset: offset,
+                    point: point + normal * offset, contrast: contrast, polarity: polarities[index]))
+            }
+            let strongest = peaks.sorted { $0.contrast > $1.contrast }.prefix(3)
+            let nearest = peaks.sorted { abs($0.offset) < abs($1.offset) }.prefix(3)
+            var distinct = [PhotoEdgeCandidate]()
+            let candidates = Array(strongest) + Array(nearest)
+            for peak in candidates {
+                guard distinct.allSatisfy({ abs($0.offset - peak.offset) > 8 }) else { continue }
+                distinct.append(peak)
+            }
+            rows[sampleIndex] = distinct
+        }
+
+        var hypotheses = [PhotoEdgeHypothesis]()
+        var bestObservedSupport = 0
+        var bestObservedDistribution = [Int](repeating: 0, count: 5)
+        func regression(_ candidates: [PhotoEdgeCandidate]) -> (intercept: Double, slope: Double)? {
+            let meanT = candidates.map(\.t).reduce(0, +) / Double(candidates.count)
+            let meanOffset = candidates.map(\.offset).reduce(0, +) / Double(candidates.count)
+            let variance = candidates.map { ($0.t - meanT) * ($0.t - meanT) }.reduce(0, +)
+            guard variance > 0 else { return nil }
+            let slope = candidates.map { ($0.t - meanT) * ($0.offset - meanOffset) }.reduce(0, +) / variance
+            return (meanOffset - slope * meanT, slope)
+        }
+        func makeHypothesis(_ hits: [PhotoEdgeCandidate], polarity: Int,
+                            fit: (intercept: Double, slope: Double)) -> PhotoEdgeHypothesis {
+            let averageContrast = hits.map(\.contrast).reduce(0, +) / Double(hits.count)
+            let medianMovement = median(hits.map { abs($0.offset) })
+            return PhotoEdgeHypothesis(hits: hits,
+                score: Double(hits.count) * 1000 + averageContrast - medianMovement * 0.5,
+                polarity: polarity, intercept: fit.intercept, slope: fit.slope,
+                startOffset: fit.intercept, middleOffset: fit.intercept + fit.slope * 0.5,
+                endOffset: fit.intercept + fit.slope)
+        }
+        func refineHypothesis(_ candidates: [PhotoEdgeCandidate], polarity: Int) -> PhotoEdgeHypothesis? {
+            var inliers = candidates
+            for _ in 0..<3 {
+                guard let fit = regression(inliers) else { return nil }
+                let refined = inliers.filter {
+                    abs($0.offset - (fit.intercept + fit.slope * $0.t)) <= residualLimit
+                }
+                guard hasDistributedSupport(refined) else { return nil }
+                if refined.count == inliers.count {
+                    return makeHypothesis(refined, polarity: polarity, fit: fit)
+                }
+                inliers = refined
+            }
+            guard let fit = regression(inliers),
+                  inliers.allSatisfy({
+                      abs($0.offset - (fit.intercept + fit.slope * $0.t)) <= residualLimit
+                  }) else { return nil }
+            return makeHypothesis(inliers, polarity: polarity, fit: fit)
+        }
+        func equivalentLine(_ first: PhotoEdgeHypothesis, _ second: PhotoEdgeHypothesis) -> Bool {
+            let separation = max(abs(first.startOffset - second.startOffset),
+                                 abs(first.middleOffset - second.middleOffset),
+                                 abs(first.endOffset - second.endOffset))
+            guard separation <= residualLimit else { return false }
+            let shared = first.hits.filter { lhs in
+                second.hits.contains { rhs in
+                    rhs.sampleIndex == lhs.sampleIndex && rhs.offset == lhs.offset
+                }
+            }.count
+            return Double(shared) / Double(min(first.hits.count, second.hits.count)) >= 0.6
+        }
+        for firstIndex in 0..<sampleCount {
+            guard firstIndex + 4 < sampleCount else { continue }
+            for first in rows[firstIndex] {
+                for secondIndex in (firstIndex + 4)..<sampleCount {
+                    for second in rows[secondIndex] where second.polarity == first.polarity {
+                        let dx = second.point.x - first.point.x, dy = second.point.y - first.point.y
+                        let length = hypot(dx, dy)
+                        guard length > 1 else { continue }
+                        var hits = [PhotoEdgeCandidate]()
+                        for row in rows {
+                            if let hit = row.filter({
+                                $0.polarity == first.polarity &&
+                                abs(dx * ($0.point.y - first.point.y) - dy * ($0.point.x - first.point.x)) / length
+                                    <= residualLimit
+                            }).max(by: { $0.contrast < $1.contrast }) {
+                                hits.append(hit)
+                            }
+                        }
+                        let distribution = (0..<5).map { group in
+                            hits.filter { min(4, Int($0.t * 5)) == group }.count
+                        }
+                        if hits.count > bestObservedSupport {
+                            bestObservedSupport = hits.count
+                            bestObservedDistribution = distribution
+                        }
+                        guard hits.count >= 15 else { continue }
+                        guard distribution.filter({ $0 > 0 }).count >= 4,
+                              distribution[1..<4].allSatisfy({ $0 > 0 }) else { continue }
+                        guard let hypothesis = refineHypothesis(hits, polarity: first.polarity) else { continue }
+                        if let same = hypotheses.firstIndex(where: { equivalentLine($0, hypothesis) }) {
+                            if hypothesis.score > hypotheses[same].score { hypotheses[same] = hypothesis }
+                        } else if hypotheses.count < 8 {
+                            hypotheses.append(hypothesis)
+                        } else if let weakest = hypotheses.indices.min(by: {
+                            hypotheses[$0].score < hypotheses[$1].score
+                        }), hypothesis.score > hypotheses[weakest].score {
+                            hypotheses[weakest] = hypothesis
+                        }
+                    }
+                }
+            }
+        }
+        let ranked = hypotheses.sorted { $0.score > $1.score }
+        guard let best = ranked.first else {
+            let rowCandidates = rows.map(\.count).map(String.init).joined(separator: ",")
+            AppDiagnostics.selection("Photo edge fit unavailable on \(edgeName): no coherent distributed support; " +
+                "rows=[\(rowCandidates)], " +
+                "bestSupport=\(bestObservedSupport), bins=\(bestObservedDistribution)")
+            return .noCoherentFit
+        }
+        if ranked.count > 1 {
+            let alternative = ranked[1]
+            let scoreGap = best.score - alternative.score
+            if best.hits.count - alternative.hits.count <= 1,
+               scoreGap <= max(500, best.score * 0.08) {
+                let separation = max(abs(best.startOffset - alternative.startOffset),
+                                     abs(best.middleOffset - alternative.middleOffset),
+                                     abs(best.endOffset - alternative.endOffset))
+                AppDiagnostics.selection("Photo edge fit rejected on \(edgeName): competing boundaries " +
+                    "support=\(best.hits.count)/\(alternative.hits.count), " +
+                    "polarity=\(best.polarity)/\(alternative.polarity), " +
+                    "separation=\(separation)px")
+                return .ambiguous
+            }
+        }
+        let hits = best.hits
+        let fit = (intercept: best.intercept, slope: best.slope)
+        let fittedStart = start + normal * fit.intercept
+        let fittedEnd = end + normal * (fit.intercept + fit.slope)
+        let measured = hits.sorted { $0.t < $1.t }.map { candidate in
+            start + direction * candidate.t + normal * (fit.intercept + fit.slope * candidate.t)
+        }
+        return .fitted(PhotoEdgeFit(start: fittedStart, end: fittedEnd, samples: measured, support: hits.count,
+                                    medianContrast: median(hits.map(\.contrast))))
+    }
 
     /// 画像をセグメンテーションマスクと四隅でフラット化した CGImage を返す。
     /// - 入力: image … 向き正規化済み CGImage、
@@ -290,7 +735,82 @@ struct PageFlattener {
                                 bottom: normalize(bottom), left: normalize(left))
     }
 
-    func refineBoundary(_ image: CGImage, boundary: DocumentBoundary) throws -> DocumentBoundary {
+    enum LocalPhotoBandDecision: String {
+        case anchored, local
+        case weakOrInconsistentContrast, unstableLocalTone, noIndependentAnchor
+        case insufficientContext, oppositeToneReturns
+
+        var accepts: Bool { self == .anchored || self == .local }
+    }
+
+    static func localPhotoBandDecision(outer: Double, inner: Double,
+                                       outside: Double, inside: Double, farOutside: Double, farInside: Double,
+                                       gradient: Double, offset: Double, range: Double, gap: Double,
+                                       luminance: (Double) -> Double?) -> LocalPhotoBandDecision {
+        let contrast = inside - outside
+        let sign = contrast > 0 ? 1.0 : -1.0
+        let sustainedContrast = min(contrast * sign, (farInside - farOutside) * sign)
+        guard sustainedContrast >= 6, gradient * sign >= max(6, sustainedContrast * 0.25) else {
+            return .weakOrInconsistentContrast
+        }
+        let anchorContrast = inner - outer
+        let anchorTolerance = max(8, abs(anchorContrast) * 0.25)
+        if anchorContrast * sign >= 6, abs(outside - outer) <= anchorTolerance,
+           abs(farOutside - outer) <= anchorTolerance, abs(inside - inner) <= anchorTolerance,
+           abs(farInside - inner) <= anchorTolerance {
+            return .anchored
+        }
+
+        let tolerance = max(8, sustainedContrast * 0.25)
+        guard abs(outside - farOutside) <= tolerance, abs(inside - farInside) <= tolerance else {
+            return .unstableLocalTone
+        }
+        let outsideMatches = abs(outside - outer) <= tolerance && abs(farOutside - outer) <= tolerance
+        let insideMatches = abs(inside - inner) <= tolerance && abs(farInside - inner) <= tolerance
+        guard outsideMatches != insideMatches else { return .noIndependentAnchor }
+
+        let sides = [(-1.0, farOutside, inside, outsideMatches), (1.0, farInside, outside, insideMatches)]
+        // Stop before the distant anchor; scan the intervening region for a return to the opposite tone.
+        for (direction, expected, opposite, anchorMatches) in sides {
+            var count = 0, matches = 0, oppositeRun = 0
+            for distance in stride(from: 12 * gap, through: range - direction * offset, by: gap) {
+                guard let value = luminance(offset + direction * distance) else { break }
+                count += 1
+                if abs(value - expected) <= tolerance { matches += 1 }
+                oppositeRun = abs(value - opposite) <= tolerance ? oppositeRun + 1 : 0
+                if oppositeRun >= 5 { return .oppositeToneReturns }
+            }
+            if !anchorMatches, count < 5 || matches * 2 <= count { return .insufficientContext }
+        }
+        return .local
+    }
+
+    func refineLegacyBoundary(_ image: CGImage, boundary: DocumentBoundary) throws -> DocumentBoundary {
+        try refineBoundary(image, boundary: boundary, requiresSustainedEvidence: false)
+    }
+
+    func refineBoundary(_ image: CGImage, boundary: DocumentBoundary,
+                        legacy: DocumentBoundary? = nil) throws -> DocumentBoundary {
+        let sustained = try refineBoundary(image, boundary: boundary, requiresSustainedEvidence: true)
+        let sustainedCounts = [sustained.top, sustained.right, sustained.bottom, sustained.left].map(\.count)
+        if sustainedCounts.allSatisfy({ $0 > 2 }) { return sustained }
+
+        let legacy = try legacy ?? refineLegacyBoundary(image, boundary: boundary)
+        let legacyCounts = [legacy.top, legacy.right, legacy.bottom, legacy.left].map(\.count)
+        let sides = ["top", "right", "bottom", "left"]
+        let lost = sides.indices.filter { legacyCounts[$0] > 2 && sustainedCounts[$0] <= 2 }
+        guard lost.isEmpty else {
+            AppDiagnostics.selection("Photo boundary refinement kept previous measurements: " +
+                                     "sustained evidence inconclusive on [\(lost.map { sides[$0] }.joined(separator: ","))]")
+            return legacy
+        }
+        return sustained
+    }
+
+    private func refineBoundary(_ image: CGImage, boundary: DocumentBoundary,
+                                requiresSustainedEvidence: Bool, selectedSides: [Bool] = [true, true, true, true])
+        throws -> DocumentBoundary {
+        // 連続したエッジ測定が不足する辺は、生成した直線サンプルで補わず元の点列を保つ。
         guard boundary.isValid else { throw DocumentDetectionError.invalidImage }
         let w = Double(image.width), h = Double(image.height)
         let range = min(w, h) * 0.03
@@ -299,10 +819,52 @@ struct PageFlattener {
         func pixels(_ points: [CGPoint]) -> [PagePoint] {
             points.map { PagePoint(x: $0.x * w, y: (1 - $0.y) * h) }
         }
-        func refine(_ points: [CGPoint]) throws -> [PagePoint] {
+        func outerBandMissesJunction(at corner: PagePoint, adjacent: PagePoint, across: PagePoint,
+                                     normal: PagePoint, margin: Double, innerEdge: Double,
+                                     paperTone: Double, tolerance: Double) -> Bool {
+            let adjacentVector = adjacent - corner
+            let normalProjection = adjacentVector.x * normal.x + adjacentVector.y * normal.y
+            guard normalProjection > adjacentVector.length * 0.5, innerEdge - margin >= 10 * gap else {
+                return false
+            }
+            let levels = [margin + 4 * gap, (margin + innerEdge) * 0.5, innerEdge + 4 * gap]
+            let probes = levels.map { level in
+                let junction = corner + adjacentVector * (level / normalProjection)
+                return (3...5).map { distance in
+                    let delta = across * (Double(distance) * gap)
+                    return (inside: junction + delta, outside: junction - delta)
+                }
+            }
+            let samples = probes.flatMap { $0.flatMap { [$0.inside, $0.outside] } }
+            let xs = samples.map(\.x), ys = samples.map(\.y)
+            let x = xs.min()!, y = ys.min()!
+            guard x >= 0, y >= 0, xs.max()! < w, ys.max()! < h else { return false }
+            let bounds = CGRect(x: x, y: y, width: xs.max()! - x + 1, height: ys.max()! - y + 1)
+                .integral.intersection(CGRect(x: 0, y: 0, width: w, height: h))
+            guard let crop = image.cropping(to: bounds), let bitmap = try? PageBitmap(crop) else { return false }
+            func luminance(_ point: PagePoint) -> Double {
+                bitmap.luminance(atX: point.x - bounds.minX, y: point.y - bounds.minY)
+            }
+            let tones = probes.map { positions in
+                positions.map { (inside: luminance($0.inside), outside: luminance($0.outside)) }
+            }
+            func isPaper(_ tone: Double) -> Bool { abs(tone - paperTone) <= tolerance }
+            guard tones[2].allSatisfy({ isPaper($0.inside) && !isPaper($0.outside) }) else { return false }
+            if tones[0].allSatisfy({ isPaper($0.inside) && isPaper($0.outside) }) ||
+                tones[0].allSatisfy({ !isPaper($0.inside) && !isPaper($0.outside) }) { return true }
+            guard tones[0].allSatisfy({ isPaper($0.inside) && !isPaper($0.outside) }) else { return false }
+            return tones[1].allSatisfy {
+                !isPaper($0.inside) && !isPaper($0.outside) &&
+                    abs($0.inside - $0.outside) <= max(6, tolerance * 0.25)
+            }
+        }
+        func refine(_ points: [CGPoint], adjacentToStart: PagePoint, adjacentToEnd: PagePoint) throws -> [PagePoint] {
             let edge = pixels(points)
+            let startCorner = edge[0], endCorner = edge[edge.count - 1]
+            let chord = endCorner - startCorner
+            let across = chord * (1 / max(chord.length, 1e-6))
             let count = max(17, edge.count)
-            var offsets = [Double](), samples = [PagePoint](), normals = [PagePoint]()
+            var offsets = [Double](), samples = [PagePoint](), normals = [PagePoint](), measured = [Bool]()
             for i in 0..<count {
                 let t = Double(i) / Double(count - 1)
                 let p = PageGeometry.sample(edge, at: t)
@@ -311,9 +873,10 @@ struct PageFlattener {
                 var normal = PagePoint(x: -tangent.y, y: tangent.x) * (1 / max(tangent.length, 1e-6))
                 let toCenter = center - p
                 if normal.x * toCenter.x + normal.y * toCenter.y < 0 { normal = normal * -1 }
-                var offset = 0.0, distance = Double.infinity
+                var offset = 0.0, strongest = 0.0
+                var firstTransition: Double?
                 if i > 0, i < count - 1 {
-                    let reach = range + gap * 6
+                    let reach = range + gap * (requiresSustainedEvidence ? 11 : 6)
                     let start = p - normal * reach, end = p + normal * reach
                     let bounds = CGRect(x: min(start.x, end.x) - 1, y: min(start.y, end.y) - 1,
                                         width: abs(end.x - start.x) + 3, height: abs(end.y - start.y) + 3)
@@ -325,33 +888,105 @@ struct PageFlattener {
                         guard q.x >= 0, q.x < w, q.y >= 0, q.y < h else { return nil }
                         return bitmap.luminance(atX: q.x - bounds.minX, y: q.y - bounds.minY)
                     }
-                    func band(_ d: Double, direction: Double) -> Double? {
-                        let values = (2...6).compactMap { luminance(d + direction * Double($0) * gap) }.sorted()
+                    func band(_ d: Double, direction: Double, samples: ClosedRange<Int> = 2...6) -> Double? {
+                        let values = samples.compactMap { luminance(d + direction * Double($0) * gap) }.sorted()
                         guard values.count == 5 else { return nil }
                         return values[values.count / 2]
                     }
                     let outer = band(-range, direction: -1), inner = band(range, direction: 1)
+                    var outerPaperMargin: Double?
                     for d in stride(from: -range, through: range, by: step) {
-                        guard let outer, let inner, abs(inner - outer) >= 6,
+                        guard let outer, let inner,
                               let a = luminance(d - gap), let b = luminance(d + gap),
                               let outside = band(d, direction: -1), let inside = band(d, direction: 1) else { continue }
-                        let sign = inner > outer ? 1.0 : -1.0
-                        let tolerance = max(8, abs(inner - outer) * 0.25)
-                        guard (b - a) * sign >= 6, (inside - outside) * sign >= 6,
-                              abs(outside - outer) <= tolerance, abs(inside - inner) <= tolerance else { continue }
-                        if abs(d) < distance { distance = abs(d); offset = d }
+                        let anchorContrast = inner - outer
+                        let sign = anchorContrast > 0 ? 1.0 : -1.0
+                        let tolerance = max(8, abs(anchorContrast) * 0.25)
+                        let matchesNearAnchors = abs(anchorContrast) >= 6 && (b - a) * sign >= 6 &&
+                            (inside - outside) * sign >= 6 && abs(outside - outer) <= tolerance &&
+                            abs(inside - inner) <= tolerance
+                        if !requiresSustainedEvidence {
+                            guard matchesNearAnchors else { continue }
+                            if firstTransition == nil || abs(d) < abs(offset) { offset = d }
+                            firstTransition = firstTransition ?? d
+                            continue
+                        }
+                        guard let farOutside = band(d, direction: -1, samples: 7...11),
+                              let farInside = band(d, direction: 1, samples: 7...11) else { continue }
+                        let decision = Self.localPhotoBandDecision(
+                            outer: outer, inner: inner, outside: outside, inside: inside,
+                            farOutside: farOutside, farInside: farInside, gradient: b - a,
+                            offset: d, range: range, gap: gap, luminance: luminance)
+                        if firstTransition == nil, decision == .anchored, let margin = outerPaperMargin,
+                           d - margin > 2 * gap {
+                            let backgroundTolerance = max(6, abs(anchorContrast) * 0.125)
+                            var backgroundRun = 0, bandRun = 0
+                            var hasOppositeToneBand = false
+                            for distance in stride(from: margin + 2 * gap, to: d - gap, by: gap) {
+                                guard let tone = luminance(distance) else { break }
+                                backgroundRun = abs(tone - outer) <= backgroundTolerance ? backgroundRun + 1 : 0
+                                if backgroundRun >= 5 { break }
+                                bandRun = (outer - tone) * sign > backgroundTolerance ? bandRun + 1 : 0
+                                hasOppositeToneBand = hasOppositeToneBand || bandRun >= 5
+                            }
+                            if backgroundRun < 5 {
+                                let exteriorStripe = !hasOppositeToneBand &&
+                                    outerBandMissesJunction(at: startCorner, adjacent: adjacentToStart, across: across,
+                                                           normal: normal, margin: margin, innerEdge: d,
+                                                           paperTone: inner, tolerance: tolerance) &&
+                                    outerBandMissesJunction(at: endCorner, adjacent: adjacentToEnd, across: across * -1,
+                                                           normal: normal, margin: margin, innerEdge: d,
+                                                           paperTone: inner, tolerance: tolerance)
+                                if !exteriorStripe {
+                                    firstTransition = margin
+                                    offset = margin
+                                    break
+                                }
+                            }
+                        }
+                        if firstTransition == nil, !decision.accepts, outerPaperMargin == nil,
+                           matchesNearAnchors, abs(farOutside - outer) <= tolerance,
+                           abs(farInside - outer) <= tolerance, abs(farInside - inner) > tolerance {
+                            outerPaperMargin = d
+                        }
+                        guard decision.accepts else { continue }
+                        let strength = abs(b - a)
+                        let first = firstTransition ?? d
+                        firstTransition = first
+                        guard d - first <= gap * 2 else { continue }
+                        if strength > strongest || (strength == strongest && abs(d) < abs(offset)) {
+                            offset = d
+                            strongest = strength
+                        }
                     }
                 }
                 samples.append(p)
                 normals.append(normal)
                 offsets.append(offset)
+                measured.append(firstTransition != nil)
             }
-            let interior = Array(offsets.dropFirst().dropLast())
-            let median = interior.sorted()[interior.count / 2]
-            guard interior.filter({ abs($0 - median) <= gap * 6 }).count * 3 >= interior.count * 2 else { return samples }
-            for i in 1..<(count - 1) where abs(offsets[i] - median) > gap * 6 { offsets[i] = median }
-            offsets[0] = median
-            offsets[count - 1] = median
+            let interior = Array(1..<(count - 1))
+            let measuredOffsets = interior.compactMap { measured[$0] ? offsets[$0] : nil }
+            guard measuredOffsets.count * 3 >= interior.count * 2 else { return edge }
+            let median = measuredOffsets.sorted()[measuredOffsets.count / 2]
+            let supported = interior.filter { measured[$0] && abs(offsets[$0] - median) <= gap * 6 }
+            guard supported.count * 3 >= interior.count * 2,
+                  let first = supported.first, let last = supported.last else { return edge }
+            if requiresSustainedEvidence {
+                for i in 0..<first { offsets[i] = offsets[first] }
+                for (start, end) in zip(supported, supported.dropFirst()) {
+                    for i in (start + 1)..<end {
+                        let t = Double(i - start) / Double(end - start)
+                        offsets[i] = offsets[start] + t * (offsets[end] - offsets[start])
+                    }
+                }
+                for i in (last + 1)..<count { offsets[i] = offsets[last] }
+            } else {
+                for i in offsets.indices where i == 0 || i == count - 1 ||
+                    !measured[i] || abs(offsets[i] - median) > gap * 6 {
+                    offsets[i] = median
+                }
+            }
             return samples.indices.map { i in
                 let start = max(0, i - 1), end = min(count - 1, i + 1)
                 let local = offsets[start...end].sorted()
@@ -359,19 +994,26 @@ struct PageFlattener {
                 return samples[i] + normals[i] * offset
             }
         }
-        var top = try refine(boundary.top), right = try refine(boundary.right)
-        var bottom = try refine(boundary.bottom), left = try refine(boundary.left)
+        let original = pixels(boundary.corners)
+        var top = selectedSides[0] ? try refine(boundary.top, adjacentToStart: original[3], adjacentToEnd: original[2]) :
+            pixels(boundary.top)
+        var right = selectedSides[1] ? try refine(boundary.right, adjacentToStart: original[0], adjacentToEnd: original[3]) :
+            pixels(boundary.right)
+        var bottom = selectedSides[2] ? try refine(boundary.bottom, adjacentToStart: original[0], adjacentToEnd: original[1]) :
+            pixels(boundary.bottom)
+        var left = selectedSides[3] ? try refine(boundary.left, adjacentToStart: original[1], adjacentToEnd: original[2]) :
+            pixels(boundary.left)
         func intersection(_ a: [PagePoint], _ b: [PagePoint], near p: PagePoint) -> PagePoint {
             let u = a.last! - a[0], v = b.last! - b[0], d = b[0] - a[0]
             let cross = u.x * v.y - u.y * v.x
             guard abs(cross) > 1e-6 else { return p }
             return a[0] + u * ((d.x * v.y - d.y * v.x) / cross)
         }
-        let original = pixels(boundary.corners)
         let corners = [intersection(top, left, near: original[0]), intersection(top, right, near: original[1]),
                        intersection(bottom, right, near: original[2]), intersection(bottom, left, near: original[3])]
         guard zip(corners, original).allSatisfy({ ($0 - $1).length <= range * 1.5 + 2 }) else {
-            throw DocumentDetectionError.correctionFailed
+            AppDiagnostics.selection("Photo boundary refinement declined: corner shift exceeds correction range; preserving detected boundary")
+            return boundary
         }
         func reconcile(_ points: inout [PagePoint], _ start: PagePoint, _ end: PagePoint) {
             let a = start - points[0], b = end - points[points.count - 1]
@@ -389,7 +1031,59 @@ struct PageFlattener {
         }
         let result = DocumentBoundary(top: normalize(top), right: normalize(right),
                                       bottom: normalize(bottom), left: normalize(left))
-        guard result.isValid else { throw DocumentDetectionError.correctionFailed }
+        guard result.isValid else {
+            AppDiagnostics.selection("Photo boundary refinement declined: refined outline is invalid; preserving detected boundary")
+            return boundary
+        }
+        if result == boundary {
+            AppDiagnostics.selection("Photo boundary refinement found no usable edge evidence; preserving detected boundary")
+        }
+        return result
+    }
+
+    /// 実測された直線辺を四隅のホモグラフィで平面化する。
+    func flattenPlanar(_ image: CGImage, boundary: DocumentBoundary,
+                       camera: DocumentCamera? = nil) throws -> CGImage {
+        let imageSize = CGSize(width: CGFloat(image.width), height: CGFloat(image.height))
+        guard boundary.isValid, !boundary.hasMeasuredCurvedEdges(in: imageSize) else {
+            throw DocumentDetectionError.correctionFailed
+        }
+        let planarBoundary = boundary.cornersOnly
+        let bitmap = try PageBitmap(image)
+        let corners = planarBoundary.corners.map {
+            PagePoint(x: $0.x * Double(bitmap.width), y: (1 - $0.y) * Double(bitmap.height))
+        }
+        let tl = corners[0], tr = corners[1], br = corners[2], bl = corners[3]
+        let rectW = ((tr - tl).length + (br - bl).length) / 2
+        let rectH = ((bl - tl).length + (br - tr).length) / 2
+        let rectangle = [PagePoint(x: 0, y: 0), PagePoint(x: rectW, y: 0),
+                         PagePoint(x: rectW, y: rectH), PagePoint(x: 0, y: rectH)]
+        let inverse = try PageGeometry.homography(from: rectangle, to: corners)
+        let size = try PageGeometry.outputSize(boundary: planarBoundary, imageSize: imageSize, camera: camera)
+        let outW = Int(size.width), outH = Int(size.height)
+        guard outW >= 2, outH >= 2 else { throw DocumentDetectionError.invalidImage }
+
+        var output = [UInt8](repeating: 255, count: outW * outH * 4)
+        for row in 0..<outH {
+            let v = (Double(row) + 0.5) / Double(outH)
+            for column in 0..<outW {
+                let u = (Double(column) + 0.5) / Double(outW)
+                let point = PageGeometry.apply(inverse, to: PagePoint(x: rectW * u, y: rectH * v))
+                let offset = (row * outW + column) * 4
+                output.withUnsafeMutableBufferPointer { pointer in
+                    bitmap.sampleRGB(atX: point.x - 0.5, y: point.y - 0.5,
+                                     into: pointer.baseAddress! + offset)
+                }
+            }
+        }
+        guard let context = CGContext(
+            data: &output, width: outW, height: outH, bitsPerComponent: 8,
+            bytesPerRow: outW * 4,
+            space: CGColorSpace(name: CGColorSpace.sRGB)!,
+            bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
+        ), let result = context.makeImage() else {
+            throw DocumentDetectionError.renderFailed
+        }
         return result
     }
 
@@ -428,24 +1122,27 @@ struct PageFlattener {
         let outW = Int(size.width), outH = Int(size.height)
         guard outW >= 2, outH >= 2 else { throw DocumentDetectionError.invalidImage }
 
+        let gridSize = Self.coonsGrid
+        let (gridTop, gridBottom) = Self.coonsEdgeSamples(mapTop, mapBottom, axis: \.x, divisions: gridSize)
+        let (gridLeft, gridRight) = Self.coonsEdgeSamples(mapLeft, mapRight, axis: \.y, divisions: gridSize)
+
         /// Coons パッチ: 矩形空間 (u,v) → 元画像座標。
-        func coons(_ u: Double, _ v: Double) -> PagePoint {
-            let topBottom = PageGeometry.sample(mapTop, at: u) * (1 - v)
-                + PageGeometry.sample(mapBottom, at: u) * v
-            let leftRight = PageGeometry.sample(mapLeft, at: v) * (1 - u)
-                + PageGeometry.sample(mapRight, at: v) * u
+        func coons(_ column: Int, _ row: Int) -> PagePoint {
+            let u = Double(column) / Double(gridSize)
+            let v = Double(row) / Double(gridSize)
+            let topBottom = gridTop[column] * (1 - v) + gridBottom[column] * v
+            let leftRight = gridLeft[row] * (1 - u) + gridRight[row] * u
             let bilinear = qTL * ((1 - u) * (1 - v)) + qTR * (u * (1 - v))
                 + qBL * ((1 - u) * v) + qBR * (u * v)
             return PageGeometry.apply(hInv, to: topBottom + leftRight - bilinear)
         }
 
         // Coons を 32x32 グリッドで前評価し、画素ごとにセル内双線形補間する
-        let gridSize = Self.coonsGrid
         var grid = [PagePoint]()
         grid.reserveCapacity((gridSize + 1) * (gridSize + 1))
         for gy in 0...gridSize {
             for gx in 0...gridSize {
-                grid.append(coons(Double(gx) / Double(gridSize), Double(gy) / Double(gridSize)))
+                grid.append(coons(gx, gy))
             }
         }
         var out = [UInt8](repeating: 255, count: outW * outH * 4)
@@ -479,5 +1176,35 @@ struct PageFlattener {
             throw DocumentDetectionError.renderFailed
         }
         return output
+    }
+
+    /// 矩形化後の軸に沿う位置で向かい合う辺をそろえる。逆行する辺は従来の点順を保つ。
+    private static func coonsEdgeSamples(_ first: [PagePoint], _ second: [PagePoint],
+                                         axis: KeyPath<PagePoint, Double>,
+                                         divisions: Int) -> ([PagePoint], [PagePoint]) {
+        func projectedSamples(_ edge: [PagePoint]) -> [PagePoint]? {
+            let positions = edge.map { $0[keyPath: axis] }
+            let start = positions[0], end = positions[positions.count - 1]
+            guard (end - start).isFinite,
+                  zip(positions, positions.dropFirst()).allSatisfy({ $0.0 < $0.1 }) else { return nil }
+            var segment = 0
+            return (0...divisions).map { i in
+                if i == 0 { return edge[0] }
+                if i == divisions { return edge[edge.count - 1] }
+                let position = start + (end - start) * Double(i) / Double(divisions)
+                while segment < edge.count - 2 && positions[segment + 1] < position {
+                    segment += 1
+                }
+                let t = (position - positions[segment]) / (positions[segment + 1] - positions[segment])
+                return edge[segment] * (1 - t) + edge[segment + 1] * t
+            }
+        }
+        if let a = projectedSamples(first), let b = projectedSamples(second) {
+            return (a, b)
+        }
+        func indexSamples(_ edge: [PagePoint]) -> [PagePoint] {
+            (0...divisions).map { PageGeometry.sample(edge, at: Double($0) / Double(divisions)) }
+        }
+        return (indexSamples(first), indexSamples(second))
     }
 }

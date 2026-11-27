@@ -195,7 +195,7 @@ final class DocResTests: XCTestCase {
         for size in [CGSize(width: 512, height: 768), CGSize(width: 768, height: 512)] {
             let source = try XCTUnwrap(TestImageFactory.gradient(size: size).cgImage)
             let bitmap = try PageBitmap(source, background: CGColor(gray: 1, alpha: 1))
-            let result = try DocResEnhancer.render(bitmap, gain: [Float](repeating: 1, count: 512 * 512 * 3))
+            let result = try DocResEnhancer.render(source, gain: [Float](repeating: 1, count: 512 * 512))
             XCTAssertEqual(try PageBitmap(result).data, bitmap.data)
         }
         let format = UIGraphicsImageRendererFormat.default()
@@ -206,8 +206,123 @@ final class DocResTests: XCTestCase {
         let pixels = DocResPrompt.resized(bitmap, side: 512)
         XCTAssertTrue(pixels.allSatisfy { $0 == 255 })
         XCTAssertFalse(DocResPrompt.hasContrast(pixels))
-        let result = try DocResEnhancer.render(bitmap, gain: [Float](repeating: 1, count: 512 * 512 * 3))
+        let result = try DocResEnhancer.render(XCTUnwrap(transparent.cgImage),
+                                               gain: [Float](repeating: 1, count: 512 * 512))
         XCTAssertTrue(try PageBitmap(result).data.allSatisfy { $0 == 255 })
+    }
+
+    func testPromptBitmapDownscalesBeforeAllocatingTheModelInput() throws {
+        let source = try XCTUnwrap(TestImageFactory.gradient(size: CGSize(width: 2048, height: 1536)).cgImage)
+        let bitmap = try PageBitmap(source, background: CGColor(gray: 1, alpha: 1),
+                                    maximumPixelDimension: DocResPrompt.promptSide)
+
+        XCTAssertEqual(bitmap.width, 1024)
+        XCTAssertEqual(bitmap.height, 768)
+    }
+
+    func testGainPreservesColoredSourceChroma() throws {
+        let source = try XCTUnwrap(TestImageFactory.solid(
+            UIColor(red: 230.0 / 255, green: 200.0 / 255, blue: 170.0 / 255, alpha: 1),
+            size: CGSize(width: 512, height: 512)
+        ).cgImage)
+        let bitmap = try PageBitmap(source, background: CGColor(gray: 1, alpha: 1))
+        let input = DocResPrompt.resized(bitmap, side: DocResEnhancer.side)
+        let prediction = try MLMultiArray(shape: [1, 3, 512, 512], dataType: .float32)
+        let strides = prediction.strides.map(\.intValue)
+        for y in 0..<512 {
+            for x in 0..<512 {
+                prediction[2 * strides[1] + y * strides[2] + x * strides[3]] = 1.0
+                prediction[strides[1] + y * strides[2] + x * strides[3]] = 0.95
+                prediction[y * strides[2] + x * strides[3]] = 0.90
+            }
+        }
+
+        let gain = try XCTUnwrap(DocResEnhancer.gain(input: input, prediction: prediction))
+        let result = try DocResEnhancer.render(source, gain: gain)
+        let sourceColor = try XCTUnwrap(TestImageFactory.pixelColor(of: UIImage(cgImage: source), x: 256, y: 256))
+        let resultColor = try XCTUnwrap(TestImageFactory.pixelColor(of: UIImage(cgImage: result), x: 256, y: 256))
+        let sourceComponents = components(sourceColor)
+        let resultComponents = components(resultColor)
+
+        XCTAssertEqual(resultComponents.red / resultComponents.green,
+                       sourceComponents.red / sourceComponents.green, accuracy: 0.05)
+        XCTAssertEqual(resultComponents.green / resultComponents.blue,
+                       sourceComponents.green / sourceComponents.blue, accuracy: 0.05)
+    }
+
+    func testRenderDoesNotBrightenDarkFilledContent() throws {
+        let size = CGSize(width: 512, height: 512)
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let image = UIGraphicsImageRenderer(size: size, format: format).image { context in
+            UIColor.white.setFill()
+            context.fill(CGRect(origin: .zero, size: size))
+            UIColor(white: 32.0 / 255.0, alpha: 1).setFill()
+            context.fill(CGRect(x: 160, y: 160, width: 192, height: 192))
+        }
+        let source = try XCTUnwrap(image.cgImage)
+        let result = try DocResEnhancer.render(source, gain: [Float](repeating: 4, count: 512 * 512))
+        let dark = try XCTUnwrap(TestImageFactory.pixelColor(of: UIImage(cgImage: result), x: 256, y: 256))
+        let darkComponents = components(dark)
+
+        XCTAssertLessThan((darkComponents.red + darkComponents.green + darkComponents.blue) / 3, 0.2)
+    }
+
+    func testDarkProtectionRampKeepsGrayGradientMonotonic() throws {
+        let width = 512, height = 96
+        let size = CGSize(width: CGFloat(width), height: CGFloat(height))
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let image = UIGraphicsImageRenderer(size: size, format: format).image { context in
+            for x in 0..<width {
+                let value = 0.02 + 0.55 * CGFloat(x) / CGFloat(width - 1)
+                UIColor(white: value, alpha: 1).setFill()
+                context.fill(CGRect(x: CGFloat(x), y: 0, width: 1, height: CGFloat(height)))
+            }
+        }
+        let source = try XCTUnwrap(image.cgImage)
+        let result = try DocResEnhancer.render(source, gain: [Float](repeating: 4, count: 512 * 512))
+        let bitmap = try PageBitmap(result)
+        let row = height / 2
+        var previous = Int(bitmap.data[(row * width) * 4])
+        for x in 1..<width {
+            let current = Int(bitmap.data[(row * width + x) * 4])
+            XCTAssertGreaterThanOrEqual(current, previous - 1, "x=\(x)")
+            let source = 0.02 + 0.55 * CGFloat(x) / CGFloat(width - 1)
+            if (0.06...0.42).contains(source) {
+                XCTAssertLessThanOrEqual(current - previous, 12, "x=\(x)")
+            }
+            previous = current
+        }
+    }
+
+    func testHighlightShoulderIsContinuousAcrossUnityGain() throws {
+        let size = CGSize(width: 512, height: 96)
+        let source = try XCTUnwrap(TestImageFactory.solid(
+            UIColor(red: 1, green: 200.0 / 255, blue: 150.0 / 255, alpha: 1), size: size
+        ).cgImage)
+        var gain = [Float](repeating: 1, count: 512 * 512)
+        for y in 0..<512 {
+            for x in 0..<512 {
+                gain[y * 512 + x] = 1 + 0.02 * Float(x - 256) / 256
+            }
+        }
+
+        let result = try DocResEnhancer.render(source, gain: gain)
+        let sourcePixels = try PageBitmap(source).data
+        let resultPixels = try PageBitmap(result).data
+        let row = 48
+        let unityOffset = (row * 512 + 256) * 4
+        XCTAssertEqual(Array(resultPixels[unityOffset..<(unityOffset + 3)]),
+                       Array(sourcePixels[unityOffset..<(unityOffset + 3)]))
+        for x in 240..<280 {
+            let offset = (row * 512 + x) * 4
+            let previous = (row * 512 + x - 1) * 4
+            for channel in 0..<3 {
+                XCTAssertLessThanOrEqual(abs(Int(resultPixels[offset + channel]) -
+                                                Int(resultPixels[previous + channel])), 2, "x=\(x)")
+            }
+        }
     }
 
     func testPromptMorphologyMatchesIndependentWindowCalculation() {
@@ -253,5 +368,14 @@ final class DocResTests: XCTestCase {
             UIColor.black.setFill()
             context.fill(CGRect(x: 30, y: 650, width: 90, height: 90))
         }
+    }
+
+    private func components(_ color: UIColor) -> (red: CGFloat, green: CGFloat, blue: CGFloat) {
+        var red: CGFloat = 0
+        var green: CGFloat = 0
+        var blue: CGFloat = 0
+        var alpha: CGFloat = 0
+        color.getRed(&red, green: &green, blue: &blue, alpha: &alpha)
+        return (red, green, blue)
     }
 }

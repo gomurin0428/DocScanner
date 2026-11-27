@@ -1,4 +1,5 @@
 import CoreImage
+import Foundation
 import UIKit
 import Vision
 
@@ -74,10 +75,13 @@ struct DocumentDetector {
     /// 撮影時に固定した輪郭だけを補正する。Vision による対象の再選択は行わない。
     /// - 入力: 撮影画像と正規化輪郭、出力: 同じ輪郭を矩形にした画像
     func correct(_ image: UIImage, boundary: DocumentBoundary, camera: DocumentCamera? = nil,
-                 refineBoundary: Bool = false) throws -> UIImage {
+                 refineBoundary: Bool = false, routingBoundary: DocumentBoundary? = nil) throws -> UIImage {
         let cg = try normalizedCGImage(of: image)
+        let detectedBoundary = boundary
         let boundary = refineBoundary ? try PageFlattener().refineBoundary(cg, boundary: boundary) : boundary
-        if let output = try unwarper.unwarp(cg, boundary: boundary, camera: camera) {
+        Self.logBoundary(boundary, imageSize: CGSize(width: CGFloat(cg.width), height: CGFloat(cg.height)),
+                         source: refineBoundary && boundary != detectedBoundary ? "refined rectangle" : "rectangle")
+        if let output = try unwarper.unwarp(cg, boundary: boundary, camera: camera, routingBoundary: routingBoundary) {
             return UIImage(cgImage: output, scale: image.scale, orientation: .up)
         }
         let flattened = try PageFlattener().flatten(cg, boundary: boundary, camera: camera)
@@ -119,12 +123,36 @@ struct DocumentDetector {
             AppDiagnostics.error("Document segmentation", error: error)
             throw DocumentDetectionError.visionFailed(error)
         }
-        guard let rectangle = DocumentRectangleDetector.liveDocument(
-            in: rectangles, document: segRequest.results?.first,
-            size: CGSize(width: width, height: height))
-            else {
-            throw DocumentDetectionError.noDocumentFound
+        let segmentation = segRequest.results?.first
+        let imageSize = CGSize(width: width, height: height)
+        AppDiagnostics.selection("Photo candidates: rectangles=[\(Self.summary(rectangles))], " +
+                                 "segmentation=\(Self.summary(segmentation))")
+        let rectangle: VNRectangleObservation
+        if let detected = DocumentRectangleDetector.liveDocument(
+            in: rectangles, document: segmentation, size: imageSize) {
+            rectangle = detected
+        } else {
+            let fallbackRequest = DocumentRectangleDetector.makePhotoFallbackRequest()
+            do {
+                try handler.perform([fallbackRequest])
+            } catch {
+                AppDiagnostics.error("Rectangle detection retry", error: error)
+                throw DocumentDetectionError.visionFailed(error)
+            }
+            let fallbackRectangles = fallbackRequest.results ?? []
+            AppDiagnostics.selection("Photo detection retry: strict=[\(Self.summary(rectangles))], " +
+                                     "fallback=[\(Self.summary(fallbackRectangles))], " +
+                                     "segmentation=\(Self.summary(segmentation))")
+            guard let detected = DocumentRectangleDetector.liveDocument(
+                in: fallbackRectangles, document: segmentation, size: imageSize,
+                minimumConfidence: 0.35, minimumSize: 0.05,
+                minimumDocumentConfidence: 0.6, minimumDocumentSize: 0.1) else {
+                throw DocumentDetectionError.noDocumentFound
+            }
+            rectangle = detected
         }
+        AppDiagnostics.selection("Photo selected paper: \(Self.summary([rectangle]))")
+        let corrected: UIImage
         if let observation = segRequest.results?.first,
            observation.confidence >= Self.segConfidenceThreshold,
            let maskBuffer = observation.globalSegmentationMask,
@@ -148,15 +176,83 @@ struct DocumentDetector {
                 toTopLeft(observation.topLeft), toTopLeft(observation.topRight),
                 toTopLeft(observation.bottomRight), toTopLeft(observation.bottomLeft)
             ], mask: mask)
+            Self.logBoundary(boundary, imageSize: CGSize(width: CGFloat(cg.width), height: CGFloat(cg.height)),
+                             source: "segmentation")
             if let output = try unwarper.unwarp(cg, boundary: boundary, camera: camera) {
-                return UIImage(cgImage: output, scale: image.scale, orientation: .up)
+                corrected = UIImage(cgImage: output, scale: image.scale, orientation: .up)
+            } else {
+                let flattened = try PageFlattener().flatten(cg, boundary: boundary, camera: camera)
+                let straightened = try PageContentStraightener().straighten(flattened)
+                corrected = UIImage(cgImage: straightened, scale: image.scale, orientation: .up)
             }
-            let flattened = try PageFlattener().flatten(cg, boundary: boundary, camera: camera)
-            let straightened = try PageContentStraightener().straighten(flattened)
-            return UIImage(cgImage: straightened, scale: image.scale, orientation: .up)
+        } else {
+            let detectedBoundary = DocumentBoundary(corners: [rectangle.topLeft,
+                rectangle.topRight, rectangle.bottomRight, rectangle.bottomLeft])
+            let (boundary, routing) = try Self.rectanglePhotoBoundaries(detectionImage, seed: detectedBoundary)
+            if let upright = try Self.correctSupportedPhotoCoons(cg, boundary: boundary,
+                                                               analysisSize: imageSize, camera: camera,
+                                                               routingBoundary: routing,
+                                                               uvdocReference: { referenceBoundary in
+                try unwarper.unwarp(cg, boundary: referenceBoundary, camera: camera)
+            }) {
+                return UIImage(cgImage: upright, scale: image.scale, orientation: .up)
+            }
+            corrected = try correct(image, boundary: boundary, camera: camera, routingBoundary: routing)
         }
-        return try correct(image, boundary: DocumentBoundary(corners: [rectangle.topLeft, rectangle.topRight,
-                                                                      rectangle.bottomRight, rectangle.bottomLeft]), camera: camera)
+        guard let correctedCGImage = corrected.cgImage else { throw DocumentDetectionError.invalidImage }
+        let upright = try PageTextOrientationCorrector().correct(correctedCGImage)
+        return UIImage(cgImage: upright, scale: corrected.scale, orientation: .up)
+    }
+
+    static func rectanglePhotoBoundaries(_ image: CGImage, seed: DocumentBoundary) throws
+        -> (geometry: DocumentBoundary, routing: DocumentBoundary) {
+        let size = CGSize(width: image.width, height: image.height)
+        let flattener = PageFlattener()
+        func recover(_ local: DocumentBoundary, refineFittedSides: Bool = false) throws -> DocumentBoundary? {
+            if [local.top, local.right, local.bottom, local.left].allSatisfy({ $0.count > 2 }) {
+                AppDiagnostics.selection("Photo edge recovery skipped: all four local edges measured")
+                return local
+            }
+            if let recovered = try flattener.recoverPhotoBoundary(image, boundary: seed,
+                                                                 preservingMeasuredEdges: local,
+                                                                 refineFittedSides: refineFittedSides) {
+                return recovered
+            }
+            guard local.hasMeasuredCurvedEdges(in: size) else { return nil }
+            AppDiagnostics.selection("Photo edge recovery rejected: preserving partial measured curve")
+            return local
+        }
+        let legacy = try flattener.refineLegacyBoundary(image, boundary: seed)
+        AppDiagnostics.selection("Photo edge recovery: legacy routing evidence")
+        guard let routing = try recover(legacy) else { throw DocumentDetectionError.noDocumentFound }
+        let local = try flattener.refineBoundary(image, boundary: seed, legacy: legacy)
+        Self.logBoundary(local, imageSize: size, source: "local photo refinement")
+        guard local != legacy else { return (routing, routing) }
+        AppDiagnostics.selection("Photo edge recovery: refined geometry")
+        return (try recover(local, refineFittedSides: supportsPhotoCoons(routing, analysisSize: size)) ?? routing, routing)
+    }
+
+    private static func supportsPhotoCoons(_ boundary: DocumentBoundary, analysisSize: CGSize) -> Bool {
+        [boundary.top, boundary.right, boundary.bottom, boundary.left].allSatisfy { $0.count > 2 } &&
+            boundary.hasMeasuredCurvedEdges(in: analysisSize)
+    }
+
+    static func correctSupportedPhotoCoons(_ source: CGImage, boundary: DocumentBoundary, analysisSize: CGSize,
+                                           camera: DocumentCamera? = nil,
+                                           routingBoundary: DocumentBoundary? = nil,
+                                           straightenFallback: (CGImage) throws -> CGImage = {
+                                               try PageContentStraightener().straighten($0)
+                                           },
+                                           uvdocReference: (DocumentBoundary) throws -> CGImage?) throws -> CGImage? {
+        let evidence = routingBoundary ?? boundary
+        guard supportsPhotoCoons(evidence, analysisSize: analysisSize) else { return nil }
+        AppDiagnostics.selection("Photo Coons selected: measured curvature and all four edges supported")
+        let flattened = try PageFlattener().flatten(source, boundary: boundary, camera: camera)
+        let orientation = PageTextOrientationCorrector()
+        if let reference = try uvdocReference(evidence) {
+            return try orientation.correctCoons(flattened, reference: reference)
+        }
+        return try orientation.correct(straightenFallback(flattened))
     }
 
     /// セグメンテーション四角形と矩形検出四角形が十分一致するかを判定する。
@@ -175,6 +271,33 @@ struct DocumentDetector {
             if (dx * dx + dy * dy).squareRoot() > threshold { return false }
         }
         return true
+    }
+
+    private static func summary(_ observations: [VNRectangleObservation]) -> String {
+        observations.map { observation in
+            let points = [observation.topLeft, observation.topRight,
+                          observation.bottomRight, observation.bottomLeft]
+            let corners = points.map { String(format: "%.3f,%.3f", $0.x, $0.y) }.joined(separator: ";")
+            return String(format: "%.2f:[%@]", observation.confidence, corners)
+        }.joined(separator: ";")
+    }
+
+    private static func summary(_ observation: VNRectangleObservation?) -> String {
+        guard let observation else { return "none" }
+        return summary([observation])
+    }
+
+    private static func logBoundary(_ boundary: DocumentBoundary, imageSize: CGSize, source: String) {
+        let deviations: String
+        if let values = boundary.edgeMaximumDeviationPixels(in: imageSize) {
+            deviations = values.map { String(format: "%.1f", $0) }.joined(separator: ",")
+        } else {
+            deviations = "unmeasured"
+        }
+        let corners = boundary.corners.map { String(format: "%.3f,%.3f", $0.x, $0.y) }
+            .joined(separator: ";")
+        AppDiagnostics.selection("Photo crop boundary: source=\(source), corners=[\(corners)], " +
+                                 "maxDeviationPx=[\(deviations)]")
     }
 
     /// UIImage の向きを正規化した CGImage を返す。

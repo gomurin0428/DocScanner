@@ -1,5 +1,7 @@
 import CoreGraphics
+import CoreImage
 import UIKit
+import Vision
 import XCTest
 @testable import DocScanner
 
@@ -132,6 +134,225 @@ final class PageContentStraightenerTests: XCTestCase {
         let image = try XCTUnwrap(TestImageFactory.solid(.white, size: CGSize(width: 300, height: 400)).cgImage)
         let result = try PageContentStraightener().straighten(image)
         XCTAssertTrue(result === image)
+    }
+
+    func testTextOrientationRequiresClearEvidenceToRotate() {
+        XCTAssertEqual(PageTextOrientationCorrector.preferredOrientation(scores: [1, 30, 2, 1]), .right)
+        XCTAssertEqual(PageTextOrientationCorrector.preferredOrientation(scores: [1, 2, 3, 30]), .left)
+        XCTAssertNil(PageTextOrientationCorrector.preferredOrientation(scores: [30, 29, 28, 27]))
+        XCTAssertNil(PageTextOrientationCorrector.preferredOrientation(scores: [30, 32, 31, 29]))
+        XCTAssertNil(PageTextOrientationCorrector.preferredOrientation(scores: [0, 0, 0, 0]))
+    }
+
+    func testAmbiguousCoonsOrientationRequiresAccurateQuarterTurnAgreement() throws {
+        let (image, reference) = try sidewaysTextFixture()
+        let corrector = PageTextOrientationCorrector()
+        let fast = [2.0, 39, 1, 40]
+        let left = [1.0, 12, 2, 38]
+        let right = [1.0, 38, 2, 12]
+        let abstains = [2.0, 27, 1, 28]
+        for (referenceScores, coonsScores, accepts) in [(left, left, true), (left, right, false),
+                                                        (left, abstains, false), (abstains, left, false)] {
+            var passes = [VNRequestTextRecognitionLevel]()
+            let corrected = try corrector.correctCoons(image, reference: reference) { raster, level in
+                passes.append(level)
+                if level == .fast {
+                    XCTAssertTrue(raster === reference)
+                    return fast
+                }
+                return raster === reference ? referenceScores : coonsScores
+            }
+            XCTAssertEqual(passes, [.fast, .accurate, .accurate])
+            if accepts {
+                let expectedCI = CIImage(cgImage: image).oriented(.left)
+                let expected = try XCTUnwrap(ImageRendering.context.createCGImage(expectedCI, from: expectedCI.extent))
+                XCTAssertEqual(corrected.width, expected.width)
+                XCTAssertEqual(corrected.height, expected.height)
+                XCTAssertEqual(try PageBitmap(corrected).data, try PageBitmap(expected).data)
+            } else {
+                XCTAssertTrue(corrected === image)
+            }
+        }
+    }
+
+    func testCoonsOrientationOnlyRetriesAnAmbiguousQuarterTurn() throws {
+        let (image, reference) = try sidewaysTextFixture()
+        for fast in [[1.0, 15, 2, 35], [0, 0, 0, 0], [30, 31, 5, 32], [5, 7, 30, 31]] {
+            var passes = [VNRequestTextRecognitionLevel]()
+            let corrected = try PageTextOrientationCorrector().correctCoons(image, reference: reference) { _, level in
+                passes.append(level)
+                return fast
+            }
+            XCTAssertEqual(passes, [.fast])
+            if PageTextOrientationCorrector.preferredOrientation(scores: fast) == nil {
+                XCTAssertTrue(corrected === image)
+            }
+        }
+    }
+
+    func testTextCurvatureKeepsFlatRowsOutOfUVDocAndRetainsCurvedRows() {
+        let straight = (0..<8).map { row in
+            (0..<20).map { column in
+                PagePoint(x: 0.1 + Double(column) * 0.8 / 19, y: 0.12 + Double(row) * 0.1)
+            }
+        }
+        XCTAssertEqual(PageContentStraightener.classifyTextCurvature(straight), .straight)
+        XCTAssertEqual(PageContentStraightener.classifyTextCurvature([straight[0], straight[3], straight[7]]), .straight)
+        XCTAssertEqual(PageContentStraightener.classifyTextCurvature(curvedLines()), .curved)
+        XCTAssertEqual(PageContentStraightener.classifyTextCurvature(Array(straight.prefix(2))), .insufficientText)
+        let irregularSlanted = (0..<3).map { row in
+            (0..<24).map { column in
+                let x = 0.1 + 0.8 * pow(Double(column) / 23, 2.1)
+                return PagePoint(x: x, y: 0.15 + Double(row) * 0.20 + 0.14 * x)
+            }
+        }
+        XCTAssertEqual(PageContentStraightener.classifyTextCurvature(irregularSlanted), .straight)
+    }
+
+    private func sidewaysTextFixture() throws -> (upright: CGImage, sideways: CGImage) {
+        let size = CGSize(width: 700, height: 900)
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let text = (0..<14).map { "DOCUMENT LINE \($0 + 1) 123456789" }.joined(separator: "\n")
+        let image = UIGraphicsImageRenderer(size: size, format: format).image { _ in
+            UIColor.white.setFill()
+            UIRectFill(CGRect(origin: .zero, size: size))
+            text.draw(in: CGRect(x: 45, y: 35, width: 610, height: 830), withAttributes: [
+                .font: UIFont.systemFont(ofSize: 32),
+                .foregroundColor: UIColor.black
+            ])
+        }
+        let upright = try XCTUnwrap(image.cgImage)
+        let sidewaysCI = CIImage(cgImage: upright).oriented(forExifOrientation: 6)
+        let sideways = try XCTUnwrap(ImageRendering.context.createCGImage(sidewaysCI, from: sidewaysCI.extent.integral))
+        return (upright, sideways)
+    }
+
+    func testSidewaysSyntheticTextIsReturnedUpright() throws {
+        let (upright, sideways) = try sidewaysTextFixture()
+        let corrector = PageTextOrientationCorrector()
+
+        let corrected = try corrector.correct(sideways)
+        XCTAssertEqual(corrected.width, upright.width)
+        XCTAssertEqual(corrected.height, upright.height)
+        let scores = try corrector.orientationScores(of: corrected)
+        XCTAssertGreaterThan(scores[0], scores[1])
+        XCTAssertGreaterThan(scores[0], scores[3])
+    }
+
+    func testSupportedPhotoCoonsKeepsUVDocLandscapeTextOrientation() throws {
+        let size = CGSize(width: 960, height: 900)
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let text = (0..<14).map { "DOCUMENT LINE \($0 + 1) 123456789" }.joined(separator: "\n")
+        let landscape = UIGraphicsImageRenderer(size: size, format: format).image { context in
+            UIColor.white.setFill()
+            context.fill(CGRect(origin: .zero, size: size))
+            text.draw(in: CGRect(x: 45, y: 35, width: 610, height: 830), withAttributes: [
+                .font: UIFont.systemFont(ofSize: 32),
+                .foregroundColor: UIColor.black
+            ])
+        }
+        let portraitCI = CIImage(cgImage: try XCTUnwrap(landscape.cgImage)).oriented(.right)
+        let source = try XCTUnwrap(ImageRendering.context.createCGImage(portraitCI, from: portraitCI.extent))
+        let sourceSize = CGSize(width: source.width, height: source.height)
+        let samples = (0...32).map { Double($0) / 32 }
+        func bow(_ v: Double) -> Double { 0.006 * sin(.pi * v) }
+        let boundary = DocumentBoundary(top: samples.map { CGPoint(x: $0, y: 1) },
+            right: samples.map { CGPoint(x: 1 - bow($0), y: 1 - $0) },
+            bottom: samples.map { CGPoint(x: $0, y: 0) },
+            left: samples.map { CGPoint(x: bow($0), y: 1 - $0) })
+        let reference = try sidewaysTextFixture().sideways
+        let orientation = PageTextOrientationCorrector()
+        let referenceScores = try orientation.orientationScores(of: reference)
+        guard let turn = PageTextOrientationCorrector.preferredOrientation(scores: referenceScores),
+              turn == .left || turn == .right else {
+            XCTFail("Sideways reference must independently choose a quarter-turn: \(referenceScores)")
+            return
+        }
+        let unrotated = try PageFlattener().flatten(source, boundary: boundary)
+        XCTAssertGreaterThan(unrotated.height, unrotated.width)
+        let expectedCI = CIImage(cgImage: unrotated).oriented(turn)
+        let expected = try XCTUnwrap(ImageRendering.context.createCGImage(expectedCI, from: expectedCI.extent.integral))
+        let coons = try XCTUnwrap(DocumentDetector.correctSupportedPhotoCoons(
+            source, boundary: boundary, analysisSize: sourceSize, uvdocReference: { _ in reference }))
+        XCTAssertGreaterThan(coons.width, coons.height)
+        XCTAssertEqual(coons.width, expected.width)
+        XCTAssertEqual(coons.height, expected.height)
+        XCTAssertTrue(try PageBitmap(coons).data == PageBitmap(expected).data)
+        XCTAssertNil(try DocumentDetector.correctSupportedPhotoCoons(
+            source, boundary: boundary.cornersOnly, analysisSize: sourceSize, uvdocReference: { _ in
+                XCTFail("Planar control must not enter the Coons route")
+                return reference
+            }))
+
+        let blank = try XCTUnwrap(TestImageFactory.solid(.white, size: sourceSize).cgImage)
+        let abstainedCoons = try XCTUnwrap(DocumentDetector.correctSupportedPhotoCoons(
+            source, boundary: boundary, analysisSize: sourceSize, uvdocReference: { _ in blank }))
+        XCTAssertEqual(abstainedCoons.width, unrotated.width)
+        XCTAssertEqual(abstainedCoons.height, unrotated.height)
+        XCTAssertTrue(try PageBitmap(abstainedCoons).data == PageBitmap(unrotated).data)
+    }
+
+    func testRefinedCoonsUsesOneLegacyOrientationReferenceButReturnsRefinedPixels() throws {
+        let source = try XCTUnwrap(TestImageFactory.gradient(size: CGSize(width: 180, height: 320)).cgImage)
+        let size = CGSize(width: source.width, height: source.height)
+        let samples = (0...16).map { Double($0) / 16 }
+        let legacy = DocumentBoundary(top: samples.map { CGPoint(x: $0, y: 1) },
+            right: samples.map { CGPoint(x: 1 - 0.02 * sin(.pi * $0), y: 1 - $0) },
+            bottom: samples.map { CGPoint(x: $0, y: 0) },
+            left: samples.map { CGPoint(x: 0, y: 1 - $0) })
+        let refined = legacy.map { CGPoint(x: 0.04 + 0.92 * $0.x, y: $0.y) }
+        let reference = try sidewaysTextFixture().sideways
+        let scores = try PageTextOrientationCorrector().orientationScores(of: reference)
+        let turn = try XCTUnwrap(PageTextOrientationCorrector.preferredOrientation(scores: scores))
+        XCTAssertTrue(turn == .left || turn == .right)
+
+        var requestedBoundaries = [DocumentBoundary]()
+        let actual = try XCTUnwrap(DocumentDetector.correctSupportedPhotoCoons(
+            source, boundary: refined, analysisSize: size, routingBoundary: legacy, uvdocReference: { boundary in
+                requestedBoundaries.append(boundary)
+                return reference
+            }))
+        XCTAssertEqual(requestedBoundaries, [legacy])
+        let flattener = PageFlattener()
+        let refinedPixels = try flattener.flatten(source, boundary: refined)
+        let legacyPixels = try flattener.flatten(source, boundary: legacy)
+        XCTAssertNotEqual(refinedPixels.width, legacyPixels.width)
+        let expectedCI = CIImage(cgImage: refinedPixels).oriented(turn)
+        let expected = try XCTUnwrap(ImageRendering.context.createCGImage(expectedCI, from: expectedCI.extent))
+        XCTAssertEqual(actual.width, expected.width)
+        XCTAssertEqual(actual.height, expected.height)
+        XCTAssertEqual(try PageBitmap(actual).data, try PageBitmap(expected).data)
+    }
+
+    func testSupportedPhotoCoonsStraightensWhenUVDocDeclinesExtremeAspect() throws {
+        let size = CGSize(width: 120, height: 400)
+        let source = try XCTUnwrap(TestImageFactory.gradient(size: size).cgImage)
+        let samples = (0...8).map { Double($0) / 8 }
+        func bow(_ v: Double) -> Double { 0.04 * sin(.pi * v) }
+        let boundary = DocumentBoundary(top: samples.map { CGPoint(x: $0, y: 1) },
+            right: samples.map { CGPoint(x: 1 - bow($0), y: 1 - $0) },
+            bottom: samples.map { CGPoint(x: $0, y: 0) },
+            left: samples.map { CGPoint(x: bow($0), y: 1 - $0) })
+        let flattened = try PageFlattener().flatten(source, boundary: boundary)
+        let outputSize = CGSize(width: flattened.width, height: flattened.height)
+        let straightened = try XCTUnwrap(TestImageFactory.solid(.white, size: outputSize).cgImage)
+        let unwarper = UVDocUnwarper(modelLoader: {
+            XCTFail("Extreme-aspect crop must be declined before model loading")
+            throw UVDocModelLoadingError.missingResource
+        })
+        let output = try XCTUnwrap(DocumentDetector.correctSupportedPhotoCoons(
+            source, boundary: boundary, analysisSize: size,
+            straightenFallback: { image in
+                XCTAssertTrue(try PageBitmap(image).data == PageBitmap(flattened).data)
+                return straightened
+            }, uvdocReference: { _ in
+                let reference = try unwarper.unwarp(source, boundary: boundary)
+                XCTAssertNil(reference)
+                return reference
+            }))
+        XCTAssertTrue(try PageBitmap(output).data == PageBitmap(straightened).data)
     }
 
     private func curvedLines() -> [[PagePoint]] {

@@ -16,6 +16,15 @@ enum DocumentRectangleDetector {
         return request
     }
 
+    /// 写真の通常検出で候補が得られない場合、矩形候補だけを緩和して再検出する。
+    static func makePhotoFallbackRequest() -> VNDetectRectanglesRequest {
+        let request = makeRequest()
+        request.minimumConfidence = 0.35
+        request.minimumSize = 0.05
+        request.maximumObservations = 24
+        return request
+    }
+
     /// 候補から面積と信頼度の積が最大の書類を選ぶ。
     /// - 入力: observations … Vision の検出候補
     /// - 出力: 選択した候補、候補が無ければ nil
@@ -27,16 +36,28 @@ enum DocumentRectangleDetector {
     /// 書類領域を優先し、領域が取れない場合は有効な矩形を追跡候補に使う。
     /// - 入力: observations … 矩形候補、document … 書類領域、size … 向き補正済み寸法
     /// - 出力: 書類候補。不確かな領域や画面端の退化領域は nil
-    /// - 処理: 信頼度と四角形の形状を検証し、矩形の有無だけで書類を除外しない
+    /// - 処理: 矩形候補とセグメンテーション候補の信頼度・サイズを別々に検証する
     static func liveDocument(in observations: [VNRectangleObservation],
                              document: VNRectangleObservation?,
-                             size: CGSize) -> VNRectangleObservation? {
-        if let document, isUsable(document, size: size) { return document }
-        return preferred(in: observations.filter { isUsable($0, size: size) })
+                             size: CGSize,
+                             minimumConfidence: VNConfidence = 0.6,
+                             minimumSize: CGFloat = 0.1,
+                             minimumDocumentConfidence: VNConfidence = 0.6,
+                             minimumDocumentSize: CGFloat = 0.1) -> VNRectangleObservation? {
+        if let document, isUsable(document, size: size,
+                                  minimumConfidence: minimumDocumentConfidence, minimumSize: minimumDocumentSize) {
+            return document
+        }
+        return preferred(in: observations.filter {
+            isUsable($0, size: size, minimumConfidence: minimumConfidence, minimumSize: minimumSize)
+        })
     }
 
-    private static func isUsable(_ observation: VNRectangleObservation, size: CGSize) -> Bool {
-        guard observation.confidence >= 0.6,
+    private static func isUsable(_ observation: VNRectangleObservation,
+                                 size: CGSize,
+                                 minimumConfidence: VNConfidence = 0.6,
+                                 minimumSize: CGFloat = 0.1) -> Bool {
+        guard observation.confidence >= minimumConfidence,
               size.width.isFinite, size.height.isFinite,
               size.width > 0, size.height > 0 else { return false }
         let points = [observation.topLeft, observation.topRight,
@@ -61,7 +82,7 @@ enum DocumentRectangleDetector {
         }) else { return false }
         let lengths = edges.map { hypot($0.x, $0.y) }
         guard let shortest = lengths.min(), let longest = lengths.max(),
-              shortest >= min(size.width, size.height) * 0.1,
+              shortest >= min(size.width, size.height) * minimumSize,
               shortest / longest >= 0.15 else { return false }
         return true
     }

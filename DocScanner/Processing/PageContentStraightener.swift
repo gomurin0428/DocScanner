@@ -1,6 +1,14 @@
 import CoreGraphics
 import CoreImage
+import Foundation
+import ImageIO
 import Vision
+
+enum PageTextCurvature: Equatable {
+    case insufficientText
+    case straight
+    case curved
+}
 
 /// 輪郭補正後の紙面を文字列の並びから補正する。文字が不足する画像はそのまま返す。
 struct PageContentStraightener {
@@ -31,6 +39,98 @@ struct PageContentStraightener {
             return try render(image, model: model, rotated: rotated)
         }
         return image
+    }
+
+    func textCurvature(in image: CGImage) throws -> PageTextCurvature {
+        let ci = CIImage(cgImage: image)
+        let scale = min(1, 1600 / max(ci.extent.width, ci.extent.height))
+        let small = ci.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        var bestLines: [[PagePoint]] = []
+        var bestScore = 0
+        for orientation in [CGImagePropertyOrientation.up, .right, .left] {
+            let analysis = orientation == .up
+                ? small
+                : small.oriented(forExifOrientation: Int32(orientation.rawValue))
+            guard let cg = context.createCGImage(analysis, from: analysis.extent.integral) else {
+                throw DocumentDetectionError.renderFailed
+            }
+            let lines: [[PagePoint]]
+            do {
+                lines = try textLines(in: cg)
+            } catch {
+                AppDiagnostics.error("UVDoc text curvature analysis", error: error)
+                throw DocumentDetectionError.visionFailed(error)
+            }
+            guard Self.hasSufficientTextEvidence(lines) else { continue }
+            let score = lines.reduce(0, { $0 + $1.count })
+            if score > bestScore {
+                bestLines = lines
+                bestScore = score
+            }
+        }
+        return Self.classifyTextCurvature(bestLines)
+    }
+
+    static func classifyTextCurvature(_ lines: [[PagePoint]]) -> PageTextCurvature {
+        guard hasSufficientTextEvidence(lines) else { return .insufficientText }
+        guard let curvature = baselineCurvature(lines) else { return .insufficientText }
+        return curvature > 0.0015 ? .curved : .straight
+    }
+
+    private static func hasSufficientTextEvidence(_ lines: [[PagePoint]]) -> Bool {
+        let rows = lines.filter { line in
+            guard line.count >= 8, line.allSatisfy({
+                $0.x.isFinite && $0.y.isFinite && (0...1).contains($0.x) && (0...1).contains($0.y)
+            }), let minX = line.map(\.x).min(), let maxX = line.map(\.x).max(),
+               let minY = line.map(\.y).min(), let maxY = line.map(\.y).max() else { return false }
+            return maxX - minX >= 0.18 && maxY - minY < 0.12
+        }
+        guard rows.count >= 3 else { return false }
+        let points = rows.flatMap { $0 }
+        guard let minX = points.map(\.x).min(), let maxX = points.map(\.x).max(),
+              let minY = points.map(\.y).min(), let maxY = points.map(\.y).max(),
+              maxX - minX >= 0.45, maxY - minY >= 0.25 else { return false }
+        let rowCenters = rows.map { $0.map(\.y).reduce(0, +) / Double($0.count) }
+        return Set(rowCenters.map { Int($0 * 6) }).count >= 3
+    }
+
+    private static func baselineCurvature(_ lines: [[PagePoint]]) -> Double? {
+        let residuals = lines.compactMap { line -> [Double]? in
+            guard let minX = line.map(\.x).min(), let maxX = line.map(\.x).max(), maxX > minX else { return nil }
+            var bins = [[PagePoint]](repeating: [], count: 6)
+            for point in line {
+                let bin = min(5, Int((point.x - minX) / (maxX - minX) * 6))
+                bins[bin].append(point)
+            }
+            let samples = bins.compactMap { values -> PagePoint? in
+                guard !values.isEmpty else { return nil }
+                let medianX = median(values.map(\.x))
+                let medianY = median(values.map(\.y))
+                return values.min { lhs, rhs in
+                    let leftDistance = pow(lhs.x - medianX, 2) + pow(lhs.y - medianY, 2)
+                    let rightDistance = pow(rhs.x - medianX, 2) + pow(rhs.y - medianY, 2)
+                    return leftDistance < rightDistance
+                }
+            }
+            guard samples.count >= 4 else { return nil }
+            let meanX = samples.map(\.x).reduce(0, +) / Double(samples.count)
+            let meanY = samples.map(\.y).reduce(0, +) / Double(samples.count)
+            let variance = samples.reduce(0) { $0 + pow($1.x - meanX, 2) }
+            guard variance > 0 else { return nil }
+            let slope = samples.reduce(0) { $0 + ($1.x - meanX) * ($1.y - meanY) } / variance
+            let intercept = meanY - slope * meanX
+            return samples.map { abs($0.y - (slope * $0.x + intercept)) }
+        }
+        let values = residuals.flatMap { $0 }
+        guard !values.isEmpty else { return nil }
+        return median(values)
+    }
+
+    private static func median(_ values: [Double]) -> Double {
+        guard !values.isEmpty else { return 0 }
+        let sorted = values.sorted()
+        let middle = sorted.count / 2
+        return sorted.count.isMultiple(of: 2) ? (sorted[middle - 1] + sorted[middle]) / 2 : sorted[middle]
     }
 
     private func textLines(in image: CGImage) throws -> [[PagePoint]] {
@@ -86,5 +186,111 @@ struct PageContentStraightener {
             throw DocumentDetectionError.renderFailed
         }
         return result
+    }
+}
+
+struct PageTextOrientationCorrector {
+    private let context = ImageRendering.context
+    private static let orientations: [CGImagePropertyOrientation] = [.up, .right, .down, .left]
+    func correct(_ image: CGImage, scoring reference: CGImage? = nil) throws -> CGImage {
+        let scores = try orientationScores(of: reference ?? image)
+        return try apply(Self.preferredOrientation(scores: scores), to: image, fastScores: scores)
+    }
+
+    func correctCoons(_ image: CGImage, reference: CGImage,
+                      scorer: ((CGImage, VNRequestTextRecognitionLevel) throws -> [Double])? = nil) throws -> CGImage {
+        let score = scorer ?? { try orientationScores(of: $0, level: $1) }
+        let fast = try score(reference, .fast)
+        var turn = Self.preferredOrientation(scores: fast)
+        if turn == nil, Self.hasAmbiguousQuarterTurn(scores: fast) {
+            do {
+                let accurateReference = try score(reference, .accurate)
+                let accurateCoons = try score(image, .accurate)
+                let referenceTurn = Self.preferredOrientation(scores: accurateReference)
+                let coonsTurn = Self.preferredOrientation(scores: accurateCoons)
+                if let referenceTurn, referenceTurn == coonsTurn,
+                   referenceTurn == .left || referenceTurn == .right {
+                    turn = referenceTurn
+                }
+                AppDiagnostics.selection("Photo Coons orientation retry: accurateReference=\(Self.summary(accurateReference)), " +
+                                         "accurateCoons=\(Self.summary(accurateCoons)), accepted=\(turn != nil)")
+            } catch {
+                AppDiagnostics.selection("Photo Coons orientation retry unavailable; preserving input orientation")
+            }
+        }
+        return try apply(turn, to: image, fastScores: fast)
+    }
+
+    private func apply(_ turn: CGImagePropertyOrientation?, to image: CGImage, fastScores: [Double]) throws -> CGImage {
+        guard let orientation = turn else {
+            AppDiagnostics.selection("Photo text orientation unchanged: scores=\(Self.summary(fastScores))")
+            return image
+        }
+        let oriented = CIImage(cgImage: image).oriented(forExifOrientation: Int32(orientation.rawValue))
+        guard let result = context.createCGImage(oriented, from: oriented.extent.integral) else {
+            throw DocumentDetectionError.renderFailed
+        }
+        AppDiagnostics.selection("Photo text orientation corrected: \(orientation), scores=\(Self.summary(fastScores))")
+        return result
+    }
+
+    func orientationScores(of image: CGImage, level: VNRequestTextRecognitionLevel = .fast) throws -> [Double] {
+        let source = CIImage(cgImage: image)
+        let maximumDimension: CGFloat = level == .accurate ? 2048 : 1024
+        let scale = min(1, maximumDimension / max(CGFloat(image.width), CGFloat(image.height)))
+        let scaled = source.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        guard let analysisImage = context.createCGImage(scaled, from: scaled.extent.integral) else {
+            throw DocumentDetectionError.renderFailed
+        }
+        return try Self.orientations.map { orientation in
+            let request = VNRecognizeTextRequest()
+            request.recognitionLevel = level
+            request.usesLanguageCorrection = false
+            request.automaticallyDetectsLanguage = true
+            do {
+                try VNImageRequestHandler(cgImage: analysisImage, orientation: orientation, options: [:])
+                    .perform([request])
+            } catch {
+                AppDiagnostics.error("Photo text orientation", error: error)
+                throw DocumentDetectionError.visionFailed(error)
+            }
+            return (request.results ?? []).reduce(0.0) { total, observation in
+                guard let candidate = observation.topCandidates(1).first else { return total }
+                let characterCount = candidate.string.filter { !$0.isWhitespace }.count
+                return total + Double(characterCount) * Double(candidate.confidence)
+            }
+        }
+    }
+
+    static func preferredOrientation(scores: [Double]) -> CGImagePropertyOrientation? {
+        guard scores.count == orientations.count,
+              scores.allSatisfy({ $0.isFinite && $0 >= 0 }),
+              let best = scores.indices.max(by: { scores[$0] < scores[$1] }),
+              best != 0 else { return nil }
+        let bestScore = scores[best]
+        let nextBest = scores.indices.filter { $0 != best }.map { scores[$0] }.max() ?? 0
+        guard clearsUprightGate(bestScore, upright: scores[0]),
+              bestScore - nextBest >= margin(for: bestScore) else { return nil }
+        return orientations[best]
+    }
+
+    private static func hasAmbiguousQuarterTurn(scores: [Double]) -> Bool {
+        guard scores.count == orientations.count, scores.allSatisfy({ $0.isFinite && $0 >= 0 }) else { return false }
+        let best = max(scores[1], scores[3])
+        let runnerUp = min(scores[1], scores[3])
+        return clearsUprightGate(best, upright: scores[0]) &&
+            runnerUp > max(scores[0], scores[2]) &&
+            best - max(scores[0], scores[2]) >= margin(for: best) &&
+            best - runnerUp < margin(for: best)
+    }
+
+    private static func clearsUprightGate(_ score: Double, upright: Double) -> Bool {
+        score >= 12 && score >= upright * 1.08 + 4
+    }
+
+    private static func margin(for score: Double) -> Double { max(4, score * 0.08) }
+
+    private static func summary(_ scores: [Double]) -> String {
+        scores.map { String(format: "%.1f", $0) }.joined(separator: ",")
     }
 }

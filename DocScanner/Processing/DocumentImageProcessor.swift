@@ -64,16 +64,9 @@ struct DocumentImageProcessor {
         case .original:
             break
         case .enhanced:
-            // 陰影除去で平坦化 → レベル補正 → 彩度 +15% → 輝度シャープ化
+            // 陰影除去で平坦化 → 輝度レベル補正 → 輝度シャープ化
             let flat = try learned.map { CIImage(cgImage: $0) } ?? ShadingCorrector.flattened(ci)
-            var output = try ShadingCorrector.levels(flat, black: 0.12, white: 0.92, gamma: 1.3)
-            guard let saturated = CIFilter(name: "CIColorControls", parameters: [
-                kCIInputImageKey: output,
-                kCIInputSaturationKey: 1.15
-            ])?.outputImage else {
-                throw ImageProcessingError.filterFailed("CIColorControls")
-            }
-            output = saturated
+            let output = try ShadingCorrector.luminanceLevels(flat, black: 0, white: 0.92, gamma: 1.3)
             guard let sharpened = CIFilter(name: "CISharpenLuminance", parameters: [
                 kCIInputImageKey: output,
                 kCIInputSharpnessKey: 0.5,
@@ -89,7 +82,7 @@ struct DocumentImageProcessor {
             ci = try ShadingCorrector.levels(gray, black: 0.1, white: 0.92, gamma: 1.2)
         case .blackAndWhite:
             // 陰影除去で平坦化 → グレースケール → 適応閾値（局所比）と
-            // グローバルランプの min 合成でアンチエイリアス付き 2 値化。
+            // 上限付き色差マスクを併用し、薄い印刷を残すアンチエイリアス付き 2 値化。
             // ハードなグローバル閾値だと細線・薄い線が消えるため、
             // g/local 比で文字を拾い、大きな黒領域のくり抜きはグローバル側で防ぐ
             let flat = try learned.map { CIImage(cgImage: $0) } ?? ShadingCorrector.flattened(ci)
@@ -108,15 +101,41 @@ struct DocumentImageProcessor {
             ])?.outputImage else {
                 throw ImageProcessingError.filterFailed("CIDivideBlendMode")
             }
-            let adaptive = try ShadingCorrector.ramp(ratio.cropped(to: extent), lo: 0.78, hi: 0.94)
-            let global = try ShadingCorrector.ramp(gray, lo: 0.45, hi: 0.70)
+            let adaptive = try ShadingCorrector.ramp(ratio.cropped(to: extent), lo: 0.72, hi: 0.97)
+            let global = try ShadingCorrector.ramp(gray, lo: 0.20, hi: 0.45)
+            guard let colorLocal = CIFilter(name: "CIGaussianBlur", parameters: [
+                kCIInputImageKey: flat.clampedToExtent(),
+                kCIInputRadiusKey: radius
+            ])?.outputImage else {
+                throw ImageProcessingError.filterFailed("CIGaussianBlur")
+            }
+            let chroma = try ShadingCorrector.chromaticDifference(flat, from: colorLocal.cropped(to: extent))
+            let chromaticRamp = try ShadingCorrector.ramp(chroma, lo: 0.018, hi: 0.07)
+            guard let chromatic = CIFilter(name: "CIColorMatrix", parameters: [
+                kCIInputImageKey: chromaticRamp,
+                "inputRVector": CIVector(x: -0.75, y: 0, z: 0, w: 0),
+                "inputGVector": CIVector(x: 0, y: -0.75, z: 0, w: 0),
+                "inputBVector": CIVector(x: 0, y: 0, z: -0.75, w: 0),
+                "inputBiasVector": CIVector(x: 1, y: 1, z: 1, w: 0)
+            ])?.outputImage else {
+                throw ImageProcessingError.filterFailed("CIColorMatrix")
+            }
             guard let combined = CIFilter(name: "CIMinimumCompositing", parameters: [
                 kCIInputImageKey: adaptive,
                 kCIInputBackgroundImageKey: global
             ])?.outputImage else {
                 throw ImageProcessingError.filterFailed("CIMinimumCompositing")
             }
-            ci = combined.cropped(to: extent)
+            guard let colorCombined = CIFilter(name: "CIMinimumCompositing", parameters: [
+                kCIInputImageKey: combined.cropped(to: extent),
+                kCIInputBackgroundImageKey: chromatic
+            ])?.outputImage else {
+                throw ImageProcessingError.filterFailed("CIMinimumCompositing")
+            }
+            ci = try ShadingCorrector.preserveBrightChromaticContrast(
+                colorCombined.cropped(to: extent), source: gray, local: local.cropped(to: extent),
+                chromatic: chromaticRamp
+            )
         }
 
         // 出力を入力 extent に合わせてピクセルサイズを保持する

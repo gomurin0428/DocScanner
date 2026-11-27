@@ -111,13 +111,13 @@ final class DocResEnhancer {
         if let index = gainCache.firstIndex(where: { $0.source === image }) {
             let entry = gainCache.remove(at: index)
             gainCache.insert(entry, at: 0)
-            let bitmap = try PageBitmap(image, background: CGColor(gray: 1, alpha: 1))
-            let result = try Self.render(bitmap, gain: entry.gain)
+            let result = try Self.render(image, gain: entry.gain)
             cachedSource = image
             cachedResult = result
             return result
         }
-        let bitmap = try PageBitmap(image, background: CGColor(gray: 1, alpha: 1))
+        let bitmap = try PageBitmap(image, background: CGColor(gray: 1, alpha: 1),
+                                    maximumPixelDimension: DocResPrompt.promptSide)
         let small = DocResPrompt.resized(bitmap, side: Self.side)
         guard DocResPrompt.hasContrast(small) else {
             AppDiagnostics.selection("DocRes skipped: low contrast image")
@@ -186,7 +186,7 @@ final class DocResEnhancer {
         try Task.checkCancellation()
         let result: CGImage
         do {
-            result = try Self.render(bitmap, gain: gain)
+            result = try Self.render(image, gain: gain)
         } catch {
             let renderError = DocResProcessingError.renderFailed(error)
             AppDiagnostics.error("DocRes rendering", error: error)
@@ -203,29 +203,35 @@ final class DocResEnhancer {
               prediction.dataType == .float32 else { return nil }
         let strides = prediction.strides.map(\.intValue)
         let values = prediction.dataPointer.assumingMemoryBound(to: Float.self)
-        var result = [Float](repeating: 0, count: count * 3)
-        for channel in 0..<3 {
-            var original = [Float](repeating: 0, count: count)
-            var restored = original
-            for y in 0..<side {
-                for x in 0..<side {
-                    let i = y * side + x
-                    let value = values[(2 - channel) * strides[1] + y * strides[2] + x * strides[3]]
-                    guard value.isFinite, value >= -1, value <= 2 else { return nil }
-                    restored[i] = min(1, max(0, value))
-                    original[i] = Float(input[i * 3 + channel]) / 255
-                }
+        var original = [Float](repeating: 0, count: count)
+        var restored = original
+        for y in 0..<side {
+            for x in 0..<side {
+                let i = y * side + x
+                let red = values[2 * strides[1] + y * strides[2] + x * strides[3]]
+                let green = values[strides[1] + y * strides[2] + x * strides[3]]
+                let blue = values[y * strides[2] + x * strides[3]]
+                guard red.isFinite, green.isFinite, blue.isFinite,
+                      (-1...2).contains(red), (-1...2).contains(green), (-1...2).contains(blue) else { return nil }
+                let inputOffset = i * 3
+                original[i] = (0.2126 * Float(input[inputOffset])
+                                + 0.7152 * Float(input[inputOffset + 1])
+                                + 0.0722 * Float(input[inputOffset + 2])) / 255
+                restored[i] = 0.2126 * min(1, max(0, red))
+                    + 0.7152 * min(1, max(0, green))
+                    + 0.0722 * min(1, max(0, blue))
             }
-            let numerator = smoothed(restored)
-            let denominator = smoothed(original)
-            var clipped = 0
-            for i in 0..<count {
-                let value = numerator[i] / max(0.02, denominator[i])
-                if value < 0.75 || value > 4 { clipped += 1 }
-                result[i * 3 + channel] = min(4, max(0.75, value))
-            }
-            guard clipped < count / 10 else { return nil }
         }
+        let numerator = smoothed(restored)
+        let denominator = smoothed(original)
+        var result = [Float](repeating: 0, count: count)
+        var clipped = 0
+        for i in 0..<count {
+            let value = numerator[i] / max(0.02, denominator[i])
+            if value < 0.75 || value > 4 { clipped += 1 }
+            result[i] = min(4, max(0.75, value))
+        }
+        guard clipped < count / 10 else { return nil }
         return result
     }
 
@@ -256,37 +262,64 @@ final class DocResEnhancer {
         return output
     }
 
-    static func render(_ bitmap: PageBitmap, gain: [Float]) throws -> CGImage {
-        guard gain.count == side * side * 3,
+    static func render(_ image: CGImage, gain: [Float]) throws -> CGImage {
+        guard gain.count == side * side,
               gain.allSatisfy({ $0.isFinite && $0 >= 0.75 && $0 <= 4 }) else {
             throw DocResProcessingError.invalidModelOutput
         }
-        var pixels = bitmap.data
-        for y in 0..<bitmap.height {
-            let sy = min(Double(side - 1), max(0, (Double(y) + 0.5) * Double(side) / Double(bitmap.height) - 0.5))
-            let y0 = min(side - 2, Int(sy)), fy = Float(sy - Double(y0))
-            for x in 0..<bitmap.width {
-                let sx = min(Double(side - 1), max(0, (Double(x) + 0.5) * Double(side) / Double(bitmap.width) - 0.5))
-                let x0 = min(side - 2, Int(sx)), fx = Float(sx - Double(x0))
-                let source = (y * bitmap.width + x) * 4
-                let i = (y0 * side + x0) * 3
-                for channel in 0..<3 {
-                    let top = gain[i + channel] * (1 - fx) + gain[i + 3 + channel] * fx
-                    let bottom = gain[i + side * 3 + channel] * (1 - fx) + gain[i + side * 3 + 3 + channel] * fx
-                    let value = Float(bitmap.data[source + channel]) * (top * (1 - fy) + bottom * fy)
-                    pixels[source + channel] = UInt8(min(255, max(0, value)))
-                }
-                pixels[source + 3] = 255
-            }
+        let width = image.width
+        let height = image.height
+        guard let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
+                                      bytesPerRow: width * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
+            throw DocResProcessingError.renderFailed(DocumentDetectionError.bitmapContextFailed)
         }
-        guard let provider = CGDataProvider(data: Data(pixels) as CFData),
-              let image = CGImage(width: bitmap.width, height: bitmap.height, bitsPerComponent: 8,
-                                  bitsPerPixel: 32, bytesPerRow: bitmap.width * 4,
-                                  space: CGColorSpace(name: CGColorSpace.sRGB)!,
-                                  bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
-                                  provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent) else {
+        context.setFillColor(CGColor(gray: 1, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        guard let pixels = context.data?.assumingMemoryBound(to: UInt8.self) else {
             throw DocResProcessingError.renderFailed(DocumentDetectionError.renderFailed)
         }
-        return image
+        for y in 0..<height {
+            let sy = min(Double(side - 1), max(0, (Double(y) + 0.5) * Double(side) / Double(height) - 0.5))
+            let y0 = min(side - 2, Int(sy)), fy = Float(sy - Double(y0))
+            for x in 0..<width {
+                let sx = min(Double(side - 1), max(0, (Double(x) + 0.5) * Double(side) / Double(width) - 0.5))
+                let x0 = min(side - 2, Int(sx)), fx = Float(sx - Double(x0))
+                let i = y0 * side + x0
+                let top = gain[i] * (1 - fx) + gain[i + 1] * fx
+                let bottom = gain[i + side] * (1 - fx) + gain[i + side + 1] * fx
+                let factor = top * (1 - fy) + bottom * fy
+                let offset = (y * width + x) * 4
+                let sourceLight = (0.2126 * Float(pixels[offset]) + 0.7152 * Float(pixels[offset + 1])
+                                   + 0.0722 * Float(pixels[offset + 2])) / 255
+                let transition = min(1, max(0, (sourceLight - 0.08) / 0.32))
+                let protection = transition * transition * (3 - 2 * transition)
+                let appliedFactor = 1 + (factor - 1) * protection
+                let red = Float(pixels[offset]) * appliedFactor
+                let green = Float(pixels[offset + 1]) * appliedFactor
+                let blue = Float(pixels[offset + 2]) * appliedFactor
+                let sourceMaximum = Float(max(pixels[offset], max(pixels[offset + 1], pixels[offset + 2]))) / 255
+                let maximum = max(red, max(green, blue)) / 255
+                var scale: Float = 1
+                if appliedFactor > 1 && maximum > 0.9 {
+                    let gainIncrease = sourceMaximum * (appliedFactor - 1)
+                    let beforeKnee = min(gainIncrease, max(0, 0.9 - sourceMaximum))
+                    let aboveKnee = max(0, gainIncrease - beforeKnee)
+                    let headroom = max(0, 1 - sourceMaximum - beforeKnee)
+                    let mappedMaximum = sourceMaximum + beforeKnee
+                        + headroom * (1 - exp(-aboveKnee / max(headroom, 0.00001)))
+                    scale = mappedMaximum / maximum
+                }
+                pixels[offset] = UInt8(min(255, max(0, red * scale)))
+                pixels[offset + 1] = UInt8(min(255, max(0, green * scale)))
+                pixels[offset + 2] = UInt8(min(255, max(0, blue * scale)))
+                pixels[offset + 3] = 255
+            }
+        }
+        guard let output = context.makeImage() else {
+            throw DocResProcessingError.renderFailed(DocumentDetectionError.renderFailed)
+        }
+        return output
     }
 }

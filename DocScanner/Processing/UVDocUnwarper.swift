@@ -69,23 +69,34 @@ final class UVDocUnwarper {
         return try MLModel(contentsOf: url, configuration: configuration)
     }
 
-    func unwarp(_ image: CGImage, boundary: DocumentBoundary, camera: DocumentCamera? = nil) throws -> CGImage? {
-        guard boundary.isValid else {
+    func unwarp(_ image: CGImage, boundary: DocumentBoundary, camera: DocumentCamera? = nil,
+                routingBoundary: DocumentBoundary? = nil) throws -> CGImage? {
+        let evidence = routingBoundary ?? boundary
+        guard boundary.isValid, evidence.isValid else {
             throw DocumentDetectionError.invalidImage
         }
-        let xs = boundary.outline.map(\.x), ys = boundary.outline.map(\.y)
-        let bounds = CGRect(x: xs.min()! * Double(image.width), y: (1 - ys.max()!) * Double(image.height),
-                            width: (xs.max()! - xs.min()!) * Double(image.width),
-                            height: (ys.max()! - ys.min()!) * Double(image.height)).integral
-            .intersection(CGRect(x: 0, y: 0, width: image.width, height: image.height))
-        guard min(bounds.width, bounds.height) >= 64 else {
-            AppDiagnostics.selection("UVDoc skipped: small document crop")
-            return nil
+        func cropBounds(_ outline: DocumentBoundary) -> CGRect {
+            let xs = outline.outline.map(\.x), ys = outline.outline.map(\.y)
+            return CGRect(x: xs.min()! * Double(image.width), y: (1 - ys.max()!) * Double(image.height),
+                          width: (xs.max()! - xs.min()!) * Double(image.width),
+                          height: (ys.max()! - ys.min()!) * Double(image.height)).integral
+                .intersection(CGRect(x: 0, y: 0, width: image.width, height: image.height))
         }
-        guard min(bounds.width, bounds.height) / max(bounds.width, bounds.height) >= 0.35 else {
-            AppDiagnostics.selection("UVDoc skipped: extreme document aspect ratio")
-            return nil
+        func eligibleSize(_ bounds: CGRect, cropName: String) -> Bool {
+            guard min(bounds.width, bounds.height) >= 64 else {
+                AppDiagnostics.selection("UVDoc skipped: small document crop (\(cropName))")
+                return false
+            }
+            guard min(bounds.width, bounds.height) / max(bounds.width, bounds.height) >= 0.35 else {
+                AppDiagnostics.selection("UVDoc skipped: extreme document aspect ratio (\(cropName))")
+                return false
+            }
+            return true
         }
+        let bounds = cropBounds(boundary)
+        let evidenceBounds = cropBounds(evidence)
+        guard eligibleSize(bounds, cropName: "rendering"),
+              evidenceBounds == bounds || eligibleSize(evidenceBounds, cropName: "routing") else { return nil }
         guard var crop = image.cropping(to: bounds) else {
             throw DocumentDetectionError.correctionFailed
         }
@@ -100,17 +111,45 @@ final class UVDocUnwarper {
         }
         let input = try Self.input(for: crop)
         guard Self.hasContrast(input) else {
-            AppDiagnostics.selection("UVDoc skipped: low contrast document crop")
+            AppDiagnostics.selection("UVDoc skipped: low contrast document crop (rendering)")
             return nil
+        }
+        let evidenceCrop: CGImage
+        if evidenceBounds == bounds {
+            evidenceCrop = crop
+        } else {
+            guard let legacyCrop = image.cropping(to: evidenceBounds) else {
+                throw DocumentDetectionError.correctionFailed
+            }
+            evidenceCrop = legacyCrop.width > legacyCrop.height ? try rotate(legacyCrop, right: true) : legacyCrop
+            guard Self.hasContrast(try Self.input(for: evidenceCrop)) else {
+                AppDiagnostics.selection("UVDoc skipped: low contrast document crop (routing)")
+                return nil
+            }
+        }
+        let sourceSize = CGSize(width: CGFloat(image.width), height: CGFloat(image.height))
+        let hasMeasuredCurvature = evidence.hasMeasuredCurvedEdges(in: sourceSize)
+        if hasMeasuredCurvature {
+            AppDiagnostics.selection("UVDoc retained: measured curved boundary")
+        } else {
+            let hasStraightText = try PageContentStraightener().textCurvature(in: evidenceCrop) == .straight
+            if hasStraightText {
+                AppDiagnostics.selection("UVDoc skipped: straight text and no measured curved boundary; using corner-only planar correction")
+                return try PageFlattener().flattenPlanar(image, boundary: boundary.cornersOnly, camera: camera)
+            }
+            AppDiagnostics.selection("UVDoc retained: text baselines are not straight")
         }
         try ensureModel()
         guard model != nil else { return nil }
         guard let raw = try predict(input) else {
+            AppDiagnostics.selection("UVDoc output rejected: predictor returned no grid")
             let error = UVDocProcessingError.invalidModelOutput
             AppDiagnostics.error("UVDoc model output", error: error)
             throw error
         }
-        guard let grid = raw.constrained(to: croppedBoundary) else {
+        var rejectionReason: String?
+        guard let grid = raw.constrained(to: croppedBoundary, rejectionReason: &rejectionReason) else {
+            AppDiagnostics.selection("UVDoc output rejected: \(rejectionReason ?? "constraint validation failed")")
             let error = UVDocProcessingError.invalidModelOutput
             AppDiagnostics.error("UVDoc model output", error: error)
             throw error
@@ -135,8 +174,20 @@ final class UVDocUnwarper {
             AppDiagnostics.error("UVDoc prediction", error: predictionError)
             throw predictionError
         }
-        guard let array = result.featureValue(for: "grid")?.multiArrayValue,
-              array.shape.map(\.intValue) == [1, 2, 45, 31], array.dataType == .float32 else {
+        guard let array = result.featureValue(for: "grid")?.multiArrayValue else {
+            AppDiagnostics.selection("UVDoc output rejected: missing grid feature")
+            let error = UVDocProcessingError.invalidModelOutput
+            AppDiagnostics.error("UVDoc model output", error: error)
+            throw error
+        }
+        guard array.shape.map(\.intValue) == [1, 2, 45, 31] else {
+            AppDiagnostics.selection("UVDoc output rejected: grid shape \(array.shape.map(\.intValue))")
+            let error = UVDocProcessingError.invalidModelOutput
+            AppDiagnostics.error("UVDoc model output", error: error)
+            throw error
+        }
+        guard array.dataType == .float32 else {
+            AppDiagnostics.selection("UVDoc output rejected: grid data type \(array.dataType)")
             let error = UVDocProcessingError.invalidModelOutput
             AppDiagnostics.error("UVDoc model output", error: error)
             throw error

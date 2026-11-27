@@ -1,4 +1,6 @@
+import CoreGraphics
 import PDFKit
+import UIKit
 import XCTest
 @testable import DocScanner
 
@@ -93,6 +95,50 @@ final class PDFBuilderTests: XCTestCase {
         let page = try XCTUnwrap(PDFDocument(data: data)?.page(at: 0))
         let rendered = page.thumbnail(of: page.bounds(for: .mediaBox).size, for: .mediaBox)
         XCTAssertLessThan(try luminance(of: rendered, x: 1, y: 1), 0.1)
+    }
+
+    func testFitImagePreservesRasterPixelsWithoutLossyEncoding() throws {
+        let width = 128, height = 96
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let image = UIGraphicsImageRenderer(size: CGSize(width: width, height: height), format: format).image { context in
+            for x in stride(from: 0, to: width, by: 8) {
+                let color = (x / 8).isMultiple(of: 2)
+                    ? UIColor.black
+                    : UIColor(red: 0.25, green: 0.5, blue: 0.75, alpha: 1)
+                color.setFill()
+                context.fill(CGRect(x: CGFloat(x), y: 0, width: 8, height: CGFloat(height)))
+            }
+            let graphics = context.cgContext
+            graphics.setLineWidth(1)
+            graphics.setStrokeColor(UIColor.red.cgColor)
+            graphics.move(to: CGPoint(x: 3, y: 13))
+            graphics.addLine(to: CGPoint(x: 124, y: 13))
+            graphics.strokePath()
+            graphics.setStrokeColor(UIColor.white.cgColor)
+            graphics.move(to: CGPoint(x: 12, y: 19))
+            graphics.addLine(to: CGPoint(x: 116, y: 83))
+            graphics.strokePath()
+            ("TOP 17" as NSString).draw(at: CGPoint(x: 41, y: 43), withAttributes: [
+                .font: UIFont.monospacedSystemFont(ofSize: 8, weight: .regular),
+                .foregroundColor: UIColor.yellow
+            ])
+        }
+        let data = try PDFBuilder().makePDF(from: [image], pageSize: .fitImage)
+        let page = try XCTUnwrap(PDFDocument(data: data)?.page(at: 0))
+        let bounds = page.bounds(for: .mediaBox)
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        let context = try XCTUnwrap(CGContext(data: &pixels, width: width, height: height,
+            bitsPerComponent: 8, bytesPerRow: width * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.setFillColor(CGColor(gray: 1, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: CGFloat(width), height: CGFloat(height)))
+        context.scaleBy(x: CGFloat(width) / bounds.width, y: CGFloat(height) / bounds.height)
+        context.interpolationQuality = .none
+        page.draw(with: .mediaBox, to: context)
+        let rendered = try XCTUnwrap(context.makeImage())
+
+        XCTAssertEqual(try PageBitmap(rendered).data, try PageBitmap(XCTUnwrap(image.cgImage)).data)
     }
 
     func testFitImageUsesUprightOrientationAndPixelDimensions() throws {

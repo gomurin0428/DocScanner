@@ -1,4 +1,5 @@
 import CoreML
+import Foundation
 import UIKit
 import XCTest
 @testable import DocScanner
@@ -7,6 +8,25 @@ final class UVDocTests: XCTestCase {
     private var boundary: DocumentBoundary {
         DocumentBoundary(corners: [CGPoint(x: 0, y: 1), CGPoint(x: 1, y: 1),
                                    CGPoint(x: 1, y: 0), CGPoint(x: 0, y: 0)])
+    }
+
+    private var sampledStraightBoundary: DocumentBoundary {
+        let positions = (0...32).map { CGFloat($0) / 32 }
+        return DocumentBoundary(top: positions.map { CGPoint(x: $0, y: 1) },
+                                right: positions.map { CGPoint(x: 1, y: 1 - $0) },
+                                bottom: positions.map { CGPoint(x: $0, y: 0) },
+                                left: positions.map { CGPoint(x: 0, y: 1 - $0) })
+    }
+
+    private var curvedSampledBoundary: DocumentBoundary {
+        let positions = (0...32).map { CGFloat($0) / 32 }
+        let bow: (CGFloat) -> CGFloat = { position in
+            CGFloat(0.03 * sin(Double.pi * Double(position)))
+        }
+        return DocumentBoundary(top: positions.map { CGPoint(x: $0, y: 1 - bow($0)) },
+                                right: positions.map { CGPoint(x: 1, y: 1 - $0) },
+                                bottom: positions.map { CGPoint(x: $0, y: bow($0)) },
+                                left: positions.map { CGPoint(x: 0, y: 1 - $0) })
     }
 
     private func identity(width: Int = 31, height: Int = 45) -> UVDocGrid {
@@ -97,5 +117,207 @@ final class UVDocTests: XCTestCase {
             XCTAssertEqual(a.x, b.x, accuracy: 0.000001)
             XCTAssertEqual(a.y, b.y, accuracy: 0.000001)
         }
+    }
+
+    func testStraightTextPageUsesPlanarFlatteningAndKeepsRoundMarkRound() throws {
+        let size = CGSize(width: 700, height: 900)
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let text = (0..<14).map { "POSTCARD LINE \($0 + 1) 123456789" }.joined(separator: "\n")
+        let image = UIGraphicsImageRenderer(size: size, format: format).image { _ in
+            UIColor.white.setFill()
+            UIRectFill(CGRect(origin: .zero, size: size))
+            text.draw(in: CGRect(x: 45, y: 35, width: 610, height: 650), withAttributes: [
+                .font: UIFont.systemFont(ofSize: 24),
+                .foregroundColor: UIColor.black
+            ])
+            let mark = UIBezierPath(ovalIn: CGRect(x: 300, y: 735, width: 100, height: 100))
+            mark.lineWidth = 6
+            UIColor.black.setStroke()
+            mark.stroke()
+        }
+        let cgImage = try XCTUnwrap(image.cgImage)
+        XCTAssertTrue(sampledStraightBoundary.hasStraightEdges(in: size))
+        var modelLoadCount = 0
+        let unwarper = UVDocUnwarper(modelLoader: {
+            modelLoadCount += 1
+            throw UVDocModelLoadingError.missingResource
+        })
+
+        let planar = try XCTUnwrap(unwarper.unwarp(cgImage, boundary: sampledStraightBoundary))
+        XCTAssertEqual(modelLoadCount, 0)
+        let bitmap = try PageBitmap(planar)
+        let horizontal = (240...460).filter { bitmap.luminance(atX: Double($0), y: 785) < 100 }
+        let vertical = (680...900).filter { bitmap.luminance(atX: 350, y: Double($0)) < 100 }
+        XCTAssertFalse(horizontal.isEmpty)
+        XCTAssertFalse(vertical.isEmpty)
+        let horizontalDiameter = Double(horizontal.max()! - horizontal.min()!)
+        let verticalDiameter = Double(vertical.max()! - vertical.min()!)
+        XCTAssertEqual(horizontalDiameter, verticalDiameter, accuracy: 3)
+    }
+
+    func testStraightTextWithUnmeasuredCornersUsesPlanarCorrection() throws {
+        let size = CGSize(width: 700, height: 900)
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let text = (0..<14).map { "POSTCARD LINE \($0 + 1) 123456789" }.joined(separator: "\n")
+        let image = UIGraphicsImageRenderer(size: size, format: format).image { _ in
+            UIColor.white.setFill()
+            UIRectFill(CGRect(origin: .zero, size: size))
+            text.draw(in: CGRect(x: 45, y: 35, width: 610, height: 650), withAttributes: [
+                .font: UIFont.systemFont(ofSize: 24), .foregroundColor: UIColor.black
+            ])
+        }
+        let cgImage = try XCTUnwrap(image.cgImage)
+        let boundary = DocumentBoundary(corners: sampledStraightBoundary.corners)
+        XCTAssertEqual(try PageContentStraightener().textCurvature(in: cgImage), .straight)
+
+        var modelLoadCount = 0
+        let unwarper = UVDocUnwarper(modelLoader: {
+            modelLoadCount += 1
+            throw UVDocModelLoadingError.missingResource
+        })
+        let planar = try XCTUnwrap(unwarper.unwarp(cgImage, boundary: boundary))
+
+        XCTAssertEqual(modelLoadCount, 0)
+        XCTAssertGreaterThan(planar.width, 0)
+        XCTAssertGreaterThan(planar.height, 0)
+    }
+
+    func testBothPhotoCropsMustPassUVDocAspectGate() throws {
+        let image = try XCTUnwrap(TestImageFactory.gradient(size: CGSize(width: 1024, height: 1024)).cgImage)
+        func outline(width: CGFloat) -> DocumentBoundary {
+            let x = width / 1024
+            let bottom = 324.0 / 1024
+            return DocumentBoundary(top: [CGPoint(x: 0, y: 1), CGPoint(x: x / 2, y: 0.99), CGPoint(x: x, y: 1)],
+                                    right: [CGPoint(x: x, y: 1), CGPoint(x: x, y: bottom)],
+                                    bottom: [CGPoint(x: 0, y: bottom), CGPoint(x: x, y: bottom)],
+                                    left: [CGPoint(x: 0, y: 1), CGPoint(x: 0, y: bottom)])
+        }
+        let legacy = outline(width: 239)
+        let refined = outline(width: 248)
+        let size = CGSize(width: image.width, height: image.height)
+        XCTAssertTrue(legacy.hasMeasuredCurvedEdges(in: size))
+        XCTAssertNil(try DocumentDetector.correctSupportedPhotoCoons(
+            image, boundary: refined, analysisSize: size, routingBoundary: legacy, uvdocReference: { _ in
+                XCTFail("The outline does not have all four sides sampled")
+                return nil
+            }))
+
+        var modelLoadCount = 0
+        let unwarper = UVDocUnwarper(modelLoader: {
+            modelLoadCount += 1
+            throw UVDocModelLoadingError.missingResource
+        })
+        XCTAssertNil(try unwarper.unwarp(image, boundary: legacy))
+        XCTAssertEqual(modelLoadCount, 0)
+        XCTAssertNil(try unwarper.unwarp(image, boundary: refined, routingBoundary: legacy))
+        XCTAssertNil(try unwarper.unwarp(image, boundary: legacy, routingBoundary: refined))
+        XCTAssertEqual(modelLoadCount, 0)
+        XCTAssertThrowsError(try unwarper.unwarp(image, boundary: refined))
+        XCTAssertEqual(modelLoadCount, 1)
+    }
+
+    func testBothPhotoCropsMustPassUVDocContrastGate() throws {
+        let size = CGSize(width: 512, height: 512)
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let image = try XCTUnwrap(UIGraphicsImageRenderer(size: size, format: format).image { context in
+            UIColor.white.setFill()
+            context.fill(CGRect(origin: .zero, size: size))
+            UIColor.black.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 32, height: size.height))
+        }.cgImage)
+        func outline(left: CGFloat) -> DocumentBoundary {
+            DocumentBoundary(top: [CGPoint(x: left, y: 1), CGPoint(x: 0.5, y: 0.96), CGPoint(x: 1, y: 1)],
+                             right: [CGPoint(x: 1, y: 1), CGPoint(x: 1, y: 0)],
+                             bottom: [CGPoint(x: left, y: 0), CGPoint(x: 1, y: 0)],
+                             left: [CGPoint(x: left, y: 1), CGPoint(x: left, y: 0)])
+        }
+        let lowContrast = outline(left: 0.125)
+        let highContrast = outline(left: 0)
+        var modelLoadCount = 0
+        let unwarper = UVDocUnwarper(modelLoader: {
+            modelLoadCount += 1
+            throw UVDocModelLoadingError.missingResource
+        })
+        XCTAssertNil(try unwarper.unwarp(image, boundary: highContrast, routingBoundary: lowContrast))
+        XCTAssertNil(try unwarper.unwarp(image, boundary: lowContrast, routingBoundary: highContrast))
+        XCTAssertEqual(modelLoadCount, 0)
+        XCTAssertThrowsError(try unwarper.unwarp(image, boundary: highContrast))
+        XCTAssertEqual(modelLoadCount, 1)
+    }
+
+    func testNewCurvedMeasurementsUseLegacyPlanarRouteAndRefinedCorners() throws {
+        let size = CGSize(width: 700, height: 900)
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let text = (0..<14).map { "DOCUMENT LINE \($0 + 1) 123456789" }.joined(separator: "\n")
+        let image = UIGraphicsImageRenderer(size: size, format: format).image { _ in
+            UIColor.white.setFill()
+            UIRectFill(CGRect(origin: .zero, size: size))
+            text.draw(in: CGRect(x: 45, y: 35, width: 610, height: 650), withAttributes: [
+                .font: UIFont.systemFont(ofSize: 24), .foregroundColor: UIColor.black
+            ])
+        }
+        let cgImage = try XCTUnwrap(image.cgImage)
+        let routing = DocumentBoundary(corners: sampledStraightBoundary.corners)
+        let refined = curvedSampledBoundary.map { CGPoint(x: $0.x, y: $0.y * 0.98 + 0.02) }
+        XCTAssertTrue(refined.hasMeasuredCurvedEdges(in: size))
+        XCTAssertNotEqual(refined.corners, routing.corners)
+        XCTAssertNil(try DocumentDetector.correctSupportedPhotoCoons(
+            cgImage, boundary: refined, analysisSize: size, routingBoundary: routing, uvdocReference: { _ in
+                XCTFail("New local curvature must not qualify the legacy planar page for Coons")
+                return nil
+            }))
+        let unwarper = UVDocUnwarper(modelLoader: {
+            XCTFail("New local curvature must not send the legacy planar page to the model")
+            throw UVDocModelLoadingError.missingResource
+        })
+        let actual = try XCTUnwrap(unwarper.unwarp(cgImage, boundary: refined, routingBoundary: routing))
+        let expected = try PageFlattener().flattenPlanar(cgImage, boundary: refined.cornersOnly)
+        XCTAssertEqual(actual.width, expected.width)
+        XCTAssertEqual(actual.height, expected.height)
+        XCTAssertEqual(try PageBitmap(actual).data, try PageBitmap(expected).data)
+    }
+
+    func testStraightTextKeepsCurvedSampledBoundaryOnUVDocPath() throws {
+        let size = CGSize(width: 700, height: 900)
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let text = (0..<14).map { "POSTCARD LINE \($0 + 1) 123456789" }.joined(separator: "\n")
+        let image = UIGraphicsImageRenderer(size: size, format: format).image { _ in
+            UIColor.white.setFill()
+            UIRectFill(CGRect(origin: .zero, size: size))
+            text.draw(in: CGRect(x: 45, y: 35, width: 610, height: 650), withAttributes: [
+                .font: UIFont.systemFont(ofSize: 24), .foregroundColor: UIColor.black
+            ])
+        }
+        let cgImage = try XCTUnwrap(image.cgImage)
+        XCTAssertEqual(try PageContentStraightener().textCurvature(in: cgImage), .straight)
+        XCTAssertFalse(curvedSampledBoundary.hasStraightEdges(in: size))
+
+        var modelLoadCount = 0
+        let unwarper = UVDocUnwarper(modelLoader: {
+            modelLoadCount += 1
+            throw UVDocModelLoadingError.missingResource
+        })
+        XCTAssertThrowsError(try unwarper.unwarp(cgImage, boundary: curvedSampledBoundary)) { error in
+            XCTAssertTrue(error is UVDocModelLoadingError)
+        }
+        XCTAssertEqual(modelLoadCount, 1)
+    }
+
+    func testGridConstraintReportsOutOfRangeModelCoordinates() {
+        let boundary = DocumentBoundary(corners: [CGPoint(x: 0.1, y: 0.9), CGPoint(x: 0.9, y: 0.9),
+                                                   CGPoint(x: 0.9, y: 0.1), CGPoint(x: 0.1, y: 0.1)])
+        let grid = UVDocGrid(width: 2, height: 2, points: [PagePoint(x: 1.3, y: 0),
+                                                           PagePoint(x: 1, y: 0),
+                                                           PagePoint(x: 0, y: 1),
+                                                           PagePoint(x: 1, y: 1)])
+        var rejectionReason: String?
+
+        XCTAssertNil(grid.constrained(to: boundary, rejectionReason: &rejectionReason))
+        XCTAssertEqual(rejectionReason, "nonfinite or out-of-range model coordinates")
     }
 }

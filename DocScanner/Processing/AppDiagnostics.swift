@@ -16,6 +16,7 @@ enum AppDiagnostics {
 
 enum ImageRendering {
     static let context = CIContext(options: [
-        .workingColorSpace: CGColorSpace(name: CGColorSpace.sRGB)!
+        .workingColorSpace: CGColorSpace(name: CGColorSpace.sRGB)!,
+        .outputColorSpace: CGColorSpace(name: CGColorSpace.sRGB)!
     ])
 }

@@ -1,3 +1,5 @@
+import CoreImage
+import Foundation
 import XCTest
 @testable import DocScanner
 
@@ -30,6 +32,118 @@ final class DocumentImageProcessorTests: XCTestCase {
             color.getRed(&r, green: &g, blue: &b, alpha: &a)
             XCTAssertEqual(r, g, accuracy: 0.05)
             XCTAssertEqual(g, b, accuracy: 0.05)
+        }
+    }
+
+    func testShadingCorrectionKeepsLargeDarkFillDarkInSmallImages() throws {
+        let size = CGSize(width: 200, height: 200)
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let image = UIGraphicsImageRenderer(size: size, format: format).image { context in
+            UIColor.white.setFill()
+            context.fill(CGRect(origin: .zero, size: size))
+            UIColor(white: 32.0 / 255.0, alpha: 1).setFill()
+            context.fill(CGRect(x: 50, y: 50, width: 100, height: 100))
+        }
+
+        let corrected = try shadingCorrected(image)
+        let center = colorComponents(try XCTUnwrap(TestImageFactory.pixelColor(of: corrected, x: 100, y: 100)))
+        XCTAssertLessThan((center.red + center.green + center.blue) / 3, 0.2)
+    }
+
+    func testShadingCorrectionPreservesFaintColoredPrinting() throws {
+        let size = CGSize(width: 512, height: 512)
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let image = UIGraphicsImageRenderer(size: size, format: format).image { context in
+            for y in 0..<Int(size.height) {
+                let shadow = CGFloat(y) / size.height
+                UIColor(red: 0.94 - 0.12 * shadow,
+                        green: 0.80 - 0.12 * shadow,
+                        blue: 0.66 - 0.10 * shadow,
+                        alpha: 1).setFill()
+                context.fill(CGRect(x: 0, y: CGFloat(y), width: size.width, height: 1))
+            }
+            UIColor(red: 0.74, green: 0.60, blue: 0.50, alpha: 1).setFill()
+            context.fill(CGRect(x: 160, y: 252, width: 192, height: 8))
+        }
+
+        let corrected = try shadingCorrected(image)
+        let sourceInk = colorComponents(try XCTUnwrap(TestImageFactory.pixelColor(of: image, x: 256, y: 256)))
+        let correctedInk = colorComponents(try XCTUnwrap(TestImageFactory.pixelColor(of: corrected, x: 256, y: 256)))
+
+        XCTAssertEqual(correctedInk.red / correctedInk.green, sourceInk.red / sourceInk.green, accuracy: 0.05)
+        XCTAssertEqual(correctedInk.green / correctedInk.blue, sourceInk.green / sourceInk.blue, accuracy: 0.05)
+        let paper = colorComponents(try XCTUnwrap(TestImageFactory.pixelColor(of: corrected, x: 64, y: 256)))
+        XCTAssertGreaterThan(paper.blue - correctedInk.blue, 0.04)
+    }
+
+    func testShadingCorrectionKeepsSmoothShadowGradientMonotonic() throws {
+        let width = 512, height = 96
+        let size = CGSize(width: CGFloat(width), height: CGFloat(height))
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let image = UIGraphicsImageRenderer(size: size, format: format).image { context in
+            for x in 0..<width {
+                let value = 0.02 + 0.55 * CGFloat(x) / CGFloat(width - 1)
+                UIColor(white: value, alpha: 1).setFill()
+                context.fill(CGRect(x: CGFloat(x), y: 0, width: 1, height: CGFloat(height)))
+            }
+        }
+
+        let corrected = try shadingCorrected(image)
+        let bitmap = try PageBitmap(XCTUnwrap(corrected.cgImage))
+        let row = height / 2
+        var previous = Int(bitmap.data[(row * width) * 4])
+        for x in 1..<width {
+            let current = Int(bitmap.data[(row * width + x) * 4])
+            XCTAssertGreaterThanOrEqual(current, previous - 1, "x=\(x)")
+            let source = 0.02 + 0.55 * CGFloat(x) / CGFloat(width - 1)
+            if (0.06...0.42).contains(source) {
+                XCTAssertLessThanOrEqual(current - previous, 12, "x=\(x)")
+            }
+            previous = current
+        }
+    }
+
+    func testShadingHighlightShoulderIsContinuousAcrossUnityGain() throws {
+        let width = 512, height = 96
+        let size = CGSize(width: CGFloat(width), height: CGFloat(height))
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let sourceImage = UIGraphicsImageRenderer(size: size, format: format).image { context in
+            UIColor(red: 1, green: 200.0 / 255, blue: 150.0 / 255, alpha: 1).setFill()
+            context.fill(CGRect(origin: .zero, size: size))
+        }
+        let illuminationImage = UIGraphicsImageRenderer(size: size, format: format).image { context in
+            for x in 0..<width {
+                let value = 0.98 + 0.02 * CGFloat(x) / CGFloat(width - 1)
+                UIColor(white: value, alpha: 1).setFill()
+                context.fill(CGRect(x: CGFloat(x), y: 0, width: 1, height: CGFloat(height)))
+            }
+        }
+        let sRGB = CGColorSpace(name: CGColorSpace.sRGB)!
+        let source = CIImage(cgImage: try XCTUnwrap(sourceImage.cgImage), options: [.colorSpace: sRGB])
+        let illumination = CIImage(cgImage: try XCTUnwrap(illuminationImage.cgImage), options: [.colorSpace: sRGB])
+        let corrected = try ShadingCorrector.applyingCorrection(to: source, using: illumination)
+        let correctedCGImage = try XCTUnwrap(ImageRendering.context.createCGImage(
+            corrected, from: corrected.extent, format: .RGBA8, colorSpace: sRGB
+        ))
+        let sourcePixels = try PageBitmap(XCTUnwrap(sourceImage.cgImage)).data
+        let resultPixels = try PageBitmap(correctedCGImage).data
+        let row = 44
+        let unityOffset = (row * width + width - 1) * 4
+        for channel in 0..<3 {
+            XCTAssertLessThanOrEqual(abs(Int(resultPixels[unityOffset + channel]) -
+                                            Int(sourcePixels[unityOffset + channel])), 1)
+        }
+        for x in 1..<width {
+            let offset = (row * width + x) * 4
+            let previous = (row * width + x - 1) * 4
+            for channel in 0..<3 {
+                XCTAssertLessThanOrEqual(abs(Int(resultPixels[offset + channel]) -
+                                                Int(resultPixels[previous + channel])), 2, "x=\(x)")
+            }
         }
     }
 
@@ -74,6 +188,234 @@ final class DocumentImageProcessorTests: XCTestCase {
         // 余白は白
         XCTAssertGreaterThan(brightness(of: result, fx: 750.0 / 800, fy: 550.0 / 600), 0.95,
                              "blank paper not white")
+    }
+
+    func testBlackAndWhiteRetainsFaintPinkStrokesOnWhiteAndYellow() throws {
+        let size = CGSize(width: 240, height: 240)
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let pink = UIColor(red: 0.80, green: 0.74, blue: 0.80, alpha: 1)
+        let image = UIGraphicsImageRenderer(size: size, format: format).image { context in
+            UIColor.white.setFill()
+            context.fill(CGRect(origin: .zero, size: size))
+            UIColor(red: 0.82, green: 0.76, blue: 0.64, alpha: 1).setFill()
+            context.fill(CGRect(x: 120, y: 0, width: 120, height: size.height))
+            pink.setFill()
+            context.fill(CGRect(x: 12, y: 70, width: 96, height: 3))
+            context.fill(CGRect(x: 132, y: 170, width: 96, height: 3))
+            ("STAMP" as NSString).draw(at: CGPoint(x: 15, y: 100), withAttributes: [
+                .font: UIFont.systemFont(ofSize: 16), .foregroundColor: pink
+            ])
+            ("MAP" as NSString).draw(at: CGPoint(x: 135, y: 190), withAttributes: [
+                .font: UIFont.systemFont(ofSize: 16), .foregroundColor: pink
+            ])
+            let road = UIBezierPath()
+            road.move(to: CGPoint(x: 135, y: 226))
+            road.addLine(to: CGPoint(x: 228, y: 210))
+            road.lineWidth = 3
+            pink.setStroke()
+            road.stroke()
+        }
+
+        let result = try processor.apply(.blackAndWhite, to: image)
+        let pixels = try PageBitmap(XCTUnwrap(result.cgImage))
+        func darkPixels(in rect: CGRect) -> Int {
+            var count = 0
+            for y in Int(rect.minY)..<Int(rect.maxY) {
+                for x in Int(rect.minX)..<Int(rect.maxX) where pixels.luminance(atX: Double(x), y: Double(y)) < 220 {
+                    count += 1
+                }
+            }
+            return count
+        }
+
+        XCTAssertLessThan(brightness(of: result, fx: 0.25, fy: 0.30), 0.8,
+                          "faint pink stroke on white disappeared")
+        XCTAssertLessThan(brightness(of: result, fx: 0.75, fy: 0.71), 0.8,
+                          "faint pink stroke on yellow disappeared")
+        XCTAssertGreaterThan(darkPixels(in: CGRect(x: 10, y: 95, width: 95, height: 30)), 20,
+                             "faint pink label on white disappeared")
+        XCTAssertGreaterThan(darkPixels(in: CGRect(x: 130, y: 185, width: 90, height: 30)), 12,
+                             "faint pink map label on yellow disappeared")
+        XCTAssertLessThan(brightness(of: result, fx: 0.69, fy: 0.92), 0.8,
+                          "faint map road was lost")
+        XCTAssertGreaterThan(brightness(of: result, fx: 0.25, fy: 0.5), 0.95,
+                             "white paper was darkened")
+        XCTAssertGreaterThan(brightness(of: result, fx: 0.75, fy: 0.5), 0.95,
+                             "yellow paper field was darkened")
+    }
+
+    func testBlackAndWhiteKeepsThinInkLegibleOnChromaticPaperTexture() throws {
+        let size = CGSize(width: 240, height: 240)
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let pink = UIColor(red: 0.80, green: 0.74, blue: 0.80, alpha: 1)
+        let image = UIGraphicsImageRenderer(size: size, format: format).image { context in
+            for y in stride(from: 0, to: 240, by: 8) {
+                for x in stride(from: 0, to: 240, by: 8) {
+                    let texture = CGFloat(0.012 * (sin(Double(x) * 0.71) + cos(Double(y) * 0.63)))
+                    UIColor(red: 0.94 + texture, green: 0.94 - texture * 0.5,
+                            blue: 0.94 - texture * 0.5, alpha: 1).setFill()
+                    context.fill(CGRect(x: CGFloat(x), y: CGFloat(y), width: 8, height: 8))
+                }
+            }
+            let canvas = context.cgContext
+            canvas.setLineWidth(2)
+            canvas.setStrokeColor(pink.cgColor)
+            canvas.move(to: CGPoint(x: 20, y: 64))
+            canvas.addLine(to: CGPoint(x: 220, y: 64))
+            canvas.strokePath()
+            ("FINE" as NSString).draw(at: CGPoint(x: 38, y: 100), withAttributes: [
+                .font: UIFont.systemFont(ofSize: 20), .foregroundColor: pink
+            ])
+            canvas.setLineWidth(3)
+            canvas.setStrokeColor(UIColor(white: 0.72, alpha: 1).cgColor)
+            canvas.move(to: CGPoint(x: 20, y: 165))
+            canvas.addLine(to: CGPoint(x: 220, y: 165))
+            canvas.strokePath()
+        }
+
+        let result = try processor.apply(.blackAndWhite, to: image)
+        let pixels = try PageBitmap(XCTUnwrap(result.cgImage))
+        func meanLuminance(x: Range<Int>, y: Range<Int>) -> Double {
+            let values = y.flatMap { row in x.map { pixels.luminance(atX: Double($0), y: Double(row)) } }
+            return values.reduce(0, +) / Double(values.count)
+        }
+        let paperSamples = (20..<50).flatMap { row in
+            (20..<220).map { pixels.luminance(atX: Double($0), y: Double(row)) }
+        }
+        let paperMean = meanLuminance(x: 20..<220, y: 20..<50)
+        let lineMean = meanLuminance(x: 30..<210, y: 63..<66)
+        let labelMean = meanLuminance(x: 25..<120, y: 96..<128)
+        let labelPaperMean = meanLuminance(x: 25..<120, y: 132..<156)
+        let road = (30..<210).map { pixels.luminance(atX: Double($0), y: 165) }
+        let roadMean = road.reduce(0, +) / Double(road.count)
+        let pinkSource = colorComponents(pink)
+        let pinkSourceLuma = 0.299 * Double(pinkSource.red)
+            + 0.587 * Double(pinkSource.green) + 0.114 * Double(pinkSource.blue)
+        let paperSourceLuma = 0.299 * 0.94 + 0.587 * 0.94 + 0.114 * 0.94
+        let labelContrast = labelPaperMean - labelMean
+        let stageMeans = try blackAndWhiteStageMeans(
+            for: image, labelX: 25..<120, labelY: 96..<128,
+            paperX: 25..<120, paperY: 132..<156
+        )
+        let stageDetails = stageMeans.map {
+            String(format: "%@ label=%.1f paper=%.1f contrast=%.1f",
+                   $0.name, $0.label, $0.paper, $0.paper - $0.label)
+        }.joined(separator: ";")
+        let details = String(format: "background=warm paper texture baseRGB=(0.940,0.940,0.940) textureAmplitude=0.018 sourceLuma=%.3f inkRGB=(%.3f,%.3f,%.3f) inkLuma=%.3f outputPaperMean=%.1f paperMin=%.1f lineMean=%.1f labelMean=%.1f labelPaperMean=%.1f labelContrast=%.1f roadMean=%.1f stages=[%@]",
+            paperSourceLuma, Double(pinkSource.red), Double(pinkSource.green), Double(pinkSource.blue),
+            pinkSourceLuma, paperMean, paperSamples.min() ?? 0, lineMean, labelMean, labelPaperMean,
+            labelContrast, roadMean, stageDetails)
+
+        XCTAssertGreaterThan(paperMean, 230, "low-amplitude paper color texture became dark noise: \(details)")
+        XCTAssertGreaterThan(paperSamples.min() ?? 0, 220, "paper texture produced dark chromatic blobs: \(details)")
+        XCTAssertGreaterThan(lineMean, 55, "pink ink collapsed to black blobs: \(details)")
+        XCTAssertGreaterThan(paperMean - lineMean, 35, "thin pink glyph lost contrast: \(details)")
+        XCTAssertGreaterThan(labelContrast, 12, "faint text is not legible against paper: \(details)")
+        XCTAssertGreaterThan(roadMean, 20, "gray road became a black blob: \(details)")
+        XCTAssertLessThan(roadMean, 190, "gray road disappeared: \(details)")
+        XCTAssertLessThan((road.max() ?? 0) - (road.min() ?? 0), 24, "gray road became mottled: \(details)")
+    }
+
+    func testBlackAndWhitePreservesWhiteKnockoutTextOnNavy() throws {
+        let size = CGSize(width: 240, height: 240)
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let image = UIGraphicsImageRenderer(size: size, format: format).image { _ in
+            UIColor(red: 0.02, green: 0.05, blue: 0.20, alpha: 1).setFill()
+            UIRectFill(CGRect(origin: .zero, size: size))
+            ("WHITE" as NSString).draw(at: CGPoint(x: 34, y: 92), withAttributes: [
+                .font: UIFont.systemFont(ofSize: 34), .foregroundColor: UIColor.white
+            ])
+        }
+
+        let result = try processor.apply(.blackAndWhite, to: image)
+        let pixels = try PageBitmap(XCTUnwrap(result.cgImage))
+        var brightGlyphPixels = 0
+        for y in 85..<135 {
+            for x in 25..<220 where pixels.luminance(atX: Double(x), y: Double(y)) > 220 {
+                brightGlyphPixels += 1
+            }
+        }
+
+        XCTAssertGreaterThan(brightGlyphPixels, 100, "white knockout text on navy disappeared")
+        XCTAssertLessThan(brightness(of: result, fx: 0.05, fy: 0.10), 0.15,
+                          "navy field should remain dark")
+    }
+
+    func testBlackAndWhiteRetainsBrightYellowTextOnBlue() throws {
+        let size = CGSize(width: 240, height: 300)
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let blue = UIColor(red: 0.04, green: 0.09, blue: 0.45, alpha: 1)
+        let yellow = UIColor(red: 1, green: 0.84, blue: 0.02, alpha: 1)
+        let font = UIFont.systemFont(ofSize: 36)
+        let image = UIGraphicsImageRenderer(size: size, format: format).image { context in
+            blue.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: size.width, height: 150))
+            UIColor(white: 0.68, alpha: 1).setFill()
+            context.fill(CGRect(x: 0, y: 150, width: size.width, height: 150))
+            ("YELLOW" as NSString).draw(at: CGPoint(x: 22, y: 55), withAttributes: [
+                .font: font, .foregroundColor: yellow
+            ])
+            ("YELLOW" as NSString).draw(at: CGPoint(x: 22, y: 185), withAttributes: [
+                .font: font, .foregroundColor: yellow
+            ])
+        }
+        let glyphMask = UIGraphicsImageRenderer(size: size, format: format).image { context in
+            UIColor.black.setFill()
+            context.fill(CGRect(origin: .zero, size: size))
+            ("YELLOW" as NSString).draw(at: CGPoint(x: 22, y: 55), withAttributes: [
+                .font: font, .foregroundColor: UIColor.white
+            ])
+            ("YELLOW" as NSString).draw(at: CGPoint(x: 22, y: 185), withAttributes: [
+                .font: font, .foregroundColor: UIColor.white
+            ])
+        }
+
+        let result = try processor.apply(.blackAndWhite, to: image)
+        let pixels = try PageBitmap(XCTUnwrap(result.cgImage))
+        let maskPixels = try PageBitmap(XCTUnwrap(glyphMask.cgImage))
+        var blueGlyph = [Double](), grayGlyph = [Double]()
+        var blueBackground = [Double](), grayBackground = [Double]()
+        for y in 50..<110 {
+            for x in 18..<225 where maskPixels.luminance(atX: Double(x), y: Double(y)) > 220 {
+                blueGlyph.append(pixels.luminance(atX: Double(x), y: Double(y)))
+            }
+        }
+        for y in 180..<240 {
+            for x in 18..<225 where maskPixels.luminance(atX: Double(x), y: Double(y)) > 220 {
+                grayGlyph.append(pixels.luminance(atX: Double(x), y: Double(y)))
+            }
+        }
+        for y in 120..<145 {
+            for x in 20..<220 {
+                blueBackground.append(pixels.luminance(atX: Double(x), y: Double(y)))
+            }
+        }
+        for y in 260..<285 {
+            for x in 20..<220 {
+                grayBackground.append(pixels.luminance(atX: Double(x), y: Double(y)))
+            }
+        }
+        guard !blueGlyph.isEmpty, !grayGlyph.isEmpty else {
+            XCTFail("yellow text mask contained no glyph pixels")
+            return
+        }
+        let blueGlyphMean = blueGlyph.reduce(0, +) / Double(blueGlyph.count)
+        let grayGlyphMean = grayGlyph.reduce(0, +) / Double(grayGlyph.count)
+        let blueBackgroundMean = blueBackground.reduce(0, +) / Double(blueBackground.count)
+        let grayBackgroundMean = grayBackground.reduce(0, +) / Double(grayBackground.count)
+
+        XCTAssertGreaterThan(blueGlyph.count, 100)
+        XCTAssertGreaterThan(grayGlyph.count, 100)
+        XCTAssertGreaterThan(blueGlyphMean - blueBackgroundMean, 25,
+                             "bright chromatic text merged into its dark blue field")
+        XCTAssertLessThan(blueBackgroundMean, 40, "blue field should remain dark")
+        XCTAssertGreaterThan(grayBackgroundMean - grayGlyphMean, 25,
+                             "bright yellow text merged into the light paper field")
+        XCTAssertGreaterThan(grayBackgroundMean, 200, "light paper should remain bright")
     }
 
     /// 陰影のある合成書類画像を生成する。
@@ -128,6 +470,60 @@ final class DocumentImageProcessorTests: XCTestCase {
         XCTAssertLessThanOrEqual(brightness(of: result, fx: 0.5, fy: 0.93), 0.1, "bottom bar")
     }
 
+    func testBlackAndWhiteKeepsFinePrintOnShadowedSmallPage() throws {
+        let width = 180, height = 240
+        let size = CGSize(width: CGFloat(width), height: CGFloat(height))
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let image = UIGraphicsImageRenderer(size: size, format: format).image { context in
+            for y in 0..<height {
+                let value = 0.18 + 0.08 * CGFloat(y) / CGFloat(height - 1)
+                UIColor(white: value, alpha: 1).setFill()
+                context.fill(CGRect(x: 0, y: CGFloat(y), width: CGFloat(width), height: 1))
+            }
+            UIColor(white: 0.05, alpha: 1).setFill()
+            context.fill(CGRect(x: 22, y: 120, width: 90, height: 1))
+            ("FINE" as NSString).draw(at: CGPoint(x: 22, y: 100), withAttributes: [
+                .font: UIFont.systemFont(ofSize: 8),
+                .foregroundColor: UIColor(white: 0.05, alpha: 1)
+            ])
+            UIColor(white: 32.0 / 255.0, alpha: 1).setFill()
+            context.fill(CGRect(x: 145, y: 190, width: 24, height: 24))
+        }
+        var modelLoadCount = 0
+        let enhancer = DocResEnhancer(modelLoader: {
+            modelLoadCount += 1
+            throw DocResModelLoadingError.restartRequired
+        })
+        let result = try DocumentImageProcessor(enhancer: enhancer).apply(.blackAndWhite, to: image)
+
+        XCTAssertEqual(modelLoadCount, 0)
+        XCTAssertGreaterThan(brightness(of: result, fx: 10.0 / CGFloat(width), fy: 20.0 / CGFloat(height)), 0.75,
+                             "shadowed paper was not lifted")
+        XCTAssertLessThan(brightness(of: result, fx: 60.0 / CGFloat(width), fy: 120.0 / CGFloat(height)), 0.1,
+                          "synthetic hairline was lost")
+        XCTAssertLessThan(brightness(of: result, fx: 157.0 / CGFloat(width), fy: 202.0 / CGFloat(height)), 0.1,
+                          "dark fill was lifted")
+
+        let sourcePixels = try PageBitmap(XCTUnwrap(image.cgImage)).data
+        let resultPixels = try PageBitmap(XCTUnwrap(result.cgImage)).data
+        var glyphPixelCount = 0
+        for y in 0..<height where !(117..<124).contains(y) {
+            for x in 18..<70 {
+                let offset = (y * width + x) * 4
+                let sourceLuma = (Int(sourcePixels[offset]) + Int(sourcePixels[offset + 1]) +
+                                  Int(sourcePixels[offset + 2])) / 3
+                if sourceLuma < 24 {
+                    glyphPixelCount += 1
+                    let resultLuma = (Int(resultPixels[offset]) + Int(resultPixels[offset + 1]) +
+                                      Int(resultPixels[offset + 2])) / 3
+                    XCTAssertLessThan(resultLuma, 26, "glyph pixel at (\(x), \(y)) was lost")
+                }
+            }
+        }
+        XCTAssertGreaterThan(glyphPixelCount, 5, "synthetic text mask was empty")
+    }
+
     /// enhanced で暗い下部の紙が明るく持ち上がることを検証する。
     /// - 入力: なし
     /// - 出力: なし
@@ -136,6 +532,187 @@ final class DocumentImageProcessorTests: XCTestCase {
         let result = try processor.apply(.enhanced, to: makeShadedPaper())
         XCTAssertGreaterThanOrEqual(brightness(of: result, fx: 0.5, fy: 0.875), 0.85, "bottom paper")
         XCTAssertLessThanOrEqual(brightness(of: result, fx: 0.5, fy: 0.93), 0.3, "bottom bar")
+    }
+
+    func testEnhancedPreservesWarmCastRatiosAndColoredMarks() throws {
+        let size = CGSize(width: 240, height: 160)
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let paper = UIColor(red: 0.88, green: 0.77, blue: 0.65, alpha: 1)
+        let yellow = UIColor(red: 0.96, green: 0.84, blue: 0.12, alpha: 1)
+        let pink = UIColor(red: 0.91, green: 0.58, blue: 0.70, alpha: 1)
+        let image = UIGraphicsImageRenderer(size: size, format: format).image { context in
+            paper.setFill()
+            context.fill(CGRect(origin: .zero, size: size))
+            yellow.setFill()
+            context.fill(CGRect(x: 20, y: 40, width: 80, height: 80))
+            pink.setFill()
+            context.fill(CGRect(x: 140, y: 40, width: 80, height: 80))
+        }
+        let result = try DocumentImageProcessor(enhancer: DocResEnhancer(model: nil)).apply(.enhanced, to: image)
+        func components(_ image: UIImage, x: Int, y: Int) throws -> (CGFloat, CGFloat, CGFloat) {
+            let color = try XCTUnwrap(TestImageFactory.pixelColor(of: image, x: x, y: y))
+            var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+            color.getRed(&r, green: &g, blue: &b, alpha: &a)
+            return (r, g, b)
+        }
+        let sourcePaper = try components(image, x: 10, y: 20)
+        let outputPaper = try components(result, x: 10, y: 20)
+        XCTAssertEqual((outputPaper.1 - outputPaper.2) / ((outputPaper.0 + outputPaper.1 + outputPaper.2) / 3),
+                       (sourcePaper.1 - sourcePaper.2) / ((sourcePaper.0 + sourcePaper.1 + sourcePaper.2) / 3),
+                       accuracy: 0.04)
+        let outputYellow = try components(result, x: 60, y: 80)
+        let outputPink = try components(result, x: 180, y: 80)
+        XCTAssertGreaterThan(abs(outputYellow.0 - outputYellow.2), 0.3)
+        XCTAssertGreaterThan(abs(outputPink.0 - outputPink.1), 0.15)
+        let yellowGreenBlueContrast = outputYellow.1 / outputYellow.2 - outputPaper.1 / outputPaper.2
+        let pinkRedGreenContrast = outputPink.0 / outputPink.1 - outputPaper.0 / outputPaper.1
+        XCTAssertGreaterThan(yellowGreenBlueContrast, 2.0)
+        XCTAssertGreaterThan(pinkRedGreenContrast, 0.2)
+    }
+
+    func testEnhancedKeepsDarkBlueDistinctFromBlack() throws {
+        let size = CGSize(width: 128, height: 80)
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let darkBlue = UIColor(red: 0.015, green: 0.035, blue: 0.14, alpha: 1)
+        let image = UIGraphicsImageRenderer(size: size, format: format).image { context in
+            UIColor.black.setFill()
+            context.fill(CGRect(origin: .zero, size: size))
+            darkBlue.setFill()
+            context.fill(CGRect(x: 64, y: 0, width: 64, height: size.height))
+        }
+        let enhanced = try DocumentImageProcessor(enhancer: DocResEnhancer(model: nil))
+            .apply(.enhanced, to: image)
+        let black = colorComponents(try XCTUnwrap(TestImageFactory.pixelColor(of: enhanced, x: 32, y: 40)))
+        let blue = colorComponents(try XCTUnwrap(TestImageFactory.pixelColor(of: enhanced, x: 96, y: 40)))
+
+        XCTAssertLessThan(black.red + black.green + black.blue, 0.02)
+        XCTAssertGreaterThan(blue.blue, blue.red + 0.02)
+        XCTAssertGreaterThan(blue.red + blue.green + blue.blue,
+                             black.red + black.green + black.blue + 0.03)
+    }
+
+    func testBlackAndWhitePreservesYellowContrastAcrossGrayAndLightBlueBackgrounds() throws {
+        let size = CGSize(width: 450, height: 150)
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let backgrounds: [UIColor] = [.init(white: 0.26, alpha: 1), .init(white: 0.30, alpha: 1),
+                                      .init(white: 0.36, alpha: 1), .init(white: 0.42, alpha: 1),
+                                      .init(red: 0.35, green: 0.62, blue: 0.95, alpha: 1)]
+        let backgroundLabels = ["gray 0.26", "gray 0.30", "gray 0.36", "gray 0.42", "light blue"]
+        let yellow = UIColor(red: 0.98, green: 0.82, blue: 0.05, alpha: 1)
+        let yellowSource = colorComponents(yellow)
+        let yellowSourceLuma = 0.299 * Double(yellowSource.red)
+            + 0.587 * Double(yellowSource.green) + 0.114 * Double(yellowSource.blue)
+        let font = UIFont.systemFont(ofSize: 24)
+        let image = UIGraphicsImageRenderer(size: size, format: format).image { context in
+            for (index, background) in backgrounds.enumerated() {
+                background.setFill()
+                context.fill(CGRect(x: CGFloat(index * 90), y: 0, width: 90, height: 150))
+                ("Y" as NSString).draw(at: CGPoint(x: CGFloat(index * 90 + 28), y: 55),
+                    withAttributes: [.font: font, .foregroundColor: yellow])
+            }
+        }
+        let mask = UIGraphicsImageRenderer(size: size, format: format).image { context in
+            UIColor.black.setFill()
+            context.fill(CGRect(origin: .zero, size: size))
+            for index in backgrounds.indices {
+                ("Y" as NSString).draw(at: CGPoint(x: CGFloat(index * 90 + 28), y: 55),
+                    withAttributes: [.font: font, .foregroundColor: UIColor.white])
+            }
+        }
+        let result = try processor.apply(.blackAndWhite, to: image)
+        let pixels = try PageBitmap(XCTUnwrap(result.cgImage))
+        let maskPixels = try PageBitmap(XCTUnwrap(mask.cgImage))
+        for index in backgrounds.indices {
+            var glyph = [Double](), backdrop = [Double]()
+            for y in 50..<105 {
+                for x in (index * 90 + 12)..<(index * 90 + 78) {
+                    if maskPixels.luminance(atX: Double(x), y: Double(y)) > 220 {
+                        glyph.append(pixels.luminance(atX: Double(x), y: Double(y)))
+                    }
+                }
+            }
+            for y in 115..<140 {
+                for x in (index * 90 + 12)..<(index * 90 + 78) {
+                    backdrop.append(pixels.luminance(atX: Double(x), y: Double(y)))
+                }
+            }
+            let backgroundRGB = colorComponents(backgrounds[index])
+            let backgroundSourceLuma = 0.299 * Double(backgroundRGB.red)
+                + 0.587 * Double(backgroundRGB.green) + 0.114 * Double(backgroundRGB.blue)
+            let inputDetails = String(format: "background=%@ RGB=(%.3f,%.3f,%.3f) sourceLuma=%.3f yellowRGB=(%.3f,%.3f,%.3f) yellowLuma=%.3f glyphPixels=%d",
+                backgroundLabels[index], Double(backgroundRGB.red), Double(backgroundRGB.green),
+                Double(backgroundRGB.blue), backgroundSourceLuma, Double(yellowSource.red),
+                Double(yellowSource.green), Double(yellowSource.blue), yellowSourceLuma, glyph.count)
+            XCTAssertGreaterThan(glyph.count, 5, inputDetails)
+            guard glyph.count > 5, !backdrop.isEmpty else { continue }
+            let glyphMean = glyph.reduce(0, +) / Double(glyph.count)
+            let backdropMean = backdrop.reduce(0, +) / Double(backdrop.count)
+            let difference = glyphMean - backdropMean
+            let details = String(format: "background=%@ RGB=(%.3f,%.3f,%.3f) sourceLuma=%.3f yellowRGB=(%.3f,%.3f,%.3f) yellowLuma=%.3f glyphPixels=%d outputGlyphMean=%.1f outputBackdropMean=%.1f difference=%.1f",
+                backgroundLabels[index], Double(backgroundRGB.red), Double(backgroundRGB.green),
+                Double(backgroundRGB.blue), backgroundSourceLuma, Double(yellowSource.red),
+                Double(yellowSource.green), Double(yellowSource.blue), yellowSourceLuma, glyph.count,
+                glyphMean, backdropMean, difference)
+            XCTAssertGreaterThan(abs(difference), 20, "bright ink lost contrast: \(details)")
+        }
+    }
+
+    func testBlackAndWhiteKeepsNearEqualLumaColoredInkDark() throws {
+        let size = CGSize(width: 180, height: 120)
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let ink = UIColor(red: 0.10, green: 0.29, blue: 0.95, alpha: 1)
+        let font = UIFont.systemFont(ofSize: 28)
+        let image = UIGraphicsImageRenderer(size: size, format: format).image { context in
+            UIColor(white: 0.30, alpha: 1).setFill()
+            context.fill(CGRect(origin: .zero, size: size))
+            ("Y" as NSString).draw(at: CGPoint(x: 70, y: 35),
+                                   withAttributes: [.font: font, .foregroundColor: ink])
+        }
+        let mask = UIGraphicsImageRenderer(size: size, format: format).image { context in
+            UIColor.black.setFill()
+            context.fill(CGRect(origin: .zero, size: size))
+            ("Y" as NSString).draw(at: CGPoint(x: 70, y: 35),
+                withAttributes: [.font: font, .foregroundColor: UIColor.white])
+        }
+        let result = try processor.apply(.blackAndWhite, to: image)
+        let pixels = try PageBitmap(XCTUnwrap(result.cgImage))
+        let maskPixels = try PageBitmap(XCTUnwrap(mask.cgImage))
+        var glyph = [Double](), backdrop = [Double]()
+        for y in 32..<82 {
+            for x in 60..<120 where maskPixels.luminance(atX: Double(x), y: Double(y)) > 220 {
+                glyph.append(pixels.luminance(atX: Double(x), y: Double(y)))
+            }
+        }
+        for y in 92..<112 {
+            for x in 40..<140 {
+                backdrop.append(pixels.luminance(atX: Double(x), y: Double(y)))
+            }
+        }
+
+        let background = colorComponents(UIColor(white: 0.30, alpha: 1))
+        let inkSource = colorComponents(ink)
+        let backgroundLuma = 0.299 * Double(background.red) + 0.587 * Double(background.green)
+            + 0.114 * Double(background.blue)
+        let inkLuma = 0.299 * Double(inkSource.red) + 0.587 * Double(inkSource.green)
+            + 0.114 * Double(inkSource.blue)
+        let inputDetails = String(format: "background=gray 0.30 RGB=(%.3f,%.3f,%.3f) sourceLuma=%.3f inkRGB=(%.3f,%.3f,%.3f) inkLuma=%.3f glyphPixels=%d",
+            Double(background.red), Double(background.green), Double(background.blue), backgroundLuma,
+            Double(inkSource.red), Double(inkSource.green), Double(inkSource.blue), inkLuma,
+            glyph.count)
+        XCTAssertGreaterThan(glyph.count, 5, inputDetails)
+        guard glyph.count > 5, !backdrop.isEmpty else { return }
+        let glyphMean = glyph.reduce(0, +) / Double(glyph.count)
+        let backdropMean = backdrop.reduce(0, +) / Double(backdrop.count)
+        let separation = backdropMean - glyphMean
+        let details = String(format: "background=gray 0.30 RGB=(%.3f,%.3f,%.3f) sourceLuma=%.3f inkRGB=(%.3f,%.3f,%.3f) inkLuma=%.3f glyphPixels=%d outputGlyphMean=%.1f outputBackdropMean=%.1f separation=%.1f",
+            Double(background.red), Double(background.green), Double(background.blue), backgroundLuma,
+            Double(inkSource.red), Double(inkSource.green), Double(inkSource.blue), inkLuma,
+            glyph.count, glyphMean, backdropMean, separation)
+        XCTAssertGreaterThan(separation, 20, "near-equal-luma colored ink should retain its dark separation: \(details)")
     }
 
     /// grayscale で R==G==B を保ち暗い下部の紙が明るくなることを検証する。
@@ -230,5 +807,111 @@ final class DocumentImageProcessorTests: XCTestCase {
         let three = try processor.rotate(image, quarterTurns: 3)
         XCTAssertEqual(TestImageFactory.pixelSize(of: minusOne),
                        TestImageFactory.pixelSize(of: three))
+    }
+
+    private func shadingCorrected(_ image: UIImage) throws -> UIImage {
+        let source = try XCTUnwrap(image.cgImage)
+        let sRGB = CGColorSpace(name: CGColorSpace.sRGB)!
+        let ciImage = CIImage(cgImage: source, options: [.colorSpace: sRGB])
+        let corrected = try ShadingCorrector.flattened(ciImage)
+        return UIImage(cgImage: try XCTUnwrap(
+            ImageRendering.context.createCGImage(corrected, from: corrected.extent,
+                                                 format: .RGBA8, colorSpace: sRGB)
+        ))
+    }
+
+    private func colorComponents(_ color: UIColor) -> (red: CGFloat, green: CGFloat, blue: CGFloat) {
+        var red: CGFloat = 0
+        var green: CGFloat = 0
+        var blue: CGFloat = 0
+        var alpha: CGFloat = 0
+        color.getRed(&red, green: &green, blue: &blue, alpha: &alpha)
+        return (red, green, blue)
+    }
+
+    private func blackAndWhiteStageMeans(
+        for image: UIImage,
+        labelX: Range<Int>,
+        labelY: Range<Int>,
+        paperX: Range<Int>,
+        paperY: Range<Int>
+    ) throws -> [(name: String, label: Double, paper: Double)] {
+        let source = CIImage(cgImage: try XCTUnwrap(image.cgImage))
+        let flat = try ShadingCorrector.flattened(source)
+        let gray = try ShadingCorrector.grayscale(flat)
+        let extent = source.extent
+        let radius = 0.008 * max(extent.width, extent.height)
+        guard let local = CIFilter(name: "CIGaussianBlur", parameters: [
+            kCIInputImageKey: gray.clampedToExtent(),
+            kCIInputRadiusKey: radius
+        ])?.outputImage else {
+            throw ImageProcessingError.filterFailed("CIGaussianBlur")
+        }
+        guard let ratio = CIFilter(name: "CIDivideBlendMode", parameters: [
+            kCIInputImageKey: local.cropped(to: extent),
+            kCIInputBackgroundImageKey: gray
+        ])?.outputImage else {
+            throw ImageProcessingError.filterFailed("CIDivideBlendMode")
+        }
+        let adaptive = try ShadingCorrector.ramp(ratio.cropped(to: extent), lo: 0.72, hi: 0.97)
+        let global = try ShadingCorrector.ramp(gray, lo: 0.20, hi: 0.45)
+        guard let colorLocal = CIFilter(name: "CIGaussianBlur", parameters: [
+            kCIInputImageKey: flat.clampedToExtent(),
+            kCIInputRadiusKey: radius
+        ])?.outputImage else {
+            throw ImageProcessingError.filterFailed("CIGaussianBlur")
+        }
+        let chroma = try ShadingCorrector.chromaticDifference(flat, from: colorLocal.cropped(to: extent))
+        let chromaticRamp = try ShadingCorrector.ramp(chroma, lo: 0.018, hi: 0.07)
+        guard let chromatic = CIFilter(name: "CIColorMatrix", parameters: [
+            kCIInputImageKey: chromaticRamp,
+            "inputRVector": CIVector(x: -0.75, y: 0, z: 0, w: 0),
+            "inputGVector": CIVector(x: 0, y: -0.75, z: 0, w: 0),
+            "inputBVector": CIVector(x: 0, y: 0, z: -0.75, w: 0),
+            "inputBiasVector": CIVector(x: 1, y: 1, z: 1, w: 0)
+        ])?.outputImage else {
+            throw ImageProcessingError.filterFailed("CIColorMatrix")
+        }
+        guard let combined = CIFilter(name: "CIMinimumCompositing", parameters: [
+            kCIInputImageKey: adaptive,
+            kCIInputBackgroundImageKey: global
+        ])?.outputImage else {
+            throw ImageProcessingError.filterFailed("CIMinimumCompositing")
+        }
+        guard let colorCombined = CIFilter(name: "CIMinimumCompositing", parameters: [
+            kCIInputImageKey: combined.cropped(to: extent),
+            kCIInputBackgroundImageKey: chromatic
+        ])?.outputImage else {
+            throw ImageProcessingError.filterFailed("CIMinimumCompositing")
+        }
+        let final = try ShadingCorrector.preserveBrightChromaticContrast(
+            colorCombined.cropped(to: extent), source: gray, local: local.cropped(to: extent),
+            chromatic: chromaticRamp
+        )
+        let stages: [(name: String, image: CIImage)] = [
+            ("source", source), ("flat", flat), ("gray", gray),
+            ("local", local.cropped(to: extent)), ("ratio", ratio.cropped(to: extent)),
+            ("adaptive", adaptive), ("global", global), ("chroma", chroma),
+            ("chroma-ramp", chromaticRamp), ("chromatic-mask", chromatic),
+            ("combined", combined.cropped(to: extent)),
+            ("color-combined", colorCombined.cropped(to: extent)), ("final", final)
+        ]
+        return try stages.map { stage in
+            (
+                name: stage.name,
+                label: try meanLuminance(stage.image, x: labelX, y: labelY),
+                paper: try meanLuminance(stage.image, x: paperX, y: paperY)
+            )
+        }
+    }
+
+    private func meanLuminance(_ image: CIImage, x: Range<Int>, y: Range<Int>) throws -> Double {
+        let extent = image.extent
+        guard let rendered = ImageRendering.context.createCGImage(image.cropped(to: extent), from: extent) else {
+            throw ImageProcessingError.renderFailed
+        }
+        let pixels = try PageBitmap(rendered)
+        let values = y.flatMap { row in x.map { pixels.luminance(atX: Double($0), y: Double(row)) } }
+        return values.reduce(0, +) / Double(values.count)
     }
 }
