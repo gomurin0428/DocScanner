@@ -371,6 +371,22 @@ final class PageFlattenerTests: XCTestCase {
         }
     }
 
+    func testRefineBoundaryRejectsBrightStripeWithLighterBackgroundInTheGap() throws {
+        let paperTop = 164.0
+        let (image, seed) = try refinementPhoto(seedTop: 144) { context in
+            UIColor(white: 0.33, alpha: 1).setFill()
+            context.fill(CGRect(x: 0, y: 150, width: 800, height: paperTop - 150))
+            UIColor(white: 0.9, alpha: 1).setFill()
+            context.fill(CGRect(x: 140, y: 144, width: 520, height: 6))
+            context.fill(CGRect(x: 140, y: paperTop, width: 520, height: 800 - paperTop))
+        }
+        let refined = try flattener.refineBoundary(image, boundary: seed)
+        XCTAssertEqual(refined.top.count, 17)
+        for point in refined.top {
+            XCTAssertEqual((1 - point.y) * Double(image.height), paperTop, accuracy: 1.25)
+        }
+    }
+
     func testRefineBoundaryKeepsAnAlignedPlanarPageInPlace() throws {
         let (image, seed) = try refinementPhoto(seedTop: 144) { context in
             UIColor(white: 0.7, alpha: 1).setFill()

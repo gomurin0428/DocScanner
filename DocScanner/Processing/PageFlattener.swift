@@ -852,13 +852,16 @@ struct PageFlattener {
                         if firstTransition == nil, decision == .anchored, let margin = outerPaperMargin,
                            d - margin > 2 * gap {
                             let backgroundTolerance = max(6, abs(anchorContrast) * 0.125)
-                            var backgroundRun = 0
+                            var backgroundRun = 0, bandRun = 0
+                            var hasOppositeToneBand = false
                             for distance in stride(from: margin + 2 * gap, to: d - gap, by: gap) {
                                 guard let tone = luminance(distance) else { break }
                                 backgroundRun = abs(tone - outer) <= backgroundTolerance ? backgroundRun + 1 : 0
                                 if backgroundRun >= 5 { break }
+                                bandRun = (outer - tone) * sign > backgroundTolerance ? bandRun + 1 : 0
+                                hasOppositeToneBand = hasOppositeToneBand || bandRun >= 5
                             }
-                            if backgroundRun < 5 {
+                            if backgroundRun < 5, hasOppositeToneBand {
                                 firstTransition = margin
                                 offset = margin
                                 break
