@@ -208,12 +208,14 @@ struct DocumentDetector {
         -> (geometry: DocumentBoundary, routing: DocumentBoundary) {
         let size = CGSize(width: image.width, height: image.height)
         let flattener = PageFlattener()
-        func recover(_ local: DocumentBoundary) throws -> DocumentBoundary? {
+        func recover(_ local: DocumentBoundary, refineFittedSides: Bool = false) throws -> DocumentBoundary? {
             if [local.top, local.right, local.bottom, local.left].allSatisfy({ $0.count > 2 }) {
                 AppDiagnostics.selection("Photo edge recovery skipped: all four local edges measured")
                 return local
             }
-            if let recovered = try flattener.recoverPhotoBoundary(image, boundary: seed, preservingMeasuredEdges: local) {
+            if let recovered = try flattener.recoverPhotoBoundary(image, boundary: seed,
+                                                                 preservingMeasuredEdges: local,
+                                                                 refineFittedSides: refineFittedSides) {
                 return recovered
             }
             guard local.hasMeasuredCurvedEdges(in: size) else { return nil }
@@ -227,7 +229,12 @@ struct DocumentDetector {
         Self.logBoundary(local, imageSize: size, source: "local photo refinement")
         guard local != legacy else { return (routing, routing) }
         AppDiagnostics.selection("Photo edge recovery: refined geometry")
-        return (try recover(local) ?? routing, routing)
+        return (try recover(local, refineFittedSides: supportsPhotoCoons(routing, analysisSize: size)) ?? routing, routing)
+    }
+
+    private static func supportsPhotoCoons(_ boundary: DocumentBoundary, analysisSize: CGSize) -> Bool {
+        [boundary.top, boundary.right, boundary.bottom, boundary.left].allSatisfy { $0.count > 2 } &&
+            boundary.hasMeasuredCurvedEdges(in: analysisSize)
     }
 
     static func correctSupportedPhotoCoons(_ source: CGImage, boundary: DocumentBoundary, analysisSize: CGSize,
@@ -238,8 +245,7 @@ struct DocumentDetector {
                                            },
                                            uvdocReference: (DocumentBoundary) throws -> CGImage?) throws -> CGImage? {
         let evidence = routingBoundary ?? boundary
-        guard [evidence.top, evidence.right, evidence.bottom, evidence.left].allSatisfy({ $0.count > 2 }),
-              evidence.hasMeasuredCurvedEdges(in: analysisSize) else { return nil }
+        guard supportsPhotoCoons(evidence, analysisSize: analysisSize) else { return nil }
         AppDiagnostics.selection("Photo Coons selected: measured curvature and all four edges supported")
         let flattened = try PageFlattener().flatten(source, boundary: boundary, camera: camera)
         let orientation = PageTextOrientationCorrector()

@@ -544,6 +544,43 @@ final class PageFlattenerTests: XCTestCase {
         XCTAssertTrue(recovered.hasStraightEdges(in: size))
     }
 
+    func testFitGuidedRefinementReplacesOutwardFitWithSustainedPaperEdge() throws {
+        let size = CGSize(width: 800, height: 900)
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let paperLeft = 240.0
+        let image = try XCTUnwrap(UIGraphicsImageRenderer(size: size, format: format).image { context in
+            UIColor(white: 0.2, alpha: 1).setFill()
+            context.fill(CGRect(origin: .zero, size: size))
+            for i in 1...11 {
+                UIColor(white: 0.2 + CGFloat(i) * 0.008, alpha: 1).setFill()
+                context.fill(CGRect(x: paperLeft - 12 + CGFloat(i), y: 144, width: 1, height: 656))
+            }
+            UIColor(white: 0.9, alpha: 1).setFill()
+            context.fill(CGRect(x: paperLeft, y: 144, width: 420, height: 656))
+        }.cgImage)
+        let seed = DocumentBoundary(corners: [
+            CGPoint(x: 204.0 / 800, y: 1 - 144.0 / 900), CGPoint(x: 660.0 / 800, y: 1 - 144.0 / 900),
+            CGPoint(x: 660.0 / 800, y: 1 - 800.0 / 900), CGPoint(x: 204.0 / 800, y: 1 - 800.0 / 900)
+        ])
+        let local = try flattener.refineBoundary(image, boundary: seed)
+        XCTAssertEqual(local.left.count, 2)
+        XCTAssertTrue([local.top, local.right, local.bottom].allSatisfy { $0.count > 2 })
+        let coarse = try XCTUnwrap(flattener.recoverPhotoBoundary(image, boundary: seed, preservingMeasuredEdges: local))
+        XCTAssertGreaterThan(coarse.left.count, 2)
+        XCTAssertTrue(coarse.left.allSatisfy { $0.x * size.width < paperLeft - 3 })
+        let refined = try XCTUnwrap(flattener.recoverPhotoBoundary(
+            image, boundary: seed, preservingMeasuredEdges: local, refineFittedSides: true))
+        XCTAssertEqual(refined.left.count, 17)
+        for point in refined.left {
+            XCTAssertEqual(point.x * size.width, paperLeft, accuracy: 1.25)
+        }
+        for (before, after) in [(coarse.top, refined.top), (coarse.right, refined.right),
+                                (coarse.bottom, refined.bottom)] {
+            XCTAssertEqual(Array(before.dropFirst().dropLast()), Array(after.dropFirst().dropLast()))
+        }
+    }
+
     func testPhotoRecoveryFindsDarkPaperOnLightBackground() throws {
         let size = CGSize(width: 1200, height: 1600)
         let format = UIGraphicsImageRendererFormat.default()
@@ -734,6 +771,8 @@ final class PageFlattenerTests: XCTestCase {
         ])
 
         XCTAssertNil(try flattener.recoverPhotoBoundary(XCTUnwrap(image.cgImage), boundary: candidate))
+        XCTAssertNil(try flattener.recoverPhotoBoundary(
+            XCTUnwrap(image.cgImage), boundary: candidate, refineFittedSides: true))
     }
 
     func testPhotoRecoveryRetainsKnownCurvedBoundary() throws {

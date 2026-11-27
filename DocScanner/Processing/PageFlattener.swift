@@ -205,7 +205,8 @@ struct PageFlattener {
     init() {}
 
     func recoverPhotoBoundary(_ image: CGImage, boundary: DocumentBoundary,
-                              preservingMeasuredEdges: DocumentBoundary? = nil) throws -> DocumentBoundary? {
+                              preservingMeasuredEdges: DocumentBoundary? = nil,
+                              refineFittedSides: Bool = false) throws -> DocumentBoundary? {
         guard boundary.isValid, preservingMeasuredEdges?.isValid != false else {
             throw DocumentDetectionError.invalidImage
         }
@@ -379,7 +380,31 @@ struct PageFlattener {
         }.joined(separator: ",")
         AppDiagnostics.selection("Photo edge recovery accepted: edgeSources=[\(edgeSourceNames)], support=[\(support)], " +
             "contrast=[\(contrast)], maxCornerMove=\(String(format: "%.1f", movements.max() ?? 0))px")
-        return recovered
+        guard refineFittedSides, retainedEdges.isEmpty, edgeSources.contains(.fit) else { return recovered }
+        let fittedSides = edgeSources.map { $0 == .fit }
+        guard let rescanned = try? refineBoundary(image, boundary: recovered.cornersOnly,
+                                                  requiresSustainedEvidence: true, selectedSides: fittedSides) else {
+            return recovered
+        }
+        let rescannedEdges = [rescanned.top, rescanned.right, rescanned.bottom, rescanned.left]
+        guard fittedSides.indices.contains(where: { fittedSides[$0] && rescannedEdges[$0].count > 2 }) else {
+            return recovered
+        }
+        let newCorners = rescanned.corners.map { PagePoint(x: $0.x * width, y: (1 - $0.y) * height) }
+        let newMovement = zip(newCorners, corners).map { ($0 - $1).length }
+        guard newMovement.allSatisfy({ $0.isFinite && $0 <= movementLimit }),
+              (0.5...2.5).contains(area(newCorners) / area(corners)) else { return recovered }
+        let oldEdges = [recovered.top, recovered.right, recovered.bottom, recovered.left]
+        var updated = rescannedEdges
+        for index in oldEdges.indices where !fittedSides[index] || rescannedEdges[index].count == 2 {
+            let pair = edgeCornerIndices[index]
+            guard let retained = edge(fits[index], from: newCorners[pair[0]], to: newCorners[pair[1]],
+                                      measured: oldEdges[index]),
+                  retained.count == oldEdges[index].count else { return recovered }
+            updated[index] = retained
+        }
+        let refined = DocumentBoundary(top: updated[0], right: updated[1], bottom: updated[2], left: updated[3])
+        return refined.isValid ? refined : recovered
     }
 
     private func fitPhotoEdge(_ start: PagePoint, _ end: PagePoint, center: PagePoint, edgeName: String,
@@ -783,7 +808,8 @@ struct PageFlattener {
     }
 
     private func refineBoundary(_ image: CGImage, boundary: DocumentBoundary,
-                                requiresSustainedEvidence: Bool) throws -> DocumentBoundary {
+                                requiresSustainedEvidence: Bool, selectedSides: [Bool] = [true, true, true, true])
+        throws -> DocumentBoundary {
         // 連続したエッジ測定が不足する辺は、生成した直線サンプルで補わず元の点列を保つ。
         guard boundary.isValid else { throw DocumentDetectionError.invalidImage }
         let w = Double(image.width), h = Double(image.height)
@@ -969,10 +995,14 @@ struct PageFlattener {
             }
         }
         let original = pixels(boundary.corners)
-        var top = try refine(boundary.top, adjacentToStart: original[3], adjacentToEnd: original[2])
-        var right = try refine(boundary.right, adjacentToStart: original[0], adjacentToEnd: original[3])
-        var bottom = try refine(boundary.bottom, adjacentToStart: original[0], adjacentToEnd: original[1])
-        var left = try refine(boundary.left, adjacentToStart: original[1], adjacentToEnd: original[2])
+        var top = selectedSides[0] ? try refine(boundary.top, adjacentToStart: original[3], adjacentToEnd: original[2]) :
+            pixels(boundary.top)
+        var right = selectedSides[1] ? try refine(boundary.right, adjacentToStart: original[0], adjacentToEnd: original[3]) :
+            pixels(boundary.right)
+        var bottom = selectedSides[2] ? try refine(boundary.bottom, adjacentToStart: original[0], adjacentToEnd: original[1]) :
+            pixels(boundary.bottom)
+        var left = selectedSides[3] ? try refine(boundary.left, adjacentToStart: original[1], adjacentToEnd: original[2]) :
+            pixels(boundary.left)
         func intersection(_ a: [PagePoint], _ b: [PagePoint], near p: PagePoint) -> PagePoint {
             let u = a.last! - a[0], v = b.last! - b[0], d = b[0] - a[0]
             let cross = u.x * v.y - u.y * v.x
