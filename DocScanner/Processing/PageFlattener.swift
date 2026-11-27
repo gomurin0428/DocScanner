@@ -826,15 +826,19 @@ struct PageFlattener {
                         return values[values.count / 2]
                     }
                     let outer = band(-range, direction: -1), inner = band(range, direction: 1)
+                    var outerPaperMargin: Double?
                     for d in stride(from: -range, through: range, by: step) {
                         guard let outer, let inner,
                               let a = luminance(d - gap), let b = luminance(d + gap),
                               let outside = band(d, direction: -1), let inside = band(d, direction: 1) else { continue }
+                        let anchorContrast = inner - outer
+                        let sign = anchorContrast > 0 ? 1.0 : -1.0
+                        let tolerance = max(8, abs(anchorContrast) * 0.25)
+                        let matchesNearAnchors = abs(anchorContrast) >= 6 && (b - a) * sign >= 6 &&
+                            (inside - outside) * sign >= 6 && abs(outside - outer) <= tolerance &&
+                            abs(inside - inner) <= tolerance
                         if !requiresSustainedEvidence {
-                            let sign = inner > outer ? 1.0 : -1.0
-                            let tolerance = max(8, abs(inner - outer) * 0.25)
-                            guard abs(inner - outer) >= 6, (b - a) * sign >= 6, (inside - outside) * sign >= 6,
-                                  abs(outside - outer) <= tolerance, abs(inside - inner) <= tolerance else { continue }
+                            guard matchesNearAnchors else { continue }
                             if firstTransition == nil || abs(d) < abs(offset) { offset = d }
                             firstTransition = firstTransition ?? d
                             continue
@@ -845,6 +849,26 @@ struct PageFlattener {
                             outer: outer, inner: inner, outside: outside, inside: inside,
                             farOutside: farOutside, farInside: farInside, gradient: b - a,
                             offset: d, range: range, gap: gap, luminance: luminance)
+                        if firstTransition == nil, decision == .anchored, let margin = outerPaperMargin,
+                           d - margin > 2 * gap {
+                            let backgroundTolerance = max(6, abs(anchorContrast) * 0.125)
+                            var backgroundRun = 0
+                            for distance in stride(from: margin + 2 * gap, to: d - gap, by: gap) {
+                                guard let tone = luminance(distance) else { break }
+                                backgroundRun = abs(tone - outer) <= backgroundTolerance ? backgroundRun + 1 : 0
+                                if backgroundRun >= 5 { break }
+                            }
+                            if backgroundRun < 5 {
+                                firstTransition = margin
+                                offset = margin
+                                break
+                            }
+                        }
+                        if firstTransition == nil, !decision.accepts, outerPaperMargin == nil,
+                           matchesNearAnchors, abs(farOutside - outer) <= tolerance,
+                           abs(farInside - outer) <= tolerance, abs(farInside - inner) > tolerance {
+                            outerPaperMargin = d
+                        }
                         guard decision.accepts else { continue }
                         let strength = abs(b - a)
                         let first = firstTransition ?? d

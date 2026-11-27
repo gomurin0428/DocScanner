@@ -334,6 +334,43 @@ final class PageFlattenerTests: XCTestCase {
         XCTAssertEqual(refined, seed)
     }
 
+    func testRefineBoundaryKeepsPaperMarginAboveDarkHeadingBand() throws {
+        let paperTop = 144.0
+        let bandBottom = 164.0
+        let (image, seed) = try refinementPhoto(seedTop: paperTop) { context in
+            UIColor(white: 0.12, alpha: 1).setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 800, height: 900))
+            UIColor(white: 0.9, alpha: 1).setFill()
+            context.fill(CGRect(x: 140, y: paperTop, width: 520, height: 800 - paperTop))
+            UIColor.black.setFill()
+            context.fill(CGRect(x: 140, y: paperTop + 6, width: 520, height: bandBottom - paperTop - 6))
+        }
+        let legacy = try flattener.refineLegacyBoundary(image, boundary: seed)
+        let sustained = try flattener.refineBoundary(image, boundary: seed)
+        XCTAssertEqual(legacy.top.count, 17)
+        XCTAssertEqual(sustained.top.count, 17)
+        for point in legacy.top.dropFirst().dropLast() {
+            XCTAssertEqual((1 - point.y) * Double(image.height), paperTop, accuracy: 1.25)
+        }
+        for point in sustained.top.dropFirst().dropLast() {
+            XCTAssertEqual((1 - point.y) * Double(image.height), paperTop, accuracy: 1.25)
+        }
+    }
+
+    func testRefineBoundaryRejectsBrightStripeSeparatedFromPaperByBackground() throws {
+        let paperTop = 164.0
+        let (image, seed) = try refinementPhoto(seedTop: 144) { context in
+            UIColor(white: 0.9, alpha: 1).setFill()
+            context.fill(CGRect(x: 140, y: 144, width: 520, height: 6))
+            context.fill(CGRect(x: 140, y: paperTop, width: 520, height: 800 - paperTop))
+        }
+        let refined = try flattener.refineBoundary(image, boundary: seed)
+        XCTAssertEqual(refined.top.count, 17)
+        for point in refined.top {
+            XCTAssertEqual((1 - point.y) * Double(image.height), paperTop, accuracy: 1.25)
+        }
+    }
+
     func testRefineBoundaryKeepsAnAlignedPlanarPageInPlace() throws {
         let (image, seed) = try refinementPhoto(seedTop: 144) { context in
             UIColor(white: 0.7, alpha: 1).setFill()
