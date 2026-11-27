@@ -202,7 +202,7 @@ final class UVDocTests: XCTestCase {
         XCTAssertTrue(refined.hasMeasuredCurvedEdges(in: size))
         XCTAssertNotEqual(refined.corners, routing.corners)
         XCTAssertNil(try DocumentDetector.correctSupportedPhotoCoons(
-            cgImage, boundary: refined, analysisSize: size, routingBoundary: routing, uvdocReference: {
+            cgImage, boundary: refined, analysisSize: size, routingBoundary: routing, uvdocReference: { _ in
                 XCTFail("New local curvature must not qualify the legacy planar page for Coons")
                 return nil
             }))

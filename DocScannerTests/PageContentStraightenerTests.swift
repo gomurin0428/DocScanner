@@ -275,23 +275,55 @@ final class PageContentStraightenerTests: XCTestCase {
         let expectedCI = CIImage(cgImage: unrotated).oriented(turn)
         let expected = try XCTUnwrap(ImageRendering.context.createCGImage(expectedCI, from: expectedCI.extent.integral))
         let coons = try XCTUnwrap(DocumentDetector.correctSupportedPhotoCoons(
-            source, boundary: boundary, analysisSize: sourceSize, uvdocReference: { reference }))
+            source, boundary: boundary, analysisSize: sourceSize, uvdocReference: { _ in reference }))
         XCTAssertGreaterThan(coons.width, coons.height)
         XCTAssertEqual(coons.width, expected.width)
         XCTAssertEqual(coons.height, expected.height)
         XCTAssertTrue(try PageBitmap(coons).data == PageBitmap(expected).data)
         XCTAssertNil(try DocumentDetector.correctSupportedPhotoCoons(
-            source, boundary: boundary.cornersOnly, analysisSize: sourceSize, uvdocReference: {
+            source, boundary: boundary.cornersOnly, analysisSize: sourceSize, uvdocReference: { _ in
                 XCTFail("Planar control must not enter the Coons route")
                 return reference
             }))
 
         let blank = try XCTUnwrap(TestImageFactory.solid(.white, size: sourceSize).cgImage)
         let abstainedCoons = try XCTUnwrap(DocumentDetector.correctSupportedPhotoCoons(
-            source, boundary: boundary, analysisSize: sourceSize, uvdocReference: { blank }))
+            source, boundary: boundary, analysisSize: sourceSize, uvdocReference: { _ in blank }))
         XCTAssertEqual(abstainedCoons.width, unrotated.width)
         XCTAssertEqual(abstainedCoons.height, unrotated.height)
         XCTAssertTrue(try PageBitmap(abstainedCoons).data == PageBitmap(unrotated).data)
+    }
+
+    func testRefinedCoonsUsesOneLegacyOrientationReferenceButReturnsRefinedPixels() throws {
+        let source = try XCTUnwrap(TestImageFactory.gradient(size: CGSize(width: 180, height: 320)).cgImage)
+        let size = CGSize(width: source.width, height: source.height)
+        let samples = (0...16).map { Double($0) / 16 }
+        let legacy = DocumentBoundary(top: samples.map { CGPoint(x: $0, y: 1) },
+            right: samples.map { CGPoint(x: 1 - 0.02 * sin(.pi * $0), y: 1 - $0) },
+            bottom: samples.map { CGPoint(x: $0, y: 0) },
+            left: samples.map { CGPoint(x: 0, y: 1 - $0) })
+        let refined = legacy.map { CGPoint(x: 0.04 + 0.92 * $0.x, y: $0.y) }
+        let reference = try sidewaysTextFixture().sideways
+        let scores = try PageTextOrientationCorrector().orientationScores(of: reference)
+        let turn = try XCTUnwrap(PageTextOrientationCorrector.preferredOrientation(scores: scores))
+        XCTAssertTrue(turn == .left || turn == .right)
+
+        var requestedBoundaries = [DocumentBoundary]()
+        let actual = try XCTUnwrap(DocumentDetector.correctSupportedPhotoCoons(
+            source, boundary: refined, analysisSize: size, routingBoundary: legacy, uvdocReference: { boundary in
+                requestedBoundaries.append(boundary)
+                return reference
+            }))
+        XCTAssertEqual(requestedBoundaries, [legacy])
+        let flattener = PageFlattener()
+        let refinedPixels = try flattener.flatten(source, boundary: refined)
+        let legacyPixels = try flattener.flatten(source, boundary: legacy)
+        XCTAssertNotEqual(refinedPixels.width, legacyPixels.width)
+        let expectedCI = CIImage(cgImage: refinedPixels).oriented(turn)
+        let expected = try XCTUnwrap(ImageRendering.context.createCGImage(expectedCI, from: expectedCI.extent))
+        XCTAssertEqual(actual.width, expected.width)
+        XCTAssertEqual(actual.height, expected.height)
+        XCTAssertEqual(try PageBitmap(actual).data, try PageBitmap(expected).data)
     }
 
     func testSupportedPhotoCoonsStraightensWhenUVDocDeclinesExtremeAspect() throws {
@@ -315,7 +347,7 @@ final class PageContentStraightenerTests: XCTestCase {
             straightenFallback: { image in
                 XCTAssertTrue(try PageBitmap(image).data == PageBitmap(flattened).data)
                 return straightened
-            }, uvdocReference: {
+            }, uvdocReference: { _ in
                 let reference = try unwarper.unwarp(source, boundary: boundary)
                 XCTAssertNil(reference)
                 return reference

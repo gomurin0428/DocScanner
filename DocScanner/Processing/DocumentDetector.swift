@@ -192,8 +192,8 @@ struct DocumentDetector {
             if let upright = try Self.correctSupportedPhotoCoons(cg, boundary: boundary,
                                                                analysisSize: imageSize, camera: camera,
                                                                routingBoundary: routing,
-                                                               uvdocReference: {
-                try unwarper.unwarp(cg, boundary: boundary, camera: camera, routingBoundary: routing)
+                                                               uvdocReference: { referenceBoundary in
+                try unwarper.unwarp(cg, boundary: referenceBoundary, camera: camera)
             }) {
                 return UIImage(cgImage: upright, scale: image.scale, orientation: .up)
             }
@@ -236,14 +236,14 @@ struct DocumentDetector {
                                            straightenFallback: (CGImage) throws -> CGImage = {
                                                try PageContentStraightener().straighten($0)
                                            },
-                                           uvdocReference: () throws -> CGImage?) throws -> CGImage? {
+                                           uvdocReference: (DocumentBoundary) throws -> CGImage?) throws -> CGImage? {
         let evidence = routingBoundary ?? boundary
         guard [evidence.top, evidence.right, evidence.bottom, evidence.left].allSatisfy({ $0.count > 2 }),
               evidence.hasMeasuredCurvedEdges(in: analysisSize) else { return nil }
         AppDiagnostics.selection("Photo Coons selected: measured curvature and all four edges supported")
         let flattened = try PageFlattener().flatten(source, boundary: boundary, camera: camera)
         let orientation = PageTextOrientationCorrector()
-        if let reference = try uvdocReference() {
+        if let reference = try uvdocReference(evidence) {
             return try orientation.correctCoons(flattened, reference: reference)
         }
         return try orientation.correct(straightenFallback(flattened))
