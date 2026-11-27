@@ -907,24 +907,27 @@ struct PageFlattener {
         let outW = Int(size.width), outH = Int(size.height)
         guard outW >= 2, outH >= 2 else { throw DocumentDetectionError.invalidImage }
 
+        let gridSize = Self.coonsGrid
+        let (gridTop, gridBottom) = Self.coonsEdgeSamples(mapTop, mapBottom, axis: \.x, divisions: gridSize)
+        let (gridLeft, gridRight) = Self.coonsEdgeSamples(mapLeft, mapRight, axis: \.y, divisions: gridSize)
+
         /// Coons パッチ: 矩形空間 (u,v) → 元画像座標。
-        func coons(_ u: Double, _ v: Double) -> PagePoint {
-            let topBottom = PageGeometry.sample(mapTop, at: u) * (1 - v)
-                + PageGeometry.sample(mapBottom, at: u) * v
-            let leftRight = PageGeometry.sample(mapLeft, at: v) * (1 - u)
-                + PageGeometry.sample(mapRight, at: v) * u
+        func coons(_ column: Int, _ row: Int) -> PagePoint {
+            let u = Double(column) / Double(gridSize)
+            let v = Double(row) / Double(gridSize)
+            let topBottom = gridTop[column] * (1 - v) + gridBottom[column] * v
+            let leftRight = gridLeft[row] * (1 - u) + gridRight[row] * u
             let bilinear = qTL * ((1 - u) * (1 - v)) + qTR * (u * (1 - v))
                 + qBL * ((1 - u) * v) + qBR * (u * v)
             return PageGeometry.apply(hInv, to: topBottom + leftRight - bilinear)
         }
 
         // Coons を 32x32 グリッドで前評価し、画素ごとにセル内双線形補間する
-        let gridSize = Self.coonsGrid
         var grid = [PagePoint]()
         grid.reserveCapacity((gridSize + 1) * (gridSize + 1))
         for gy in 0...gridSize {
             for gx in 0...gridSize {
-                grid.append(coons(Double(gx) / Double(gridSize), Double(gy) / Double(gridSize)))
+                grid.append(coons(gx, gy))
             }
         }
         var out = [UInt8](repeating: 255, count: outW * outH * 4)
@@ -958,5 +961,35 @@ struct PageFlattener {
             throw DocumentDetectionError.renderFailed
         }
         return output
+    }
+
+    /// 矩形化後の軸に沿う位置で向かい合う辺をそろえる。逆行する辺は従来の点順を保つ。
+    private static func coonsEdgeSamples(_ first: [PagePoint], _ second: [PagePoint],
+                                         axis: KeyPath<PagePoint, Double>,
+                                         divisions: Int) -> ([PagePoint], [PagePoint]) {
+        func projectedSamples(_ edge: [PagePoint]) -> [PagePoint]? {
+            let positions = edge.map { $0[keyPath: axis] }
+            let start = positions[0], end = positions[positions.count - 1]
+            guard (end - start).isFinite,
+                  zip(positions, positions.dropFirst()).allSatisfy({ $0.0 < $0.1 }) else { return nil }
+            var segment = 0
+            return (0...divisions).map { i in
+                if i == 0 { return edge[0] }
+                if i == divisions { return edge[edge.count - 1] }
+                let position = start + (end - start) * Double(i) / Double(divisions)
+                while segment < edge.count - 2 && positions[segment + 1] < position {
+                    segment += 1
+                }
+                let t = (position - positions[segment]) / (positions[segment + 1] - positions[segment])
+                return edge[segment] * (1 - t) + edge[segment + 1] * t
+            }
+        }
+        if let a = projectedSamples(first), let b = projectedSamples(second) {
+            return (a, b)
+        }
+        func indexSamples(_ edge: [PagePoint]) -> [PagePoint] {
+            (0...divisions).map { PageGeometry.sample(edge, at: Double($0) / Double(divisions)) }
+        }
+        return (indexSamples(first), indexSamples(second))
     }
 }
