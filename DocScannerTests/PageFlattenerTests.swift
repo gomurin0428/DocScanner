@@ -387,6 +387,51 @@ final class PageFlattenerTests: XCTestCase {
         }
     }
 
+    func testRefineBoundaryKeepsGrayHeadingWhenMarginJoinsPaperSides() throws {
+        let paperTop = 144.0
+        let (image, seed) = try refinementPhoto(seedTop: paperTop) { context in
+            UIColor(white: 0.9, alpha: 1).setFill()
+            context.fill(CGRect(x: 140, y: paperTop, width: 520, height: 800 - paperTop))
+            UIColor(white: 0.33, alpha: 1).setFill()
+            context.fill(CGRect(x: 140, y: paperTop + 6, width: 520, height: 14))
+        }
+        let refined = try flattener.refineBoundary(image, boundary: seed)
+        XCTAssertEqual(refined.top.count, 17)
+        for point in refined.top {
+            XCTAssertEqual((1 - point.y) * Double(image.height), paperTop, accuracy: 1.25)
+        }
+    }
+
+    func testRefineBoundaryRejectsStripeThatExtendsPastOrStopsShortOfBothCorners() throws {
+        for stripeInset in [-12.0, 12.0] {
+            let (image, seed) = try cornerStripePhoto(stripeInset: stripeInset)
+            let refined = try flattener.refineBoundary(image, boundary: seed)
+            XCTAssertEqual(refined.top.count, 17)
+            for point in refined.top {
+                XCTAssertEqual((1 - point.y) * Double(image.height), 164, accuracy: 1.25)
+            }
+        }
+    }
+
+    func testRefineBoundaryDefaultsToOuterForIndistinguishableAlignedStripe() throws {
+        let (image, seed) = try cornerStripePhoto(stripeInset: 0)
+        let refined = try flattener.refineBoundary(image, boundary: seed)
+        XCTAssertEqual(refined.top.count, 17)
+        for point in refined.top {
+            XCTAssertEqual((1 - point.y) * Double(image.height), 144, accuracy: 1.25)
+        }
+    }
+
+    private func cornerStripePhoto(stripeInset: Double) throws -> (CGImage, DocumentBoundary) {
+        try refinementPhoto(seedTop: 144) { context in
+            UIColor(white: 0.33, alpha: 1).setFill()
+            context.fill(CGRect(x: 140, y: 150, width: 520, height: 14))
+            UIColor(white: 0.9, alpha: 1).setFill()
+            context.fill(CGRect(x: 140 + stripeInset, y: 144, width: 520 - 2 * stripeInset, height: 6))
+            context.fill(CGRect(x: 140, y: 164, width: 520, height: 636))
+        }
+    }
+
     func testRefineBoundaryKeepsAnAlignedPlanarPageInPlace() throws {
         let (image, seed) = try refinementPhoto(seedTop: 144) { context in
             UIColor(white: 0.7, alpha: 1).setFill()

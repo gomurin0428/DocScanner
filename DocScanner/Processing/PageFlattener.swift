@@ -793,8 +793,50 @@ struct PageFlattener {
         func pixels(_ points: [CGPoint]) -> [PagePoint] {
             points.map { PagePoint(x: $0.x * w, y: (1 - $0.y) * h) }
         }
-        func refine(_ points: [CGPoint]) throws -> [PagePoint] {
+        func outerBandMissesJunction(at corner: PagePoint, adjacent: PagePoint, across: PagePoint,
+                                     normal: PagePoint, margin: Double, innerEdge: Double,
+                                     paperTone: Double, tolerance: Double) -> Bool {
+            let adjacentVector = adjacent - corner
+            let normalProjection = adjacentVector.x * normal.x + adjacentVector.y * normal.y
+            guard normalProjection > adjacentVector.length * 0.5, innerEdge - margin >= 10 * gap else {
+                return false
+            }
+            let levels = [margin + 4 * gap, (margin + innerEdge) * 0.5, innerEdge + 4 * gap]
+            let probes = levels.map { level in
+                let junction = corner + adjacentVector * (level / normalProjection)
+                return (3...5).map { distance in
+                    let delta = across * (Double(distance) * gap)
+                    return (inside: junction + delta, outside: junction - delta)
+                }
+            }
+            let samples = probes.flatMap { $0.flatMap { [$0.inside, $0.outside] } }
+            let xs = samples.map(\.x), ys = samples.map(\.y)
+            let x = xs.min()!, y = ys.min()!
+            guard x >= 0, y >= 0, xs.max()! < w, ys.max()! < h else { return false }
+            let bounds = CGRect(x: x, y: y, width: xs.max()! - x + 1, height: ys.max()! - y + 1)
+                .integral.intersection(CGRect(x: 0, y: 0, width: w, height: h))
+            guard let crop = image.cropping(to: bounds), let bitmap = try? PageBitmap(crop) else { return false }
+            func luminance(_ point: PagePoint) -> Double {
+                bitmap.luminance(atX: point.x - bounds.minX, y: point.y - bounds.minY)
+            }
+            let tones = probes.map { positions in
+                positions.map { (inside: luminance($0.inside), outside: luminance($0.outside)) }
+            }
+            func isPaper(_ tone: Double) -> Bool { abs(tone - paperTone) <= tolerance }
+            guard tones[2].allSatisfy({ isPaper($0.inside) && !isPaper($0.outside) }) else { return false }
+            if tones[0].allSatisfy({ isPaper($0.inside) && isPaper($0.outside) }) ||
+                tones[0].allSatisfy({ !isPaper($0.inside) && !isPaper($0.outside) }) { return true }
+            guard tones[0].allSatisfy({ isPaper($0.inside) && !isPaper($0.outside) }) else { return false }
+            return tones[1].allSatisfy {
+                !isPaper($0.inside) && !isPaper($0.outside) &&
+                    abs($0.inside - $0.outside) <= max(6, tolerance * 0.25)
+            }
+        }
+        func refine(_ points: [CGPoint], adjacentToStart: PagePoint, adjacentToEnd: PagePoint) throws -> [PagePoint] {
             let edge = pixels(points)
+            let startCorner = edge[0], endCorner = edge[edge.count - 1]
+            let chord = endCorner - startCorner
+            let across = chord * (1 / max(chord.length, 1e-6))
             let count = max(17, edge.count)
             var offsets = [Double](), samples = [PagePoint](), normals = [PagePoint](), measured = [Bool]()
             for i in 0..<count {
@@ -861,10 +903,19 @@ struct PageFlattener {
                                 bandRun = (outer - tone) * sign > backgroundTolerance ? bandRun + 1 : 0
                                 hasOppositeToneBand = hasOppositeToneBand || bandRun >= 5
                             }
-                            if backgroundRun < 5, hasOppositeToneBand {
-                                firstTransition = margin
-                                offset = margin
-                                break
+                            if backgroundRun < 5 {
+                                let exteriorStripe = !hasOppositeToneBand &&
+                                    outerBandMissesJunction(at: startCorner, adjacent: adjacentToStart, across: across,
+                                                           normal: normal, margin: margin, innerEdge: d,
+                                                           paperTone: inner, tolerance: tolerance) &&
+                                    outerBandMissesJunction(at: endCorner, adjacent: adjacentToEnd, across: across * -1,
+                                                           normal: normal, margin: margin, innerEdge: d,
+                                                           paperTone: inner, tolerance: tolerance)
+                                if !exteriorStripe {
+                                    firstTransition = margin
+                                    offset = margin
+                                    break
+                                }
                             }
                         }
                         if firstTransition == nil, !decision.accepts, outerPaperMargin == nil,
@@ -917,15 +968,17 @@ struct PageFlattener {
                 return samples[i] + normals[i] * offset
             }
         }
-        var top = try refine(boundary.top), right = try refine(boundary.right)
-        var bottom = try refine(boundary.bottom), left = try refine(boundary.left)
+        let original = pixels(boundary.corners)
+        var top = try refine(boundary.top, adjacentToStart: original[3], adjacentToEnd: original[2])
+        var right = try refine(boundary.right, adjacentToStart: original[0], adjacentToEnd: original[3])
+        var bottom = try refine(boundary.bottom, adjacentToStart: original[0], adjacentToEnd: original[1])
+        var left = try refine(boundary.left, adjacentToStart: original[1], adjacentToEnd: original[2])
         func intersection(_ a: [PagePoint], _ b: [PagePoint], near p: PagePoint) -> PagePoint {
             let u = a.last! - a[0], v = b.last! - b[0], d = b[0] - a[0]
             let cross = u.x * v.y - u.y * v.x
             guard abs(cross) > 1e-6 else { return p }
             return a[0] + u * ((d.x * v.y - d.y * v.x) / cross)
         }
-        let original = pixels(boundary.corners)
         let corners = [intersection(top, left, near: original[0]), intersection(top, right, near: original[1]),
                        intersection(bottom, right, near: original[2]), intersection(bottom, left, near: original[3])]
         guard zip(corners, original).allSatisfy({ ($0 - $1).length <= range * 1.5 + 2 }) else {
